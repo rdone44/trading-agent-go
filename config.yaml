@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# trading-agent (Go) configuration
+# CLI flags override these values, e.g.
+#   trading-agent backtest --symbol MSFT --days 400 --seed 7
+# ---------------------------------------------------------------------------
+
+agent:
+  name: demo-agent
+  symbol: AAPL
+  timeframe: "1d"
+  history_days: 730
+
+data:
+  provider: synthetic    # synthetic | yahoo | binance | csv
+  # bars_per_year: 0     # 0 = infer from provider (stocks 252, binance 365)
+  synthetic:
+    seed: 42
+    start_price: 100.0
+    annual_drift: 0.08
+    annual_vol: 0.28
+    regime_switch_prob: 0.01
+    bars_per_year: 252
+
+strategy:
+  name: ma_cross         # ma_cross | rsi_reversion | breakout
+  params:
+    fast: 10
+    slow: 30
+    min_gap_pct: 0.0
+
+risk:
+  initial_cash: 100000
+  max_position_pct: 0.95
+  max_risk_per_trade_pct: 0.02
+  stop_loss_pct: 0.06
+  take_profit_pct: 0.18
+  max_drawdown_pct: 0.25
+  max_daily_loss_pct: 0.05
+  allow_short: false
+  max_open_positions: 1
+
+execution:
+  commission_bps: 1.0
+  slippage_bps: 5.0
+  min_trade_notional: 100
+  liquidate_at_end: true
+  lot_size: 0.0001
+
+backtest:
+  warmup_bars: 60
+  output_dir: reports
+
+live:
+  poll_seconds: 60
+  lookback_days: 400
+  paper_trading: true

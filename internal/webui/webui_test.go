@@ -6,13 +6,20 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/huijun/trading-agent-go/internal/testfx"
 	"github.com/huijun/trading-agent-go/internal/webui"
 )
+
+// fxLoader is the offline SeriesLoader: deterministic bars, no network.
+func fxLoader(symbol string, days int, end time.Time) (model.Series, error) {
+	return testfx.Bars(symbol, days, 42, end), nil
+}
 
 func newTestServer(t *testing.T) (*webui.Server, string) {
 	t.Helper()
@@ -22,7 +29,9 @@ func newTestServer(t *testing.T) (*webui.Server, string) {
 	cfg.Agent.HistoryDays = 300
 	cfg.Backtest.WarmupBars = 30
 	cfg.Backtest.OutputDir = dir
-	return webui.New(cfg), dir
+	server := webui.New(cfg)
+	server.SeriesLoader = fxLoader
+	return server, dir
 }
 
 func TestDashboardPageIsServed(t *testing.T) {
@@ -97,8 +106,8 @@ func TestConfigEndpointDescribesStrategies(t *testing.T) {
 
 func TestBacktestEndpointRunsAndPersists(t *testing.T) {
 	server, dir := newTestServer(t)
-	body := `{"symbol":"TEST","strategy":"ma_cross","provider":"synthetic","days":300,
-	          "seed":42,"initial_cash":100000,"warmup_bars":30,
+	body := `{"symbol":"TEST","strategy":"ma_cross","days":300,
+	          "initial_cash":100000,"warmup_bars":30,
 	          "risk":{"stop_loss_pct":0.05,"slippage_bps":2}}`
 
 	recorder := httptest.NewRecorder()
@@ -160,7 +169,7 @@ func TestRunsEndpointListsAndServesDetail(t *testing.T) {
 	// Create one run through the API.
 	create := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/backtest",
-		strings.NewReader(`{"symbol":"TEST","strategy":"breakout","days":250,"seed":7}`))
+		strings.NewReader(`{"symbol":"TEST","strategy":"breakout","days":250}`))
 	server.Handler().ServeHTTP(create, request)
 	if create.Code != http.StatusOK {
 		t.Fatalf("create run: %d %s", create.Code, create.Body.String())
@@ -219,8 +228,6 @@ func TestBacktestEndpointRejectsBadInput(t *testing.T) {
 	}{
 		{"invalid JSON", `{"symbol":`},
 		{"unknown strategy", `{"symbol":"TEST","strategy":"nope","days":100}`},
-		{"unknown provider", `{"symbol":"TEST","provider":"bloomberg","days":100}`},
-		{"csv without a path", `{"symbol":"TEST","provider":"csv"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,14 +241,9 @@ func TestBacktestEndpointRejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestBacktestEndpointServesCsvFixture(t *testing.T) {
+func TestBacktestEndpointRunsOffline(t *testing.T) {
 	server, _ := newTestServer(t)
-	fixture, err := filepath.Abs(filepath.Join("..", "..", "testdata", "bars.csv"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := `{"symbol":"TEST","strategy":"ma_cross","provider":"csv","data_path":` +
-		strconv.Quote(fixture) + `}`
+	body := `{"symbol":"TEST","strategy":"ma_cross","days":200,"warmup_bars":30}`
 
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder,
@@ -250,17 +252,12 @@ func TestBacktestEndpointServesCsvFixture(t *testing.T) {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Bars    int `json:"bars"`
-		Metrics struct {
-			NumTrades int `json:"num_trades"`
-		} `json:"metrics"`
+		Bars int `json:"bars"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	// The frozen fixture has a known trade count; this pins the UI path to the
-	// same engine results the CLI produces.
-	if payload.Bars != 730 || payload.Metrics.NumTrades != 46 {
-		t.Errorf("bars=%d trades=%d, want 730/46", payload.Bars, payload.Metrics.NumTrades)
+	if payload.Bars != 200 {
+		t.Errorf("bars = %d, want 200", payload.Bars)
 	}
 }

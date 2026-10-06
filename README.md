@@ -15,11 +15,11 @@ orders.
 
 - Three built-in strategies: `ma_cross`, `rsi_reversion`, `breakout`
 - Risk layer: position sizing, ATR/% stops, take-profit, max drawdown kill switch, daily loss limit
+- Data source: Binance spot (public REST API, daily bars)
 - Realistic frictions: commission, slippage, lot rounding, minimum notional
 - Look-ahead safe: signals decided on the close, executed on the next open
-- Data sources: Binance spot, Yahoo Finance, deterministic synthetic (offline), or your own CSV
 - Reports: HTML (with an inline SVG equity curve), Markdown, CSV and JSON
-- Only one dependency (`yaml.v3`); the Yahoo client uses `net/http`
+- Only one dependency (`yaml.v3`); the Binance client uses `net/http`
 
 ## Quickstart
 
@@ -32,7 +32,7 @@ go test ./...                                  # unit + integration tests
 go build -o bin/trading-agent.exe ./cmd/trading-agent
 
 .\bin\trading-agent.exe web                    # dashboard at localhost:8080
-.\bin\trading-agent.exe backtest               # offline synthetic data
+.\bin\trading-agent.exe backtest --symbol BTCUSDT --days 730   # Binance data
 ```
 
 ## Dashboard
@@ -68,7 +68,7 @@ The HTTP API behind it is small enough to script against:
 ```powershell
 curl.exe -X POST http://localhost:8080/api/backtest `
   -H "Content-Type: application/json" `
-  -d '{\"symbol\":\"MSFT\",\"strategy\":\"breakout\",\"provider\":\"yahoo\",\"days\":900}'
+  -d '{\"symbol\":\"BTCUSDT\",\"strategy\":\"breakout\",\"days\":900}'
 ```
 
 ## Commands
@@ -77,34 +77,22 @@ curl.exe -X POST http://localhost:8080/api/backtest `
 # dashboard
 .\bin\trading-agent.exe web
 
-# backtest (synthetic data, reproducible seed)
-.\bin\trading-agent.exe backtest --symbol AAPL --days 730 --seed 42
-
-# real market data
-.\bin\trading-agent.exe backtest --provider yahoo --symbol MSFT --days 900
-
-# crypto: Binance spot klines (BTCUSDT, ETHUSDT, ...)
-.\bin\trading-agent.exe backtest --provider binance --symbol BTCUSDT --days 730
-
-# your own bars (date, open, high, low, close[, volume] - names are case-insensitive)
-.\bin\trading-agent.exe backtest --data bars.csv --symbol AAPL
-
-# the bundled 730-bar fixture, useful for smoke tests and regression checks
-.\bin\trading-agent.exe backtest --data testdata\bars.csv --symbol TEST
+# backtest on Binance spot klines (BTCUSDT, ETHUSDT, ...)
+.\bin\trading-agent.exe backtest --symbol BTCUSDT --days 730
 
 # compare strategies on the same data
-.\bin\trading-agent.exe backtest --strategy rsi_reversion --symbol AAPL
-.\bin\trading-agent.exe backtest --strategy breakout --symbol AAPL
+.\bin\trading-agent.exe backtest --strategy rsi_reversion --symbol ETHUSDT
+.\bin\trading-agent.exe backtest --strategy breakout --symbol BTCUSDT
 
 # scan many tickers and rank them
-.\bin\trading-agent.exe scan --symbols AAPL,MSFT,NVDA,SPY
+.\bin\trading-agent.exe scan --symbols BTCUSDT,ETHUSDT,SOLUSDT
 
 # paper-trade loop (simulated, no orders leave your machine)
-.\bin\trading-agent.exe live --symbol AAPL --iterations 3 --poll 10
+.\bin\trading-agent.exe live --symbol BTCUSDT --iterations 3 --poll 10
 
 # machine-readable output, and a saved config for reproducibility
 .\bin\trading-agent.exe backtest --json
-.\bin\trading-agent.exe backtest --save-config runs\nvda.yaml
+.\bin\trading-agent.exe backtest --save-config runs\btc.yaml
 ```
 
 ## Configuration
@@ -142,10 +130,11 @@ internal/
   portfolio/           cash, positions, realized PnL, equity curve
   engine/              the event loop
   metrics/             Sharpe, Sortino, Calmar, drawdown, win rate, profit factor
-  marketdata/          Binance, Yahoo Finance, synthetic, CSV
+  marketdata/          Binance spot klines client
   report/              CSV / JSON / Markdown / HTML writers
   webui/               HTTP server, JSON API and the embedded dashboard
   cli/                 command line interface
+  testfx/              deterministic offline bars for the unit tests only
 ```
 
 ## Adding your own strategy
@@ -187,30 +176,19 @@ open, fixed bps costs, no partial fills, no borrow costs for shorts, and stops
 assumed to fill at the stop price (real gaps can be much worse). Treat results
 as a sanity check on an idea, not a forecast.
 
-Annualized figures depend on the trading calendar of the data source: 252 bars
-a year for stocks, 365 for Binance. `config.BarsPerYear()` picks the right
-factor from the provider, so Sharpe and the annualized return stay comparable
-across markets. Set `data.bars_per_year` to override it.
+Annualized figures use 365 bars a year (Binance), since crypto trades 24/7.
+`config.BarsPerYear()` reads that default; set `data.bars_per_year` to override
+it. Because the market runs every day, a "daily loss limit" and a fixed stop
+are tested against continuous price action - and overnight gaps through a stop
+are the normal failure mode, exactly as in live crypto.
 
-Crypto runs 24/7, so a "daily loss limit" and a fixed stop are tested against
-continuous price action with no overnight gap - unlike the stock backtests,
-where a gap through the stop is the normal failure mode.
+## Offline tests
 
-## Regression fixture
-
-`testdata/bars.csv` holds 730 daily bars (2023-12-20 to 2026-10-06) generated
-once and frozen. Because the synthetic generator is deterministic, a change to
-any indicator, risk rule or accounting path shows up as a different trade count
-or return on this fixture. Reference results:
-
-| strategy | trades | total return | max drawdown |
-| --- | ---: | ---: | ---: |
-| `ma_cross` | 46 | +5.94% | -22.97% |
-| `rsi_reversion` | 11 | -0.53% | -9.70% |
-| `breakout` | 33 | -25.38% | -25.38% |
-
-If a change moves these numbers, either the change is intended (update the
-table) or it is a regression (fix it).
+The unit tests never touch the network: `internal/testfx` builds deterministic
+daily bars for a given `(symbol, days, seed)`, and the engine/report/webui
+suites feed it in. A change to any indicator, risk rule or accounting path
+shows up as a different trade count or return, so the suites stay fast and
+reproducible while the CLI and dashboard keep talking to real Binance.
 
 ## Going live
 

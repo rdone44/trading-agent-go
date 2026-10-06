@@ -169,13 +169,6 @@ function renderStrategyParams() {
   }
 }
 
-function syncProviderFields() {
-  const provider = $('select[name="provider"]').value;
-  $$("[data-provider]").forEach((el) => {
-    el.hidden = !el.dataset.provider.split(" ").includes(provider);
-  });
-}
-
 function collectRequest() {
   const form = $("#run-form");
   const params = {};
@@ -191,10 +184,7 @@ function collectRequest() {
     symbol: $('[name="symbol"]').value.trim().toUpperCase(),
     strategy: $('[name="strategy"]').value,
     params,
-    provider: $('[name="provider"]').value,
-    data_path: $('[name="data_path"]').value.trim(),
     days: Number($('[name="days"]').value) || 0,
-    seed: Number($('[name="seed"]').value) || 0,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
     warmup_bars: 60,
     risk: {
@@ -403,9 +393,7 @@ async function bootstrap() {
 
   // Seed the form from the effective server config.
   $('[name="symbol"]').value = config.symbol;
-  $('[name="provider"]').value = config.provider || "synthetic";
   $('[name="days"]').value = config.days;
-  $('[name="seed"]').value = config.seed;
   $('[name="initial_cash"]').value = config.initial_cash;
   $("#strategy-select").value = config.strategy;
   $("#config-source").textContent = config.output_dir ? `报告目录 → ${config.output_dir}` : "本地配置";
@@ -423,12 +411,10 @@ async function bootstrap() {
   $('[name="allow_short"]').checked = Boolean(risk.allow_short);
 
   renderStrategyParams();
-  syncProviderFields();
   await loadRuns();
 }
 
 $("#strategy-select").addEventListener("change", renderStrategyParams);
-$('select[name="provider"]').addEventListener("change", syncProviderFields);
 $("#refresh-runs").addEventListener("click", loadRuns);
 $$(".tab").forEach((tab) => {
   tab.addEventListener("click", () => { activeTab = tab.dataset.tab; renderTab(); });

@@ -2,22 +2,18 @@ package config
 
 import "testing"
 
-// The annualization factor feeds Sharpe, volatility and the annual return, so
-// it has to follow the data source: stocks trade ~252 days a year, crypto 365.
-func TestBarsPerYearFollowsTheProvider(t *testing.T) {
+// The only data source is Binance and crypto trades every day, so bars are
+// annualized over 365 periods unless an explicit override is set.
+func TestBarsPerYearDefaultsToCrypto(t *testing.T) {
 	cases := []struct {
 		provider string
 		override int
 		want     int
 	}{
-		{"synthetic", 0, 252},
-		{"yahoo", 0, 252},
-		{"csv", 0, 252},
 		{"binance", 0, 365},
-		{"BINANCE", 0, 365},
+		{"", 0, 365},
 		{"binance", 500, 500},
-		{"yahoo", 365, 365},
-		{"", 0, 252},
+		{"", 500, 500},
 	}
 	for _, tc := range cases {
 		cfg := Default()
@@ -30,8 +26,8 @@ func TestBarsPerYearFollowsTheProvider(t *testing.T) {
 	}
 }
 
-func TestDefaultIsStocksCalendar(t *testing.T) {
-	if got := Default().BarsPerYear(); got != 252 {
-		t.Fatalf("default BarsPerYear() = %d, want 252", got)
+func TestDefaultBarsPerYear(t *testing.T) {
+	if got := Default().BarsPerYear(); got != 365 {
+		t.Fatalf("default BarsPerYear() = %d, want 365", got)
 	}
 }

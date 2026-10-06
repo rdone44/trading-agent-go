@@ -22,33 +22,16 @@
       <fieldset>
         <legend>标的与数据</legend>
         <label class="field">
-          <span>代码</span>
-          <input name="symbol" value="AAPL" spellcheck="false">
+          <span>交易对</span>
+          <input name="symbol" value="BTCUSDT" spellcheck="false">
         </label>
-        <p class="hint" data-provider="binance">Binance 交易对，例如 <code>BTCUSDT</code>（也接受 <code>btc-usdt</code>）</p>
+        <p class="hint">Binance 现货交易对，例如 <code>BTCUSDT</code>（也接受 <code>btc-usdt</code>）</p>
         <label class="field">
-          <span>数据源</span>
-          <select name="provider">
-            <option value="synthetic">合成数据（离线）</option>
-            <option value="yahoo">Yahoo Finance</option>
-            <option value="binance">Binance 现货</option>
-            <option value="csv">CSV 文件</option>
-          </select>
-        </label>
-        <label class="field" data-provider="synthetic yahoo binance">
           <span>历史区间</span>
           <div class="inline">
             <input name="days" type="number" min="30" max="5000" step="1" value="730">
             <span class="unit">天</span>
           </div>
-        </label>
-        <label class="field" data-provider="csv">
-          <span>数据文件</span>
-          <input name="data_path" placeholder="testdata\bars.csv" spellcheck="false">
-        </label>
-        <label class="field" data-provider="synthetic">
-          <span>随机种子</span>
-          <input name="seed" type="number" step="1" value="42">
         </label>
       </fieldset>
 

@@ -7,8 +7,8 @@ import (
 
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/marketdata"
 	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/huijun/trading-agent-go/internal/testfx"
 )
 
 func testConfig() config.Config {
@@ -24,10 +24,7 @@ func run(t *testing.T, cfg config.Config) engine.Result {
 	if err != nil {
 		t.Fatalf("build strategy: %v", err)
 	}
-	series, err := marketdata.Synthetic(cfg.Agent.Symbol, cfg.Agent.HistoryDays, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	if err != nil {
-		t.Fatalf("build data: %v", err)
-	}
+	series := testfx.Bars(cfg.Agent.Symbol, cfg.Agent.HistoryDays, 42, time.Now().UTC())
 	agent := engine.New(cfg, strat)
 	result, err := agent.RunBacktest(series)
 	if err != nil {
@@ -36,16 +33,9 @@ func run(t *testing.T, cfg config.Config) engine.Result {
 	return result
 }
 
-func TestSyntheticDataIsDeterministic(t *testing.T) {
-	cfg := config.Default()
-	first, err := marketdata.Synthetic("TEST", 100, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := marketdata.Synthetic("TEST", 100, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestBarsAreDeterministic(t *testing.T) {
+	first := testfx.Bars("TEST", 100, 7, time.Now().UTC())
+	second := testfx.Bars("TEST", 100, 7, time.Now().UTC())
 	if first.Len() != second.Len() {
 		t.Fatalf("lengths differ: %d vs %d", first.Len(), second.Len())
 	}

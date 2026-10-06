@@ -32,6 +32,10 @@ var staticFiles embed.FS
 type Server struct {
 	Config    config.Config
 	OutputDir string
+	// SeriesLoader loads market data for a run. It defaults to the public
+	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
+	// suite never touches the network.
+	SeriesLoader func(symbol string, days int, end time.Time) (model.Series, error)
 }
 
 // New builds a server from the effective configuration.
@@ -40,7 +44,13 @@ func New(cfg config.Config) *Server {
 	if output == "" {
 		output = "reports"
 	}
-	return &Server{Config: cfg, OutputDir: output}
+	return &Server{
+		Config:    cfg,
+		OutputDir: output,
+		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
+			return marketdata.Binance(symbol, days, end)
+		},
+	}
 }
 
 // Handler returns the router.
@@ -108,10 +118,7 @@ type BacktestRequest struct {
 	Symbol      string             `json:"symbol"`
 	Strategy    string             `json:"strategy"`
 	Params      map[string]float64 `json:"params"`
-	Provider    string             `json:"provider"`
-	DataPath    string             `json:"data_path"`
 	Days        int                `json:"days"`
-	Seed        int64              `json:"seed"`
 	InitialCash float64            `json:"initial_cash"`
 	WarmupBars  int                `json:"warmup_bars"`
 	Risk        *RiskOverrides     `json:"risk"`
@@ -200,9 +207,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"symbol":       cfg.Agent.Symbol,
 		"strategy":     cfg.Strategy.Name,
-		"provider":     cfg.Data.Provider,
 		"days":         cfg.Agent.HistoryDays,
-		"seed":         cfg.Data.Synthetic.Seed,
 		"initial_cash": cfg.Risk.InitialCash,
 		"warmup_bars":  cfg.Backtest.WarmupBars,
 		"output_dir":   s.OutputDir,
@@ -339,18 +344,8 @@ func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
 	if req.Params != nil {
 		cfg.Strategy.Params = req.Params
 	}
-	if req.Provider != "" {
-		cfg.Data.Provider = req.Provider
-	}
-	if req.DataPath != "" {
-		cfg.Data.CSVPath = req.DataPath
-		cfg.Data.Provider = "csv"
-	}
 	if req.Days > 0 {
 		cfg.Agent.HistoryDays = req.Days
-	}
-	if req.Seed != 0 {
-		cfg.Data.Synthetic.Seed = req.Seed
 	}
 	if req.InitialCash > 0 {
 		cfg.Risk.InitialCash = req.InitialCash
@@ -362,7 +357,7 @@ func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
 		applyRiskOverrides(&cfg, *req.Risk)
 	}
 
-	series, err := loadSeries(cfg)
+	series, err := s.SeriesLoader(cfg.Agent.Symbol, cfg.Agent.HistoryDays, time.Now().UTC())
 	if err != nil {
 		return engine.Result{}, "", err
 	}
@@ -411,25 +406,6 @@ func applyRiskOverrides(cfg *config.Config, o RiskOverrides) {
 	}
 	if o.SlippageBps != nil {
 		cfg.Execution.SlippageBps = *o.SlippageBps
-	}
-}
-
-func loadSeries(cfg config.Config) (model.Series, error) {
-	symbol := strings.ToUpper(cfg.Agent.Symbol)
-	switch strings.ToLower(cfg.Data.Provider) {
-	case "synthetic", "":
-		return marketdata.Synthetic(symbol, cfg.Agent.HistoryDays, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	case "yahoo":
-		return marketdata.Yahoo(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
-	case "binance":
-		return marketdata.Binance(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
-	case "csv":
-		if cfg.Data.CSVPath == "" {
-			return model.Series{}, fmt.Errorf("选择 CSV 数据源时必须填写数据文件路径")
-		}
-		return marketdata.FromCSV(cfg.Data.CSVPath, symbol)
-	default:
-		return model.Series{}, fmt.Errorf("未知的数据源 %q（可选 synthetic、yahoo、binance、csv）", cfg.Data.Provider)
 	}
 }
 

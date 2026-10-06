@@ -4,7 +4,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,20 +29,9 @@ type Agent struct {
 
 type Data struct {
 	Provider string `yaml:"provider"`
-	CSVPath  string `yaml:"csv_path"`
 	// BarsPerYear is the annualization factor used for Sharpe, volatility and
-	// the annual return. Zero means "infer from the provider".
-	BarsPerYear int       `yaml:"bars_per_year"`
-	Synthetic   Synthetic `yaml:"synthetic"`
-}
-
-type Synthetic struct {
-	Seed             int64   `yaml:"seed"`
-	StartPrice       float64 `yaml:"start_price"`
-	AnnualDrift      float64 `yaml:"annual_drift"`
-	AnnualVol        float64 `yaml:"annual_vol"`
-	RegimeSwitchProb float64 `yaml:"regime_switch_prob"`
-	BarsPerYear      int     `yaml:"bars_per_year"`
+	// the annual return. Zero means "infer from the provider" (Binance = 365).
+	BarsPerYear int `yaml:"bars_per_year"`
 }
 
 type Strategy struct {
@@ -85,14 +73,8 @@ type Live struct {
 // Default returns the built-in settings used when no config file is present.
 func Default() Config {
 	return Config{
-		Agent: Agent{Name: "trading-agent", Symbol: "AAPL", Timeframe: "1d", HistoryDays: 730},
-		Data: Data{
-			Provider: "synthetic",
-			Synthetic: Synthetic{
-				Seed: 42, StartPrice: 100, AnnualDrift: 0.08,
-				AnnualVol: 0.28, RegimeSwitchProb: 0.01, BarsPerYear: 252,
-			},
-		},
+		Agent: Agent{Name: "trading-agent", Symbol: "BTCUSDT", Timeframe: "1d", HistoryDays: 730},
+		Data: Data{Provider: "binance"},
 		Strategy: Strategy{Name: "ma_cross", Params: map[string]float64{}},
 		Risk: Risk{
 			InitialCash: 100_000, MaxPositionPct: 0.95, MaxRiskPerTradePct: 0.02,
@@ -127,10 +109,10 @@ func Load(path string) (Config, error) {
 		cfg.Strategy.Params = map[string]float64{}
 	}
 	if cfg.Agent.Symbol == "" {
-		cfg.Agent.Symbol = "AAPL"
+		cfg.Agent.Symbol = "BTCUSDT"
 	}
 	if cfg.Data.Provider == "" {
-		cfg.Data.Provider = "synthetic"
+		cfg.Data.Provider = "binance"
 	}
 	return cfg, nil
 }
@@ -139,11 +121,8 @@ func Load(path string) (Config, error) {
 type Overrides struct {
 	Symbol      *string
 	HistoryDays *int
-	Provider    *string
-	CSVPath     *string
 	Strategy    *string
 	InitialCash *float64
-	Seed        *int64
 	OutputDir   *string
 	WarmupBars  *int
 }
@@ -156,20 +135,11 @@ func (c *Config) Apply(o Overrides) {
 	if o.HistoryDays != nil {
 		c.Agent.HistoryDays = *o.HistoryDays
 	}
-	if o.Provider != nil {
-		c.Data.Provider = *o.Provider
-	}
-	if o.CSVPath != nil {
-		c.Data.CSVPath = *o.CSVPath
-	}
 	if o.Strategy != nil {
 		c.Strategy.Name = *o.Strategy
 	}
 	if o.InitialCash != nil {
 		c.Risk.InitialCash = *o.InitialCash
-	}
-	if o.Seed != nil {
-		c.Data.Synthetic.Seed = *o.Seed
 	}
 	if o.OutputDir != nil {
 		c.Backtest.OutputDir = *o.OutputDir
@@ -189,21 +159,15 @@ func (c Config) Param(key string, def float64) float64 {
 
 // BarsPerYear is the annualization factor for the active data source.
 //
-// Stocks trade about 252 days a year; crypto trades every day, so Binance bars
-// are annualized over 365 periods. Getting this wrong silently distorts the
-// Sharpe ratio and the annualized return, so it is derived from the provider
-// rather than left to the caller.
+// The only data source is Binance and crypto trades every day, so bars are
+// annualized over 365 periods. Getting this wrong silently distorts the Sharpe
+// ratio and the annualized return; an explicit data.bars_per_year override is
+// honoured when set.
 func (c Config) BarsPerYear() int {
 	if c.Data.BarsPerYear > 0 {
 		return c.Data.BarsPerYear
 	}
-	if strings.EqualFold(strings.TrimSpace(c.Data.Provider), "binance") {
-		return 365
-	}
-	if c.Data.Synthetic.BarsPerYear > 0 {
-		return c.Data.Synthetic.BarsPerYear
-	}
-	return 252
+	return 365
 }
 
 // IntParam is Param for integer parameters.

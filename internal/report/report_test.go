@@ -9,9 +9,9 @@ import (
 
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/marketdata"
 	"github.com/huijun/trading-agent-go/internal/report"
 	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/huijun/trading-agent-go/internal/testfx"
 )
 
 func TestReportsAreWritten(t *testing.T) {
@@ -22,10 +22,7 @@ func TestReportsAreWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	series, err := marketdata.Synthetic(cfg.Agent.Symbol, cfg.Agent.HistoryDays, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	series := testfx.Bars(cfg.Agent.Symbol, cfg.Agent.HistoryDays, 42, time.Now().UTC())
 	result, err := engine.New(cfg, strat).RunBacktest(series)
 	if err != nil {
 		t.Fatal(err)

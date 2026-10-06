@@ -23,6 +23,8 @@ import (
 
 const usage = `trading-agent - a small trading agent (Go)
 
+Data source: Binance spot (public REST API), daily bars.
+
 Usage:
   trading-agent backtest [flags]   run a backtest and write a report
   trading-agent scan [flags]       backtest several symbols and rank them
@@ -32,11 +34,9 @@ Usage:
   trading-agent version            print the version
 
 Examples:
-  trading-agent backtest --symbol AAPL --days 730 --seed 42
-  trading-agent backtest --provider yahoo --symbol MSFT --days 900
-  trading-agent backtest --provider binance --symbol BTCUSDT --days 730
-  trading-agent backtest --strategy breakout --symbol AAPL
-  trading-agent scan --symbols AAPL,MSFT,NVDA,SPY
+  trading-agent backtest --symbol BTCUSDT --days 730
+  trading-agent backtest --strategy breakout --symbol ETHUSDT --days 730
+  trading-agent scan --symbols BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
   trading-agent web --addr :8080
 
 Run "trading-agent backtest -h" for the full flag list.
@@ -81,11 +81,8 @@ type flags struct {
 	configPath *string
 	symbol     *string
 	days       *int
-	provider   *string
-	dataPath   *string
 	strategy   *string
 	cash       *float64
-	seed       *int64
 	output     *string
 	warmup     *int
 	jsonOut    *bool
@@ -99,13 +96,10 @@ type flags struct {
 
 func bind(fs *flag.FlagSet, f *flags) {
 	f.configPath = fs.String("config", "", "YAML config file (default: ./config.yaml when present)")
-	f.symbol = fs.String("symbol", "", "ticker, e.g. AAPL")
+	f.symbol = fs.String("symbol", "", "Binance ticker, e.g. BTCUSDT")
 	f.days = fs.Int("days", 0, "calendar days of history")
-	f.provider = fs.String("provider", "", "synthetic | yahoo | binance | csv")
-	f.dataPath = fs.String("data", "", "CSV file of bars (sets provider=csv)")
 	f.strategy = fs.String("strategy", "", "ma_cross | rsi_reversion | breakout")
 	f.cash = fs.Float64("cash", 0, "initial cash")
-	f.seed = fs.Int64("seed", 0, "synthetic data seed")
 	f.output = fs.String("output", "", "report directory")
 	f.warmup = fs.Int("warmup", 0, "bars to skip before entries")
 	f.jsonOut = fs.Bool("json", false, "print metrics as JSON only")
@@ -125,25 +119,11 @@ func (f flags) overrides() config.Overrides {
 	if set(f.days) {
 		o.HistoryDays = f.days
 	}
-	if set(f.provider) {
-		o.Provider = f.provider
-	}
-	if set(f.dataPath) {
-		o.CSVPath = f.dataPath
-		// Supplying a data file implies the csv provider unless one was named.
-		if !set(f.provider) {
-			csv := "csv"
-			o.Provider = &csv
-		}
-	}
 	if set(f.strategy) {
 		o.Strategy = f.strategy
 	}
 	if set(f.cash) {
 		o.InitialCash = f.cash
-	}
-	if set(f.seed) {
-		o.Seed = f.seed
 	}
 	if set(f.output) {
 		o.OutputDir = f.output
@@ -237,7 +217,7 @@ func runScan(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	symbols := "AAPL,MSFT,NVDA,SPY"
+	symbols := "BTCUSDT,ETHUSDT,SOLUSDT"
 	if set(f.symbols) {
 		symbols = *f.symbols
 	}
@@ -403,21 +383,7 @@ func execute(cfg config.Config) (engine.Result, error) {
 
 func loadSeries(cfg config.Config) (model.Series, error) {
 	symbol := strings.ToUpper(cfg.Agent.Symbol)
-	switch strings.ToLower(cfg.Data.Provider) {
-	case "synthetic", "":
-		return marketdata.Synthetic(symbol, cfg.Agent.HistoryDays, cfg.Data.Synthetic, time.Now().UTC(), nil)
-	case "yahoo":
-		return marketdata.Yahoo(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
-	case "binance":
-		return marketdata.Binance(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
-	case "csv":
-		if cfg.Data.CSVPath == "" {
-			return model.Series{}, fmt.Errorf("provider csv requires --data <file.csv>")
-		}
-		return marketdata.FromCSV(cfg.Data.CSVPath, symbol)
-	default:
-		return model.Series{}, fmt.Errorf("unknown data provider %q (use synthetic, yahoo, binance or csv)", cfg.Data.Provider)
-	}
+	return marketdata.Binance(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
 }
 
 func printSummary(result engine.Result) {

@@ -18,13 +18,14 @@
 
 ### P0-1 交易所侧保护性止损（最高优先）
 - **问题**：开仓只有市价单，无交易所侧止损。进程崩溃/断网/systemd 重启时，持仓裸奔，本地止损失效。
-- **改法**：
-  - `futures`：开仓成功后立刻挂一张 `STOP_MARKET` 保护单（带 `closePosition=true`、`stopPrice=本地止损价`、`workingType=MARK_PRICE`）；本地止盈单独挂 `TAKE_PROFIT_MARKET`（可选）。
+- **改法**（含规划 agent 复核后的升级）：
+  - `futures`：开仓成功后立刻挂保护单。基线 `STOP_MARKET`（`closePosition=true`、`stopPrice=本地止损价`、`workingType=MARK_PRICE`）；**更稳首选 `LIMIT_STOP`**（执行价可控、避市场滑点）配 **OCO**（止损+止盈同组，系统级保证至少一个生效）。本地止盈若不走 OCO 则单独挂 `TAKE_PROFIT_MARKET`（可选）。
   - `spot`：开仓后挂 `STOP`（多头止损 = SELL STOP 保护单）。
-  - 平仓 / 本地止盈止盈触发 / `Stop()` 时：先撤交易所侧保护挂单（`DELETE /fapi/v1/openOrders`），避免重复平仓。
-  - 重启 `reconcile`：若本地无持仓但交易所残留 STOP_MARKET，撤掉；本地有持仓但保护单缺失，补挂。
-  - 保护单价格 = `risk.StopAndTarget` 已算出的 stopPrice，别新算一套。
-- **验证**：futures_test 用 httptest stub 断言开仓后紧跟一张 STOP_MARKET；平仓路径先撤单；断网后 reconcile 补挂。全离线。
+  - 平仓 / 本地止盈止损失 / `Stop()` 时：先撤交易所侧保护挂单（`DELETE /fapi/v1/openOrders` 按 symbol 精撤，避免误撤无关单 / 重复平仓）。
+  - 重启 `reconcile`：若本地无持仓但交易所残留保护单，撤掉；本地有持仓但保护单缺失，补挂。**补挂前必须拉 `openOrders` 幂等去重**——已有同类保护单则跳过，不重复挂（防极端行情下挂单/网络重试导致成倍单）。
+  - 保护单价格**必须与本地 risk engine 同源**：一律取 `risk.StopAndTarget` 已算出的 stopPrice，禁止另写一套价格逻辑（本地/交易所两套价会漂移导致保护失效）。
+  - 极端行情：保护单若被滑点触及或撤单，需幂等重试 + 在日志/上报里报警；本地无仓但交易所仍有保护单（裸单）必须 reconcile 清掉。
+- **验证**：futures_test 用 httptest stub 断言开仓后紧跟保护单（OCO/LIMIT_STOP 或 STOP_MARKET）；平仓路径先撤单；断网后 reconcile 补挂且**幂等去重**（openOrders 已有同类单则不重挂）。全离线。
 
 ### P0-2 execute 的进程级环境开关（纵深防御）
 - **问题**：拿到访问 token + 在 UI 输入短语即可开实盘。缺进程级第二道门。
@@ -58,3 +59,6 @@
 - `Leverage: 1` 时行为逐字节不变；默认 paper；实盘需 `--execute` + P0-2 的 env 开关。
 - 每轮改完 `gofmt -l .` 干净 + `go build ./...` + `go vet ./...` + `go test ./...` 全绿才 commit。
 - commit 一改动一件事；push 走 fork 远端；更新 PR #1 描述。
+
+## 规划复核记录
+- 2026-10-08 与规划 agent（assistant profile，A2A 9902）对齐：确认 P0-1 方向、P0>P1>P2 排序；并入 OCO/LIMIT_STOP 升级、reconcile 幂等去重、止损价同源、极端行情重试/报警 4 点风险。

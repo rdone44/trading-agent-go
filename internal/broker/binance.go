@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/marketdata"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
 )
 
 // BinanceConfig configures a live broker.

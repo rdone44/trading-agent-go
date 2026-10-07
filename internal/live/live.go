@@ -10,16 +10,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/broker"
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/llm"
-	"github.com/huijun/trading-agent-go/internal/marketdata"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/portfolio"
-	"github.com/huijun/trading-agent-go/internal/risk"
-	"github.com/huijun/trading-agent-go/internal/state"
-	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/broker"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/llm"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/portfolio"
+	"github.com/rdone44/trading-agent-go/internal/risk"
+	"github.com/rdone44/trading-agent-go/internal/state"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
 )
 
 // Runner drives one live session.
@@ -32,6 +32,13 @@ type Runner struct {
 	futures    bool
 	leverage   int
 	marginMode string
+
+	// SeriesLoader and PriceLoader are the market-data edges of the loop. They
+	// default to the public Binance endpoints; tests replace them so the suite
+	// never touches the network, and a caller could point them at another
+	// venue without touching the decision logic.
+	SeriesLoader func(symbol string, days int, end time.Time) (model.Series, error)
+	PriceLoader  func(symbol string) (float64, time.Time, error)
 }
 
 // New builds a runner. execute=true places real orders on Binance (keys come
@@ -99,6 +106,29 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 		cfg: cfg, agent: agent, broker: bk, statePath: statePath,
 		executed: execute, futures: futures, leverage: leverage, marginMode: marginMode,
 	}, nil
+}
+
+// loadSeries fetches the lookback window, honouring a caller-supplied loader.
+func (r *Runner) loadSeries(now time.Time) (model.Series, error) {
+	if r.SeriesLoader != nil {
+		return r.SeriesLoader(r.agent.Symbol, r.cfg.Live.LookbackDays, now)
+	}
+	if r.futures {
+		return marketdata.Futures(r.agent.Symbol, r.cfg.Live.LookbackDays, now)
+	}
+	return marketdata.Binance(r.agent.Symbol, r.cfg.Live.LookbackDays, now)
+}
+
+// loadPrice fetches the latest traded price, honouring a caller-supplied
+// loader.
+func (r *Runner) loadPrice() (float64, time.Time, error) {
+	if r.PriceLoader != nil {
+		return r.PriceLoader(r.agent.Symbol)
+	}
+	if r.futures {
+		return marketdata.FuturesLastPrice(r.agent.Symbol)
+	}
+	return marketdata.LastPrice(r.agent.Symbol)
 }
 
 // IsExecuted reports whether this runner places real orders.
@@ -218,23 +248,12 @@ func (r *Runner) reconcileFutures() error {
 // active venue, feed them through the agent, and persist the result. It
 // returns what the cycle did.
 func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
-	var series model.Series
-	var err error
-	if r.futures {
-		series, err = marketdata.Futures(r.agent.Symbol, r.cfg.Live.LookbackDays, now)
-	} else {
-		series, err = marketdata.Binance(r.agent.Symbol, r.cfg.Live.LookbackDays, now)
-	}
+	series, err := r.loadSeries(now)
 	if err != nil {
 		return engine.StepResult{}, err
 	}
 
-	var price float64
-	if r.futures {
-		price, _, err = marketdata.FuturesLastPrice(r.agent.Symbol)
-	} else {
-		price, _, err = marketdata.LastPrice(r.agent.Symbol)
-	}
+	price, _, err := r.loadPrice()
 	if err != nil {
 		return engine.StepResult{}, err
 	}

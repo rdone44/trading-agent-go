@@ -4,7 +4,7 @@ package metrics
 import (
 	"math"
 
-	"github.com/huijun/trading-agent-go/internal/portfolio"
+	"github.com/rdone44/trading-agent-go/internal/portfolio"
 )
 
 // Metrics is the JSON shape written to metrics.json: values that can be

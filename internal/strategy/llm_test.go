@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/testfx"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/testfx"
 )
 
 // fakeAsk is an injected model that returns canned answers and counts calls,

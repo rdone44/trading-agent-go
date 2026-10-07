@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // Side is the direction of an order.

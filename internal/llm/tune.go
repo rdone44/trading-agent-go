@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // Proposal is one round's answer from the tuning model.

@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // VetoRequest is the plain, engine-free description of one proposed entry that

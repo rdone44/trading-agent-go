@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huijun/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
 )
 
 func ptrf(v float64) *float64 { return &v }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 func ptr(v float64) *float64 { return &v }

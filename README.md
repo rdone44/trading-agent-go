@@ -108,7 +108,7 @@ Deployment files live in `deploy/`:
   root filesystem, writes only its own state directory)
 - `Dockerfile` - multi-stage build onto a small Alpine runtime
 
-## Dashboard
+## Trading console
 
 ```powershell
 .\bin\trading-agent.exe web                    # opens http://localhost:8080
@@ -116,23 +116,44 @@ Deployment files live in `deploy/`:
 .\bin\trading-agent.exe web --no-open          # do not launch a browser
 ```
 
-The dashboard is a single embedded page (Chinese UI) - no CDN, no JavaScript
-framework, no build step - so it works offline and ships inside the binary:
+The console is a single embedded page (Chinese UI) - no CDN, no JavaScript
+framework, no build step - so it works offline and ships inside the binary. It
+drives the **live trading loop**, not a backtest. The layout is a market
+terminal: a slim top bar carries the session state and the start/stop controls,
+the workspace is given over to the live readout, and the configuration lives in
+a slide-in drawer because it is fixed once a session starts.
 
-- **Config form** for instrument, data source, strategy parameters, risk limits and costs
-- **Charts** drawn as inline SVG: equity curve and underwater (drawdown) plot
-- **Blotter** tabs for closed trades, every fill, breached risk limits and the raw metric dump
-- **Run history** that lists saved runs and reopens any of them from disk
+- **Config drawer** for instrument, poll interval, venue (spot or USDT-perp), strategy parameters, risk limits and costs
+- **Hero readout** with marked equity, total return against initial cash, and an inline equity sparkline
+- **Stat strip** for cash, peak equity, last price, cycle count and the latest action
+- **Open position panel** with direction, size, average entry, stop and take-profit levels, and unrealized PnL
+- **Tabs** for the per-cycle run log and the closed-trade ledger
+- **Start / stop / step** controls, with a pulsing indicator that answers "is it alive?" at a glance
 
-Every run started from the UI is written to `reports/<run-name>/` exactly like a
-CLI run, including `report.html`, so results stay reproducible and shareable.
-The HTML and Markdown reports are Chinese too.
+The palette is deliberately narrow: a deep neutral ground, amber for anything
+the eye must catch, green/red strictly for profit and loss, and one saturated
+red surface reserved for the live-money badge. Numbers use tabular figures so
+columns do not jitter as they tick.
+
+The session is **paper by default**: fills are simulated locally and no order
+leaves the machine. Real orders need the 实盘下单 checkbox *and* the confirmation
+phrase `确认实盘` typed in the box that appears, *and* `BINANCE_API_KEY` /
+`BINANCE_SECRET_KEY` in the environment. Missing any of the three fails the
+start with a message instead of trading.
+
+Session state is written to disk, so stopping and restarting resumes the same
+position, peak equity and risk-manager state rather than re-entering. The UI
+polls the session endpoint every few seconds while a session runs.
 
 The HTTP API behind it is small enough to script against:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/config` | effective config plus strategy metadata |
+| `GET` | `/api/session` | current session status: equity, position, cycle log, trades |
+| `POST` | `/api/session/start` | start the trading loop (`interval_seconds`, `execute`, `confirm`, `futures`, `leverage`, `state_path`) |
+| `POST` | `/api/session/stop` | stop the loop and persist state |
+| `POST` | `/api/session/step` | run exactly one cycle now |
 | `POST` | `/api/backtest` | run a backtest, persist it, return metrics and curves (add `"review": true` for an LLM post-mortem) |
 | `POST` | `/api/tune` | run the LLM parameter-tuning loop, return the round-by-round report |
 | `GET` | `/api/runs` | list saved runs, newest first |
@@ -145,16 +166,19 @@ The HTTP API behind it is small enough to script against:
 function, so a dashboard reachable over a network can never be stopped by an
 HTTP request.
 
-The two LLM features are wired into the UI: a **LLM 调参** button runs the
-`tune` loop on the current form values and renders the round log (baseline vs.
-best, and each proposal), and a **LLM 复盘** checkbox asks for a post-mortem on
-the backtest result. Both are no-ops when no model is configured, exactly like
-the CLI.
+The LLM features stay available from the CLI and from the JSON API; the console
+itself is focused on trading. `POST /api/backtest` still accepts `"review": true`
+for a post-mortem, and `POST /api/tune` still runs the tuning loop.
 
 ```powershell
-curl.exe -X POST http://localhost:8080/api/backtest `
+# paper session: simulate fills, no orders leave the machine
+curl.exe -X POST http://localhost:8080/api/session/start `
   -H "Content-Type: application/json" `
-  -d '{\"symbol\":\"BTCUSDT\",\"strategy\":\"breakout\",\"days\":900}'
+  -d '{\"symbol\":\"BTCUSDT\",\"strategy\":\"ma_cross\",\"days\":730,\"interval_seconds\":60}'
+
+# stop it, then inspect what happened
+curl.exe -X POST http://localhost:8080/api/session/stop
+curl.exe http://localhost:8080/api/session
 ```
 
 ## Commands

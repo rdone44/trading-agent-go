@@ -3,37 +3,145 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>trading-agent 交易研究台</title>
+<title>trading-agent 交易控制台</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<div class="shell">
+<div class="app">
 
-  <aside class="sidebar">
+  <header class="topbar">
     <div class="brand">
       <span class="mark">ta</span>
-      <div>
+      <div class="brand-text">
         <strong>trading-agent</strong>
         <small id="config-source">本地配置</small>
       </div>
-      <button type="button" id="quit-button" class="quit" title="关闭服务并退出" hidden>退出</button>
     </div>
 
-    <form id="run-form" autocomplete="off">
+    <div class="statusline">
+      <span class="dot" id="status-dot"></span>
+      <span class="statusline-text" id="topbar-state">待机</span>
+      <span class="badge" id="session-mode">纸面</span>
+      <span class="badge" id="session-state">已停止</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button type="button" id="config-toggle" class="btn ghost" aria-expanded="false" aria-controls="config-drawer">配置</button>
+      <button type="button" id="step-button" class="btn ghost" disabled>单步</button>
+      <button type="button" id="stop-button" class="btn ghost danger" disabled>停止</button>
+      <button type="submit" form="run-form" id="run-button" class="btn primary">开始交易</button>
+      <button type="button" id="quit-button" class="btn ghost" title="关闭服务并退出" hidden>退出</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+
+    <section class="onboarding" id="empty-state">
+      <p class="eyebrow">实盘交易控制台</p>
+      <h1>让引擎替你盯盘</h1>
+      <p class="lede">
+        选好交易对、策略与风控参数后点「开始交易」，引擎会按你设定的节奏轮询最新价，
+        按策略给出的目标仓位下单，并在每个周期重新校验止损、止盈与风控上限。
+        默认是纸面模拟，不会动用资金。
+      </p>
+      <div class="feature-grid">
+        <article>
+          <span class="num">01</span>
+          <h3>默认纸面交易</h3>
+          <p>不勾选「实盘下单」时，所有成交都在本地模拟，零资金风险。</p>
+        </article>
+        <article>
+          <span class="num">02</span>
+          <h3>风控优先</h3>
+          <p>止损、止盈、回撤熔断与单日亏损上限在每个周期都会重新校验。</p>
+        </article>
+        <article>
+          <span class="num">03</span>
+          <h3>断点续跑</h3>
+          <p>会话状态写入磁盘，重启后接着持仓继续，不会重复开仓。</p>
+        </article>
+      </div>
+      <button type="button" class="btn primary wide" id="onboarding-open">打开配置，开始交易</button>
+    </section>
+
+    <section id="session" hidden>
+
+      <section class="hero">
+        <div class="hero-main">
+          <p class="eyebrow" id="session-title">—</p>
+          <div class="hero-value" id="hero-equity">—</div>
+          <p class="hero-return">
+            <span id="hero-return">—</span>
+            <span class="sep">·</span>
+            <span class="muted">初始资金 <b id="hero-initial">—</b></span>
+          </p>
+          <p class="sub" id="session-sub"></p>
+        </div>
+        <figure class="spark">
+          <figcaption>权益走势</figcaption>
+          <div id="hero-spark"></div>
+        </figure>
+      </section>
+
+      <div class="stats" id="session-cards"></div>
+
+      <div class="split">
+        <section class="card">
+          <header class="card-head">
+            <h2>当前持仓</h2>
+            <span class="card-note" id="position-note"></span>
+          </header>
+          <div id="position-body"></div>
+        </section>
+
+        <section class="card log-card">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab active" data-tab="cycles" role="tab">运行日志 <span class="count" id="cycles-count">0</span></button>
+            <button type="button" class="tab" data-tab="trades" role="tab">成交记录 <span class="count" id="trades-count">0</span></button>
+          </div>
+          <div id="tab-body"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+  <aside class="drawer" id="config-drawer" aria-label="交易配置" aria-hidden="true">
+    <header class="drawer-head">
+      <div>
+        <h2>交易配置</h2>
+        <p class="sub">会话启动后配置即锁定，需停止后才能修改。</p>
+      </div>
+      <button type="button" class="icon-btn" id="drawer-close" title="关闭">✕</button>
+    </header>
+
+    <form id="run-form" autocomplete="off" class="drawer-body">
+
       <fieldset>
-        <legend>标的与数据</legend>
+        <legend>标的与节奏</legend>
         <label class="field">
           <span>交易对</span>
           <input name="symbol" value="BTCUSDT" spellcheck="false">
         </label>
-        <p class="hint">Binance 现货交易对，例如 <code>BTCUSDT</code>（也接受 <code>btc-usdt</code>）</p>
-        <label class="field">
-          <span>历史区间</span>
-          <div class="inline">
-            <input name="days" type="number" min="30" max="5000" step="1" value="730">
-            <span class="unit">天</span>
-          </div>
-        </label>
+        <p class="hint">Binance 交易对，例如 <code>BTCUSDT</code>（也接受 <code>btc-usdt</code>）</p>
+        <div class="grid2">
+          <label class="field">
+            <span>回看区间</span>
+            <div class="inline">
+              <input name="days" type="number" min="30" max="5000" step="1" value="400">
+              <span class="unit">天</span>
+            </div>
+          </label>
+          <label class="field">
+            <span>轮询间隔</span>
+            <div class="inline">
+              <input name="interval_seconds" type="number" min="5" max="86400" step="5" value="60">
+              <span class="unit">秒</span>
+            </div>
+          </label>
+        </div>
+        <p class="hint">引擎按日线决策，默认每分钟轮询一次最新价，用于盯住止损与止盈。</p>
       </fieldset>
 
       <fieldset>
@@ -44,6 +152,22 @@
         </label>
         <p class="hint" id="strategy-description"></p>
         <div id="strategy-params" class="params"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>交易场所</legend>
+        <label class="check">
+          <input name="futures" type="checkbox">
+          <span>USDT 永续合约</span>
+        </label>
+        <p class="hint">不勾选为现货。合约支持做空，并可用杠杆。</p>
+        <label class="field" id="leverage-field" hidden>
+          <span>杠杆倍数</span>
+          <div class="inline">
+            <input name="leverage" type="number" min="1" max="125" step="1" value="1">
+            <span class="unit">倍</span>
+          </div>
+        </label>
       </fieldset>
 
       <fieldset>
@@ -93,100 +217,32 @@
         </label>
       </fieldset>
 
-      <button type="submit" id="run-button">开始回测</button>
-      <div class="inline-actions">
-        <button type="button" id="tune-button" class="ghost">LLM 调参</button>
-        <label class="check inline">
-          <input name="review" type="checkbox">
-          <span>LLM 复盘</span>
+      <fieldset class="danger-zone">
+        <legend>实盘开关</legend>
+        <label class="check danger">
+          <input name="execute" type="checkbox">
+          <span>实盘下单（真实资金）</span>
         </label>
+        <p class="hint">不勾选则只做纸面模拟，所有成交都在本地模拟，不会动用资金。</p>
+        <div id="live-confirm" hidden>
+          <label class="field">
+            <span>输入「确认实盘」以解锁</span>
+            <input name="confirm" spellcheck="false" placeholder="确认实盘">
+          </label>
+          <p class="hint warn">
+            将使用环境变量 BINANCE_API_KEY / BINANCE_SECRET_KEY 下达真实订单，
+            成交即不可撤销。请先确认策略与风控参数无误。
+          </p>
+        </div>
+      </fieldset>
+
+      <div class="drawer-actions">
+        <button type="submit" class="btn primary wide" id="drawer-run">开始交易</button>
       </div>
-      <p class="status" id="status" hidden></p>
     </form>
   </aside>
 
-  <main class="main">
-    <section class="panel" id="empty-state">
-      <h1>回测工作台</h1>
-      <p class="lede">
-        在左侧选好标的、策略和风控参数，点击「开始回测」。引擎会加载行情、
-        生成目标仓位、按风控规则计算每笔头寸大小，再通过模拟撮合成交，
-        最后把结果汇总在这里。
-      </p>
-      <div class="empty-grid">
-        <div>
-          <h3>无未来函数</h3>
-          <p>信号在收盘时确定，下一根开盘价成交。</p>
-        </div>
-        <div>
-          <h3>计入交易摩擦</h3>
-          <p>包含手续费、滑点、最小变动单位和最小下单金额。</p>
-        </div>
-        <div>
-          <h3>风控优先</h3>
-          <p>固定比例仓位、保护性止损，以及回撤熔断开关。</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" id="results" hidden>
-      <header class="results-head">
-        <div>
-          <h1 id="result-title">—</h1>
-          <p class="sub" id="result-sub"></p>
-        </div>
-        <div class="actions">
-          <a id="report-link" class="button ghost" href="#" target="_blank" rel="noopener">打开完整报告</a>
-        </div>
-      </header>
-
-      <div class="cards" id="cards"></div>
-
-      <div class="charts">
-        <figure>
-          <figcaption>资金曲线 <span id="equity-range" class="muted"></span></figcaption>
-          <div id="equity-chart" class="chart"></div>
-        </figure>
-        <figure>
-          <figcaption>回撤</figcaption>
-          <div id="drawdown-chart" class="chart short"></div>
-        </figure>
-      </div>
-
-      <div class="tabs">
-        <button class="tab active" data-tab="trades">成交明细 <span class="count" id="trades-count">0</span></button>
-        <button class="tab" data-tab="orders">委托流水 <span class="count" id="orders-count">0</span></button>
-        <button class="tab" data-tab="risk">风控事件 <span class="count" id="risk-count">0</span></button>
-        <button class="tab" data-tab="metrics">全部指标</button>
-      </div>
-      <div id="tab-body"></div>
-
-      <section id="review-panel" class="review-panel" hidden>
-        <h2>LLM 复盘</h2>
-        <p id="review-text" class="review-text"></p>
-      </section>
-    </section>
-
-    <section class="panel" id="tune-results" hidden>
-      <header class="results-head">
-        <div>
-          <h1>LLM 调参</h1>
-          <p class="sub" id="tune-sub"></p>
-        </div>
-      </header>
-      <div class="cards" id="tune-cards"></div>
-      <div id="tune-rounds" class="tune-rounds"></div>
-      <p class="muted" id="tune-note" hidden></p>
-    </section>
-
-    <section class="panel">
-      <header class="results-head">
-        <h2>历史回测</h2>
-        <button class="button ghost small" id="refresh-runs">刷新</button>
-      </header>
-      <div id="runs-list" class="runs"></div>
-    </section>
-  </main>
+  <p class="status" id="status" hidden></p>
 </div>
 
 <script src="/app.js"></script>

@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // Decision is the answer to "may I open a new position?".

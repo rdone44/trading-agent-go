@@ -15,13 +15,13 @@ import (
 	"math"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/broker"
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/metrics"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/portfolio"
-	"github.com/huijun/trading-agent-go/internal/risk"
-	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/broker"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/portfolio"
+	"github.com/rdone44/trading-agent-go/internal/risk"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
 )
 
 // Trade is one closed round trip.

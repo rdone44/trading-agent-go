@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // countingStub returns an OpenAI-compatible stub that counts endpoint hits

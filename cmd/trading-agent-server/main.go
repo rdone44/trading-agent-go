@@ -27,8 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/webui"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/webui"
 )
 
 func main() {

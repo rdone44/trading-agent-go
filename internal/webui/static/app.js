@@ -1,16 +1,21 @@
 "use strict";
 
+// The trading console: configure a session in the drawer, watch every decision
+// cycle, and stop it. It polls /api/session rather than pushing, so a dropped
+// connection costs one stale interval instead of a silent gap in the log.
+
 // ------------------------------------------------------------------ helpers
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const fmt = {
-  money: (v) => (v == null ? "n/a" : v.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })),
-  num: (v, digits = 2) => (v == null ? "n/a" : v.toFixed(digits)),
-  pct: (v, digits = 2) => (v == null ? "n/a" : `${v >= 0 ? "" : ""}${v.toFixed(digits)}%`),
-  signedPct: (v, digits = 2) => (v == null ? "n/a" : `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`),
-  qty: (v) => (v == null ? "n/a" : v.toLocaleString(undefined, { maximumFractionDigits: 4 })),
+  money: (v) => (v == null || Number.isNaN(v) ? "—" : v.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })),
+  num: (v, digits = 2) => (v == null || Number.isNaN(v) ? "—" : v.toFixed(digits)),
+  pct: (v, digits = 2) => (v == null || Number.isNaN(v) ? "—" : `${v.toFixed(digits)}%`),
+  signedPct: (v, digits = 2) => (v == null || Number.isNaN(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`),
+  qty: (v) => (v == null ? "—" : v.toLocaleString(undefined, { maximumFractionDigits: 6 })),
+  time: (iso) => (iso ? new Date(iso).toLocaleString() : "—"),
 };
 
 // The engine emits stable English codes; the UI shows Chinese labels.
@@ -23,45 +28,24 @@ const reasonLabel = {
   stop_loss: "止损",
   take_profit: "止盈",
   "end of backtest": "回测结束平仓",
-};
-
-const riskTypeLabel = {
-  halt: "熔断停止交易",
-  daily_loss_limit: "单日亏损超限",
-};
-
-const metricLabel = {
-  initial_cash: "初始资金",
-  final_equity: "期末权益",
-  total_return_pct: "总收益率",
-  annual_return_pct: "年化收益率",
-  annual_volatility_pct: "年化波动率",
-  sharpe: "夏普比率",
-  sortino: "索提诺比率",
-  max_drawdown_pct: "最大回撤",
-  calmar: "卡玛比率",
-  exposure_pct: "持仓暴露",
-  num_trades: "成交笔数",
-  win_rate_pct: "胜率",
-  profit_factor: "盈亏比",
-  avg_win: "平均盈利",
-  avg_loss: "平均亏损",
-  expectancy: "单笔期望",
-  total_fees: "总费用",
+  hold: "持仓观望",
+  flat: "空仓观望",
+  startup: "启动",
 };
 
 // translateReason covers the parameterised codes ("risk halt: ...") as well as
 // the fixed ones, and falls back to the raw string so nothing is ever hidden.
 function translateReason(reason) {
   if (!reason) return "";
-  if (reason.startsWith("risk halt: ")) return `风控熔断：${translateReason(reason.slice("risk halt: ".length))}`;
   if (reasonLabel[reason]) return reasonLabel[reason];
+  if (reason.startsWith("risk halt: ")) return `风控熔断：${translateReason(reason.slice("risk halt: ".length))}`;
   if (reason.startsWith("max drawdown breached")) return "触发最大回撤限制";
   if (reason.startsWith("daily loss ")) return "单日亏损超限，暂停开仓";
+  if (reason.startsWith("veto")) return `模型否决：${reason}`;
   return reason;
 }
 
-const signClass = (v) => (v == null ? "" : v >= 0 ? "pos" : "neg");
+const signClass = (v) => (v == null || Number.isNaN(v) ? "" : v >= 0 ? "pos" : "neg");
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -70,87 +54,19 @@ async function api(path, options) {
   return payload;
 }
 
-// ------------------------------------------------------------------- charts
-
-// lineChart renders a responsive SVG line chart with an optional filled area
-// and a baseline marker. Kept deliberately small: no charting library.
-function lineChart(container, points, options = {}) {
-  const {
-    value = (p) => p.equity,
-    color = "#1f5f5b",
-    fill = true,
-    zeroLine = false,
-    label = (v) => v.toFixed(0),
-    height: H = 250,
-  } = options;
-  // The viewBox matches the rendered aspect ratio, so the SVG scales
-  // uniformly and axis text is never stretched.
-  const W = 900, PAD = { top: 14, right: 14, bottom: 22, left: 54 };
-
-  if (!points || points.length < 2) {
-    container.innerHTML = '<p class="muted">数据点不足，无法绘制曲线。</p>';
-    return;
-  }
-
-  const values = points.map(value);
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (zeroLine) { min = Math.min(min, 0); max = Math.max(max, 0); }
-  if (min === max) { max = min + 1; }
-  const pad = (max - min) * 0.08;
-  min -= pad; max += pad;
-
-  const x = (i) => PAD.left + (W - PAD.left - PAD.right) * (i / (points.length - 1));
-  const y = (v) => PAD.top + (H - PAD.top - PAD.bottom) * (1 - (v - min) / (max - min));
-
-  const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(value(p)).toFixed(1)}`).join(" ");
-  const area = `${line} L${x(points.length - 1).toFixed(1)},${(H - PAD.bottom).toFixed(1)} L${PAD.left},${(H - PAD.bottom).toFixed(1)} Z`;
-
-  // Four horizontal gridlines with value labels.
-  const ticks = [];
-  for (let i = 0; i <= 3; i++) {
-    const v = min + ((max - min) * i) / 3;
-    const yy = y(v);
-    ticks.push(`<line x1="${PAD.left}" y1="${yy.toFixed(1)}" x2="${W - PAD.right}" y2="${yy.toFixed(1)}" stroke="#eceae4" stroke-width="1"/>`);
-    ticks.push(`<text x="${PAD.left - 8}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="#858b93" font-family="monospace">${label(v)}</text>`);
-  }
-
-  // First / last date labels.
-  const first = points[0].t, last = points[points.length - 1].t;
-  const axis = `
-    <text x="${PAD.left}" y="${H - 4}" font-size="10.5" fill="#858b93" font-family="monospace">${first}</text>
-    <text x="${W - PAD.right}" y="${H - 4}" text-anchor="end" font-size="10.5" fill="#858b93" font-family="monospace">${last}</text>`;
-
-  const baseline = zeroLine && min < 0 && max > 0
-    ? `<line x1="${PAD.left}" y1="${y(0).toFixed(1)}" x2="${W - PAD.right}" y2="${y(0).toFixed(1)}" stroke="#cfccc3" stroke-dasharray="4 4"/>`
-    : "";
-
-  const gradientId = `fill-${Math.random().toString(36).slice(2, 9)}`;
-  container.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role="img">
-      <defs>
-        <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="${color}" stop-opacity="0.20"/>
-          <stop offset="100%" stop-color="${color}" stop-opacity="0.02"/>
-        </linearGradient>
-      </defs>
-      ${ticks.join("")}
-      ${baseline}
-      ${fill ? `<path d="${area}" fill="url(#${gradientId})"/>` : ""}
-      <path d="${line}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/>
-      ${axis}
-    </svg>`;
-}
-
-// --------------------------------------------------------------- form logic
+// ------------------------------------------------------------------- state
 
 let strategies = [];
-let current = null;
-let activeTab = "trades";
+let activeTab = "cycles";
+let session = null;
+let pollTimer = null;
+let equitySeries = [];
 
 function strategyByName(name) {
   return strategies.find((s) => s.name === name);
 }
+
+// --------------------------------------------------------------- form logic
 
 function renderStrategyParams() {
   const spec = strategyByName($("#strategy-select").value);
@@ -169,6 +85,8 @@ function renderStrategyParams() {
   }
 }
 
+// collectRequest mirrors the fields the session start endpoint accepts. The
+// UI works in percent; the engine takes fractions.
 function collectRequest() {
   const form = $("#run-form");
   const params = {};
@@ -176,8 +94,6 @@ function collectRequest() {
     const value = Number(input.value);
     if (Number.isFinite(value)) params[input.dataset.param] = value;
   });
-
-  // The UI works in percent; the engine takes fractions.
   const pct = (name) => Number($(`[name="${name}"]`).value) / 100;
 
   return {
@@ -185,9 +101,12 @@ function collectRequest() {
     strategy: $('[name="strategy"]').value,
     params,
     days: Number($('[name="days"]').value) || 0,
+    interval_seconds: Number($('[name="interval_seconds"]').value) || 60,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
-    warmup_bars: 60,
-    review: $('[name="review"]').checked,
+    futures: $('[name="futures"]').checked,
+    leverage: Number($('[name="leverage"]').value) || 1,
+    execute: $('[name="execute"]').checked,
+    confirm: $('[name="confirm"]').value,
     risk: {
       max_position_pct: pct("max_position_pct"),
       max_risk_per_trade_pct: pct("max_risk_per_trade_pct"),
@@ -210,29 +129,143 @@ function setStatus(message, kind) {
   el.textContent = message;
 }
 
-// ------------------------------------------------------------------ render
+// ------------------------------------------------------------------ drawer
 
-function renderCards(m) {
-  const cards = [
-    { k: "总收益率", v: fmt.signedPct(m.total_return_pct), c: signClass(m.total_return_pct), d: `期末权益 ${fmt.money(m.final_equity)}` },
-    { k: "年化收益", v: fmt.signedPct(m.annual_return_pct), c: signClass(m.annual_return_pct), d: `波动率 ${fmt.pct(m.annual_volatility_pct)}` },
-    { k: "最大回撤", v: fmt.pct(m.max_drawdown_pct), c: "neg", d: `卡玛 ${fmt.num(m.calmar)}` },
-    { k: "夏普比率", v: fmt.num(m.sharpe), c: signClass(m.sharpe), d: `索提诺 ${fmt.num(m.sortino)}` },
-    { k: "成交笔数", v: String(m.num_trades ?? 0), d: `胜率 ${fmt.pct(m.win_rate_pct, 1)}` },
-    { k: "盈亏比", v: fmt.num(m.profit_factor), c: signClass((m.profit_factor ?? 0) - 1), d: `单笔期望 ${fmt.money(m.expectancy)}` },
-    { k: "持仓暴露", v: fmt.pct(m.exposure_pct, 1), d: "持有仓位的K线占比" },
-    { k: "总费用", v: fmt.money(m.total_fees), d: "手续费 + 滑点" },
-  ];
-  $("#cards").innerHTML = cards
-    .map((c) => `<div class="card"><div class="k">${c.k}</div><div class="v ${c.c || ""}">${c.v}</div><div class="d">${c.d}</div></div>`)
-    .join("");
+function setDrawer(open) {
+  const drawer = $("#config-drawer");
+  drawer.classList.toggle("open", open);
+  drawer.setAttribute("aria-hidden", String(!open));
+  $("#config-toggle").setAttribute("aria-expanded", String(open));
+  $("#drawer-backdrop").hidden = !open;
+  // Opening the form is the user's answer to whatever the banner complained
+  // about, so clear it instead of leaving a stale error over the inputs.
+  if (open && !(session && session.running)) setStatus("");
+  if (open) {
+    const first = $('[name="symbol"]');
+    if (first) first.focus({ preventScroll: true });
+  }
 }
 
+const drawerOpen = () => $("#config-drawer").classList.contains("open");
+
+// ------------------------------------------------------------------ render
+
 function table(headers, rows, emptyMessage) {
-  if (!rows.length) return `<p class="muted">${emptyMessage}</p>`;
+  if (!rows.length) return `<p class="empty-note" style="padding:16px">${emptyMessage}</p>`;
   const head = headers.map((h) => `<th class="${h.num ? "num" : ""}">${h.label}</th>`).join("");
   const body = rows.map((cells) => `<tr>${cells.join("")}</tr>`).join("");
   return `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+// The equity sparkline is the only chart: it answers "which way is it going?"
+// at a glance without competing with the numbers for attention.
+function renderSpark(series) {
+  const host = $("#hero-spark");
+  if (series.length < 2) {
+    host.innerHTML = '<p class="empty-note">还没有足够的数据点。</p>';
+    return;
+  }
+  const w = 300, h = 78, pad = 3;
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const span = max - min || Math.max(Math.abs(max), 1) * 0.002;
+  const x = (i) => pad + (i / (series.length - 1)) * (w - pad * 2);
+  const y = (v) => h - pad - ((v - min) / span) * (h - pad * 2);
+
+  const line = series.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(series.length - 1).toFixed(1)} ${h - pad} L${x(0).toFixed(1)} ${h - pad} Z`;
+  const rising = series[series.length - 1] >= series[0];
+  const stroke = rising ? "var(--up)" : "var(--down)";
+  const id = rising ? "sparkUp" : "sparkDown";
+
+  host.innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="权益走势">
+      <defs>
+        <linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${stroke}" stop-opacity=".28"/>
+          <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="${area}" fill="url(#${id})"/>
+      <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${x(series.length - 1).toFixed(1)}" cy="${y(series[series.length - 1]).toFixed(1)}" r="2.6" fill="${stroke}"/>
+    </svg>`;
+}
+
+function renderHero(s) {
+  $("#session-title").textContent = `${s.symbol} · ${s.strategy}`;
+  $("#hero-equity").textContent = fmt.money(s.equity);
+  $("#hero-initial").textContent = fmt.money(s.initial_cash);
+
+  const ret = $("#hero-return");
+  ret.textContent = fmt.signedPct(s.total_return_pct);
+  ret.className = signClass(s.total_return_pct);
+
+  const venue = s.venue === "futures" ? `合约 ${s.leverage || 1}x` : "现货";
+  const state = s.running ? `运行中 · 已 ${s.cycles} 个周期` : `已停止 · 共 ${s.cycles} 个周期`;
+  $("#session-sub").textContent = `${venue} · 每 ${s.interval_seconds}s 轮询 · ${state}`;
+}
+
+function renderStats(s) {
+  const cards = [
+    { k: "可用现金", v: fmt.money(s.cash), d: "未占用部分" },
+    { k: "峰值权益", v: fmt.money(s.peak_equity), d: "历史最高" },
+    { k: "最新价", v: fmt.money(s.last_price), d: s.symbol },
+    { k: "运行周期", v: String(s.cycles ?? 0), d: `间隔 ${s.interval_seconds}s` },
+    { k: "最近动作", v: translateReason(s.last_action) || "—", d: fmt.time(s.last_tick) },
+  ];
+  $("#session-cards").innerHTML = cards
+    .map((c) => `<div class="stat"><div class="k">${c.k}</div><div class="v ${c.c || ""}">${c.v}</div><div class="d">${c.d}</div></div>`)
+    .join("");
+}
+
+function renderPosition(p) {
+  const host = $("#position-body");
+  const note = $("#position-note");
+  if (!p || !p.open) {
+    note.textContent = "";
+    host.innerHTML = '<p class="empty-note">当前空仓。引擎会在策略给出目标仓位时开仓。</p>';
+    return;
+  }
+
+  note.innerHTML = `<span class="pill ${p.side === "buy" ? "long" : "short"}">${sideLabel[p.side] || p.side}</span>`;
+  const fields = [
+    { k: "数量", v: fmt.qty(p.quantity) },
+    { k: "开仓价", v: fmt.money(p.entry_price) },
+    { k: "最新价", v: fmt.money(p.mark_price) },
+    { k: "浮动盈亏", v: `<span class="${signClass(p.unrealized)}">${fmt.money(p.unrealized)}</span>` },
+    { k: "止损价", v: p.stop_price ? fmt.money(p.stop_price) : "未设置" },
+    { k: "止盈价", v: p.target_price ? fmt.money(p.target_price) : "未设置" },
+    { k: "浮动收益率", v: `<span class="${signClass(p.return_pct)}">${fmt.signedPct(p.return_pct)}</span>` },
+    { k: "开仓时间", v: fmt.time(p.opened_at), wide: true },
+  ];
+  host.innerHTML = `<div class="kv">${fields
+    .map((f) => `<div><span class="k">${f.k}</span><span class="v ${f.wide ? "wide" : ""}">${f.v}</span></div>`)
+    .join("")}</div>`;
+}
+
+function renderCycles(log) {
+  // Newest first: the interesting row is always at the top.
+  const rows = [...log].reverse().map((c) => {
+    const action = c.error
+      ? `<span class="pill stop">错误</span>`
+      : `<span class="pill ${c.action === "hold" || c.action === "flat" ? "" : "long"}">${translateReason(c.action) || c.action}</span>`;
+    return [
+      `<td class="nowrap">${c.time}</td>`,
+      `<td class="tag">${action}</td>`,
+      `<td class="num">${c.price ? fmt.money(c.price) : "—"}</td>`,
+      `<td class="num">${fmt.money(c.equity)}</td>`,
+      `<td class="num">${fmt.money(c.cash)}</td>`,
+      `<td class="tag">${c.position || "空仓"}</td>`,
+      `<td class="tag">${c.error ? `<span class="muted">${c.error}</span>` : ""}</td>`,
+    ];
+  });
+  return table(
+    [{ label: "时间" }, { label: "动作" }, { label: "价格", num: true }, { label: "权益", num: true },
+     { label: "现金", num: true }, { label: "持仓" }, { label: "说明" }],
+    rows,
+    "还没有运行记录。点击「开始交易」或「单步」。"
+  );
 }
 
 function renderTrades(trades) {
@@ -245,162 +278,99 @@ function renderTrades(trades) {
     `<td class="num">${fmt.money(t.exit_price)}</td>`,
     `<td class="num ${signClass(t.pnl)}">${fmt.money(t.pnl)}</td>`,
     `<td class="num ${signClass(t.return_pct)}">${fmt.signedPct(t.return_pct)}</td>`,
-    `<td class="tag"><span class="pill ${t.reason.includes("stop") ? "stop" : ""}">${translateReason(t.reason)}</span></td>`,
+    `<td class="tag"><span class="pill ${String(t.reason).includes("stop") ? "stop" : ""}">${translateReason(t.reason)}</span></td>`,
   ]);
   return table(
-    [{ label: "开仓日" }, { label: "平仓日" }, { label: "方向" }, { label: "数量", num: true },
+    [{ label: "开仓时间" }, { label: "平仓时间" }, { label: "方向" }, { label: "数量", num: true },
      { label: "开仓价", num: true }, { label: "平仓价", num: true }, { label: "盈亏", num: true },
      { label: "收益率", num: true }, { label: "离场原因" }],
     rows,
-    "没有已平仓的交易：该策略在这段区间内没有开过仓。"
+    "本次会话还没有已平仓的交易。"
   );
-}
-
-function renderOrders(orders) {
-  const rows = orders.map((o) => [
-    `<td>${o.time}</td>`,
-    `<td class="tag"><span class="pill ${o.side === "buy" ? "long" : "short"}">${sideLabel[o.side] || o.side}</span></td>`,
-    `<td class="num">${fmt.qty(o.quantity)}</td>`,
-    `<td class="num">${fmt.money(o.price)}</td>`,
-    `<td class="num">${fmt.money(o.quantity * o.price)}</td>`,
-    `<td class="tag">${translateReason(o.reason)}${o.rejected ? ' <span class="pill stop">已拒单</span>' : ""}</td>`,
-  ]);
-  return table(
-    [{ label: "日期" }, { label: "方向" }, { label: "数量", num: true }, { label: "成交价", num: true },
-     { label: "成交额", num: true }, { label: "说明" }],
-    rows,
-    "本次回测没有发出任何委托。"
-  );
-}
-
-function renderRisk(events) {
-  const rows = events.map((e) => [
-    `<td>${e.time}</td>`,
-    `<td class="tag"><span class="pill ${e.type === "halt" ? "halt" : ""}">${riskTypeLabel[e.type] || e.type}</span></td>`,
-    `<td class="tag">${translateReason(e.reason)}</td>`,
-  ]);
-  return table(
-    [{ label: "日期" }, { label: "类型" }, { label: "详情" }],
-    rows,
-    "本次回测没有触发任何风控限制。"
-  );
-}
-
-function renderMetrics(m) {
-  const rows = Object.entries(m).map(([key, value]) => [
-    `<td>${metricLabel[key] || key.replaceAll("_", " ")}<span class="muted"> · ${key}</span></td>`,
-    `<td class="num">${value == null ? "n/a" : typeof value === "number" ? fmt.num(value, 6) : value}</td>`,
-  ]);
-  return table([{ label: "指标" }, { label: "数值", num: true }], rows, "没有指标数据。");
 }
 
 function renderTab() {
-  if (!current) return;
+  if (!session) return;
   const body = $("#tab-body");
-  if (activeTab === "trades") body.innerHTML = renderTrades(current.trades || []);
-  if (activeTab === "orders") body.innerHTML = renderOrders(current.orders || []);
-  if (activeTab === "risk") body.innerHTML = renderRisk(current.risk_events || []);
-  if (activeTab === "metrics") body.innerHTML = renderMetrics(current.metrics || {});
+  if (activeTab === "cycles") body.innerHTML = renderCycles(session.log || []);
+  if (activeTab === "trades") body.innerHTML = renderTrades(session.trades || []);
   $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === activeTab));
 }
 
-function renderResult(payload) {
-  current = payload;
-  $("#empty-state").hidden = true;
-  $("#results").hidden = false;
+function renderSession(s) {
+  session = s;
+  const started = s.cycles > 0 || s.running;
+  $("#empty-state").hidden = started;
+  $("#session").hidden = !started;
+  if (!started) return;
 
-  $("#result-title").textContent = `${payload.symbol} · ${payload.strategy}`;
-  $("#result-sub").textContent =
-    `${payload.data_source} 数据 · ${payload.start} → ${payload.end} · ${payload.bars} 根K线 · 任务 ${payload.run_name}`;
-  $("#report-link").href = payload.report_url;
+  // Keep one equity point per recorded cycle so the sparkline is a real
+  // history rather than a redraw of the same number.
+  equitySeries = (s.log || []).map((c) => c.equity).filter((v) => Number.isFinite(v) && v > 0);
 
-  $("#trades-count").textContent = (payload.trades || []).length;
-  $("#orders-count").textContent = (payload.orders || []).length;
-  $("#risk-count").textContent = (payload.risk_events || []).length;
+  const mode = $("#session-mode");
+  mode.textContent = s.mode === "live" ? "实盘" : "纸面";
+  mode.className = `badge ${s.mode === "live" ? "live" : "paper"}`;
 
-  renderCards(payload.metrics);
+  const state = $("#session-state");
+  state.textContent = s.running ? "运行中" : "已停止";
+  state.className = `badge ${s.running ? "running" : "stopped"}`;
 
-  const equity = payload.equity || [];
-  if (equity.length > 1) {
-    $("#equity-range").textContent =
-      `${fmt.money(equity[0].equity)} → ${fmt.money(equity[equity.length - 1].equity)}`;
+  const dot = $("#status-dot");
+  const topState = $("#topbar-state");
+  if (s.last_error) {
+    dot.className = "dot error";
+    topState.textContent = `周期出错：${s.last_error}`;
+  } else if (s.running) {
+    dot.className = "dot live";
+    topState.textContent = `运行中 · ${s.symbol} · ${fmt.money(s.last_price)}`;
+  } else {
+    dot.className = "dot idle";
+    topState.textContent = s.cycles > 0 ? `已停止 · 共 ${s.cycles} 个周期` : "待机";
   }
-  lineChart($("#equity-chart"), equity, {
-    value: (p) => p.equity,
-    color: payload.metrics.total_return_pct >= 0 ? "#0f766e" : "#b42318",
-    label: (v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0),
-  });
-  lineChart($("#drawdown-chart"), equity, {
-    value: (p) => p.drawdown * 100,
-    color: "#b42318",
-    zeroLine: true,
-    height: 150,
-    label: (v) => `${v.toFixed(0)}%`,
-  });
 
-  renderReview(payload);
+  renderHero(s);
+  renderSpark(equitySeries);
+  renderStats(s);
+  renderPosition(s.position);
+
+  $("#cycles-count").textContent = (s.log || []).length;
+  $("#trades-count").textContent = (s.trades || []).length;
+
+  if (s.last_error) setStatus(`最近一次周期出错：${s.last_error}`, "error");
+  else if (s.running) setStatus("");
+
   renderTab();
 }
 
-// renderReview surfaces the LLM post-mortem if the run asked for one. A
-// backtest that requested a review but could not reach a model shows the
-// unavailability note instead of pretending nothing happened.
-function renderReview(payload) {
-  const panel = $("#review-panel");
-  const text = $("#review-text");
-  if (payload.review) {
-    text.textContent = payload.review;
-    text.classList.remove("unavailable");
-    panel.hidden = false;
-  } else if (payload.review_unavailable) {
-    text.textContent = `复盘不可用：${payload.review_unavailable}`;
-    text.classList.add("unavailable");
-    panel.hidden = false;
-  } else {
-    panel.hidden = true;
-    text.classList.remove("unavailable");
+// ---------------------------------------------------------------- session
+
+async function refreshSession() {
+  try {
+    const status = await api("/api/session");
+    renderSession(status);
+    setRunningUi(status.running);
+    // Poll fast while a loop is live, slowly when idle so an open tab does not
+    // hammer the server for a session that is not running.
+    schedulePoll(status.running ? 3000 : 15000);
+  } catch (error) {
+    setStatus(`无法读取会话状态：${error.message}`, "error");
+    schedulePoll(15000);
   }
 }
 
-async function loadRuns() {
-  const host = $("#runs-list");
-  try {
-    const runs = await api("/api/runs");
-    if (!runs.length) {
-      host.innerHTML = '<p class="muted">还没有保存的回测记录，运行一次就会出现在这里。</p>';
-      return;
-    }
-    host.innerHTML = runs.slice(0, 12).map((run) => {
-      const ret = run.metrics.total_return_pct;
-      return `
-        <button class="run" data-run="${run.name}">
-          <div class="top">
-            <span class="sym">${run.symbol}</span>
-            <span class="ret ${signClass(ret)}">${fmt.signedPct(ret)}</span>
-          </div>
-          <div class="meta">${run.strategy} · ${run.data_source}</div>
-          <div class="meta">${run.start} → ${run.end} · ${run.bars} 根K线</div>
-          <div class="meta">${run.metrics.num_trades} 笔成交 · 回撤 ${fmt.pct(run.metrics.max_drawdown_pct)}</div>
-        </button>`;
-    }).join("");
-    $$(".run", host).forEach((button) => {
-      button.addEventListener("click", () => openRun(button.dataset.run));
-    });
-  } catch (error) {
-    host.innerHTML = `<p class="muted">无法读取历史记录：${error.message}</p>`;
-  }
+function schedulePoll(delay) {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(refreshSession, delay);
 }
 
-async function openRun(name) {
-  setStatus(`正在载入 ${name}…`, "running");
-  try {
-    const payload = await api(`/api/run?name=${encodeURIComponent(name)}`);
-    renderResult(payload);
-    setStatus("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  } catch (error) {
-    setStatus(error.message, "error");
-  }
+function setRunningUi(running) {
+  $("#run-button").disabled = running;
+  $("#run-button").textContent = running ? "交易中…" : "开始交易";
+  $("#drawer-run").disabled = running;
+  $("#drawer-run").textContent = running ? "交易中…" : "开始交易";
+  $("#step-button").disabled = !running;
+  $("#stop-button").disabled = !running;
 }
 
 // ---------------------------------------------------------------- bootstrap
@@ -451,107 +421,93 @@ async function bootstrap() {
   $('[name="allow_short"]').checked = Boolean(risk.allow_short);
 
   renderStrategyParams();
-  await loadRuns();
+  await refreshSession();
 }
 
 $("#strategy-select").addEventListener("change", renderStrategyParams);
-$("#refresh-runs").addEventListener("click", loadRuns);
+
+// Leverage only exists on a perpetual venue, so the field follows the venue
+// toggle instead of being a permanently visible no-op.
+$('[name="futures"]').addEventListener("change", (event) => {
+  $("#leverage-field").hidden = !event.target.checked;
+  if (!event.target.checked) $('[name="leverage"]').value = 1;
+});
+
+// Arming real orders reveals the confirmation box and is deliberately noisy:
+// this is the only control in the UI that can move real money.
+$('[name="execute"]').addEventListener("change", (event) => {
+  $("#live-confirm").hidden = !event.target.checked;
+  if (!event.target.checked) $('[name="confirm"]').value = "";
+});
+
+// -------------------------------------------------------------- drawer wiring
+
+$("#config-toggle").addEventListener("click", () => setDrawer(!drawerOpen()));
+$("#drawer-close").addEventListener("click", () => setDrawer(false));
+$("#drawer-backdrop").addEventListener("click", () => setDrawer(false));
+$("#onboarding-open").addEventListener("click", () => setDrawer(true));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setDrawer(false);
+});
+
 $$(".tab").forEach((tab) => {
   tab.addEventListener("click", () => { activeTab = tab.dataset.tab; renderTab(); });
 });
 
 $("#run-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const button = $("#run-button");
-  button.disabled = true;
-  button.textContent = "回测中…";
-  setStatus("正在加载行情、生成信号并回放撮合…", "running");
+  setRunningUi(true);
+  setStatus("正在初始化交易会话：加载行情、恢复状态、校验持仓…", "running");
   try {
-    const payload = await api("/api/backtest", {
+    const payload = await api("/api/session/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectRequest()),
     });
-    renderResult(payload);
+    setDrawer(false);
+    renderSession(payload);
     setStatus("");
-    await loadRuns();
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    schedulePoll(3000);
   } catch (error) {
     setStatus(error.message, "error");
-  } finally {
-    button.disabled = false;
-    button.textContent = "开始回测";
+    setRunningUi(false);
   }
 });
 
-$("#tune-button").addEventListener("click", async () => {
-  const button = $("#tune-button");
-  button.disabled = true;
-  button.textContent = "调参中…";
-  setStatus("LLM 正在提出并回测新的参数组合…", "running");
+$("#step-button").addEventListener("click", async () => {
+  $("#step-button").disabled = true;
   try {
-    const report = await api("/api/tune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...collectRequest(), rounds: 4, objective: "sharpe", stall: 3 }),
-    });
-    renderTune(report);
-    setStatus("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const payload = await api("/api/session/step", { method: "POST" });
+    renderSession(payload);
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
-    button.disabled = false;
-    button.textContent = "LLM 调参";
+    $("#step-button").disabled = !session || !session.running;
   }
 });
 
-// renderTune shows the tuning outcome: the best round vs. baseline up top,
-// then the round-by-round log. When the model is not configured the loop
-// reports the baseline and a "skipped" note, which we surface plainly.
-function renderTune(report) {
-  $("#results").hidden = true;
-  $("#empty-state").hidden = true;
-  $("#tune-results").hidden = false;
-
-  $("#tune-sub").textContent =
-    `${report.symbol} · ${report.strategy} · 目标 ${report.objective} · ` +
-    `${report.rounds.length} 轮${report.early_stopped ? "（早停）" : ""}`;
-
-  const improved = report.best_value > report.baseline;
-  const cards = [
-    { k: "基线 " + report.objective, v: fmt.num(report.baseline), c: signClass(report.baseline), d: "调参起点" },
-    { k: "最佳 " + report.objective, v: fmt.num(report.best_value), c: signClass(report.best_value - report.baseline), d: improved ? `优于基线 ${fmt.num(report.best_value - report.baseline, 4)}` : "未超过基线" },
-  ];
-  $("#tune-cards").innerHTML = cards
-    .map((c) => `<div class="card"><div class="k">${c.k}</div><div class="v ${c.c || ""}">${c.v}</div><div class="d">${c.d}</div></div>`)
-    .join("");
-
-  const rounds = report.rounds
-    .map((r) => {
-      const star = r.improved ? "★ " : "";
-      const params = Object.entries(r.params || {})
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([k, v]) => `${k}=${v}`)
-        .join(" ");
-      const note = r.note ? ` <span class="muted">· ${r.note}</span>` : "";
-      const rationale = r.rationale ? `<div class="meta">${r.rationale}</div>` : "";
-      return `<div class="tune-round ${r.improved ? "win" : ""}">
-        <div class="top"><span class="sym">${r.index === 0 ? "基线" : "第 " + r.index + " 轮"}</span>
-          <span class="ret ${signClass(r.objective_value)}">${fmt.num(r.objective_value)}</span></div>
-        <div class="meta">${star}${params || "（默认参数）"}</div>${rationale}${note}
-      </div>`;
-    })
-    .join("");
-  $("#tune-rounds").innerHTML = rounds;
-
-  const note = $("#tune-note");
-  if (!report.llm_enabled) {
-    note.textContent = "未配置 LLM：本轮只跑了基线，没有生成新参数。设置 LLM_API_KEY 后重新调参。";
-    note.hidden = false;
-  } else {
-    note.hidden = true;
+$("#stop-button").addEventListener("click", async () => {
+  $("#stop-button").disabled = true;
+  setStatus("正在停止并保存会话状态…", "running");
+  try {
+    const payload = await api("/api/session/stop", { method: "POST" });
+    renderSession(payload);
+    setStatus("");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    setRunningUi(false);
   }
-}
+});
+
+// First paint: the workspace sections rise in sequence instead of snapping.
+requestAnimationFrame(() => {
+  ["#empty-state", "#session"].forEach((selector, i) => {
+    const el = $(selector);
+    if (!el) return;
+    el.classList.add("reveal");
+    el.style.animationDelay = `${i * 60}ms`;
+  });
+});
 
 bootstrap().catch((error) => setStatus(`无法加载配置：${error.message}`, "error"));

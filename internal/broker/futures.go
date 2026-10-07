@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/marketdata"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
 )
 
 // FuturesConfig configures a live futures broker.

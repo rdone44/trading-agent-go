@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/indicators"
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/indicators"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // Signals is the per-bar output of a strategy, aligned with the input series.

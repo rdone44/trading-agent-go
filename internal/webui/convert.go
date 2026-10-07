@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/huijun/trading-agent-go/internal/broker"
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/portfolio"
-	"github.com/huijun/trading-agent-go/internal/risk"
+	"github.com/rdone44/trading-agent-go/internal/broker"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/portfolio"
+	"github.com/rdone44/trading-agent-go/internal/risk"
 )
 
 // sampleEquity thins the equity curve for the chart while always keeping the

@@ -28,10 +28,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/indicators"
-	"github.com/huijun/trading-agent-go/internal/llm"
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/indicators"
+	"github.com/rdone44/trading-agent-go/internal/llm"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // LLM is a strategy that delegates its target-position decision to a model.

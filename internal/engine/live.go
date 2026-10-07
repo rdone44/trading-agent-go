@@ -7,9 +7,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/broker"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/broker"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
 )
 
 // StepResult describes what one live cycle did.

@@ -1,4 +1,4 @@
-module github.com/huijun/trading-agent-go
+module github.com/rdone44/trading-agent-go
 
 go 1.23
 

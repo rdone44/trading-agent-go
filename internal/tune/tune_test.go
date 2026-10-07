@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/metrics"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/testfx"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/testfx"
 )
 
 func ptrf(v float64) *float64 { return &v }

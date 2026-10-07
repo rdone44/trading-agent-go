@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // binanceEndpoint is the spot REST base. It is a variable so tests can point

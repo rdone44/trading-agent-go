@@ -19,17 +19,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/llm"
-	"github.com/huijun/trading-agent-go/internal/marketdata"
-	"github.com/huijun/trading-agent-go/internal/metrics"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/report"
-	"github.com/huijun/trading-agent-go/internal/strategy"
-	"github.com/huijun/trading-agent-go/internal/tune"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/llm"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/report"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/tune"
 )
 
 //go:embed static/*
@@ -55,6 +56,10 @@ type Server struct {
 	// uses it because the dashboard can be reached over a network; the local
 	// desktop build leaves it empty so the window just opens.
 	Token string
+	// session owns the live trading loop the console starts and stops. It is
+	// created lazily so a pure-backtest deployment never spins one up.
+	session     *Session
+	sessionOnce sync.Once
 	// SeriesLoader loads market data for a run. It defaults to the public
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
 	// suite never touches the network.
@@ -100,6 +105,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tune", s.handleTune)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/run", s.handleRunDetail)
+	// Trading-console routes: the live session, not a backtest.
+	mux.HandleFunc("/api/session", s.handleSession)
+	mux.HandleFunc("/api/session/start", s.handleSessionStart)
+	mux.HandleFunc("/api/session/stop", s.handleSessionStop)
+	mux.HandleFunc("/api/session/step", s.handleSessionStep)
 	// /healthz is what a systemd unit, a container probe or a load balancer
 	// polls; it touches no disk and no network, so it stays cheap.
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -167,6 +177,121 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// Session returns the lazily-created trading session.
+func (s *Server) Session() *Session {
+	s.sessionOnce.Do(func() { s.session = NewSession() })
+	return s.session
+}
+
+// StartSessionRequest is the JSON body of /api/session/start.
+type StartSessionRequest struct {
+	BacktestRequest `json:",inline"`
+	// IntervalSeconds is the poll period. The engine decides on closed daily
+	// bars, so the default is a minute rather than seconds.
+	IntervalSeconds int `json:"interval_seconds"`
+	// Execute arms real orders. It additionally requires Confirm to equal the
+	// confirmation phrase and the exchange keys to be in the environment.
+	Execute bool   `json:"execute"`
+	Confirm string `json:"confirm"`
+	// Futures and Leverage select the perpetual venue.
+	Futures  bool `json:"futures"`
+	Leverage int  `json:"leverage"`
+	// StatePath persists the session so a restart resumes the position.
+	StatePath string `json:"state_path"`
+}
+
+// handleSession reports the current session state. The console polls it.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 GET 请求"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Session().Status())
+}
+
+// handleSessionStart begins the live trading loop.
+func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	var req StartSessionRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
+		return
+	}
+
+	cfg := s.applyRequest(req.BacktestRequest)
+	if req.Futures {
+		cfg.Live.Futures = true
+	}
+	if req.Leverage > 0 {
+		if req.Leverage < 1 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("杠杆必须 >= 1"))
+			return
+		}
+		cfg.Risk.Leverage = req.Leverage
+		// Leverage only exists on a perpetual venue.
+		if req.Leverage > 1 {
+			cfg.Live.Futures = true
+		}
+	}
+	// The live loop sizes positions against the same risk limits the form
+	// shows, so the request's overrides apply here too.
+	cfg.Agent.HistoryDays = cfg.Live.LookbackDays
+	if cfg.Agent.HistoryDays <= 0 {
+		cfg.Agent.HistoryDays = 400
+	}
+	if cfg.Live.StateFile == "" {
+		cfg.Live.StateFile = "trade-state.json"
+	}
+
+	statePath := req.StatePath
+	if statePath == "" {
+		statePath = cfg.Live.StateFile
+	}
+
+	err := s.Session().Start(StartOptions{
+		Config:    cfg,
+		Interval:  time.Duration(req.IntervalSeconds) * time.Second,
+		Execute:   req.Execute,
+		StatePath: statePath,
+		Confirm:   req.Confirm,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Session().Status())
+}
+
+// handleSessionStop ends the loop and persists the final state.
+func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	if err := s.Session().Stop(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Session().Status())
+}
+
+// handleSessionStep runs one cycle immediately instead of waiting for the
+// poll interval, which is what the 立即执行 button uses.
+func (s *Server) handleSessionStep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	if err := s.Session().Step(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Session().Status())
 }
 
 // handleShutdown stops the process. It is registered only when the desktop

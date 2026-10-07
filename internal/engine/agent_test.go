@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/strategy"
-	"github.com/huijun/trading-agent-go/internal/testfx"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/testfx"
 )
 
 func testConfig() config.Config {

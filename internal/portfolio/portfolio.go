@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/broker"
+	"github.com/rdone44/trading-agent-go/internal/broker"
 )
 
 // Position is a signed holding: positive is long, negative is short.

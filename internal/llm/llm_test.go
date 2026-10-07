@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // stubServer stands in for an OpenAI-compatible /chat/completions endpoint.

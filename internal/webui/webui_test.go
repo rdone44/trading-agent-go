@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/strategy"
-	"github.com/huijun/trading-agent-go/internal/testfx"
-	"github.com/huijun/trading-agent-go/internal/tune"
-	"github.com/huijun/trading-agent-go/internal/webui"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/testfx"
+	"github.com/rdone44/trading-agent-go/internal/tune"
+	"github.com/rdone44/trading-agent-go/internal/webui"
 )
 
 // fxLoader is the offline SeriesLoader: deterministic bars, no network.
@@ -45,7 +45,7 @@ func TestDashboardPageIsServed(t *testing.T) {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{"trading-agent", "开始回测", "/app.js", "/app.css"} {
+	for _, want := range []string{"trading-agent", "开始交易", "/app.js", "/app.css"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("index.html is missing %q", want)
 		}

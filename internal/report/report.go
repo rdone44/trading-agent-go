@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
 )
 
 // Paths lists the artifacts written by Write.

@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // A gap can leave a strategy stop above the entry price. That level is

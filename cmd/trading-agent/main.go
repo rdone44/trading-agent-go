@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/huijun/trading-agent-go/internal/cli"
+	"github.com/rdone44/trading-agent-go/internal/cli"
 )
 
 func main() {

@@ -12,7 +12,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // Bars returns `days` daily bars ending on the day before `end`. The series

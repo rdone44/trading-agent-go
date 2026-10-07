@@ -7,7 +7,7 @@ package indicators
 import (
 	"math"
 
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // SMA is a simple moving average; NaN until `period` values are available.

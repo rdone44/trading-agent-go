@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/model"
 )
 
 // fapiEndpoint is the USDT-margined futures REST base. It is a variable so

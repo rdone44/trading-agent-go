@@ -13,12 +13,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/huijun/trading-agent-go/internal/config"
-	"github.com/huijun/trading-agent-go/internal/engine"
-	"github.com/huijun/trading-agent-go/internal/llm"
-	"github.com/huijun/trading-agent-go/internal/metrics"
-	"github.com/huijun/trading-agent-go/internal/model"
-	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/engine"
+	"github.com/rdone44/trading-agent-go/internal/llm"
+	"github.com/rdone44/trading-agent-go/internal/metrics"
+	"github.com/rdone44/trading-agent-go/internal/model"
+	"github.com/rdone44/trading-agent-go/internal/strategy"
 )
 
 // Options configures one tuning run.

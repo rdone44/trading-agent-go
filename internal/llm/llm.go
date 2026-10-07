@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huijun/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/config"
 )
 
 // Client talks to one OpenAI-compatible /chat/completions endpoint.
@@ -175,5 +175,11 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	// Slice on a rune boundary: cutting bytes would split a multi-byte
+	// character and emit invalid UTF-8 into the error message.
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }

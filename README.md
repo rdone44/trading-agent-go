@@ -53,6 +53,20 @@ matches where it runs; `build.ps1` produces both.
 .\build.ps1 -Only server    # Linux only
 ```
 
+On a Linux host the equivalent is the `Makefile` (no PowerShell needed):
+
+```bash
+make build                  # compile every command
+make server                 # server edition into ./dist/trading-agent-server
+make test                   # go test ./...
+make e2e                    # P2-2 smoke: build + offline end-to-end test + full suite
+```
+
+`make e2e` boots the server edition's HTTP stack on a real listener with
+offline (stub) market data, drives it with a real HTTP client through
+`/healthz` → `/api/config` → a backtest, asserts every step is 200, then runs
+the full test suite. No real network, no LLM key, no live keys.
+
 | | Windows desktop | Linux server |
 | --- | --- | --- |
 | Binary | `trading-agent-desktop-windows-amd64.exe` | `trading-agent-server-linux-amd64` (also arm64) |

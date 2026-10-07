@@ -44,7 +44,11 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 现状：仓库自带 `build.ps1`（Windows）。Linux 侧没有等价脚本，`cmd/trading-agent-server` 是否能直接 `go build` 未在本机验证
 - 完成标准：`go test ./...` 全绿；产出可运行的 server 二进制；把 Linux 构建步骤补进 README
 - 认领：coding（单人重构，含原 muse 地盘）
-- 状态：open（P 级到达时做）
+- 状态：done（2026-10-08）
+- 落地：
+  1. `Makefile`（Linux 侧等价 build.ps1）：`build`/`server`/`test`/`e2e`/`clean`，`server` 目标 `go build -o dist/trading-agent-server ./cmd/trading-agent-server`。
+  2. 本机验证：`make server` 产出 13MB ELF x86-64（`file` 确认可执行）；`go test ./...` 18 包全绿。
+  3. README `## Two editions` 下补 Linux 的 `make build/server/test/e2e` 命令块。
 
 ### T2. 策略层
 
@@ -136,7 +140,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 | 任务 | 认领人 | 日期 | 状态 |
 | --- | --- | --- | --- |
-| T1 | coding（单人） | 2026-10-08 | open |
+| T1 | coding（单人） | 2026-10-08 | done |
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |

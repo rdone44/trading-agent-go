@@ -54,6 +54,7 @@
 ### P2-2 桌面/服务器 E2E 冒烟
 - 一个 `make e2e`（或 workflow 步骤）：起 server 版（TA_ALLOW_LIVE=0、stub 行情）→ `GET /api/config` → 跑一次 backtest → 断言 200。stub LLM 走既有 httptest 模式。
 - **验证**：本地跑通，零网络、零真 Binance。
+- **状态：done** — `Makefile` 新增 `e2e` 目标：`go build` server 二进制到 `dist/` → `go test ./internal/webui/ -run TestServerEditionE2ESmoke`（真 TCP 监听器 `httptest.NewServer` + 真 `http.Client` 打 `/healthz`→`/api/config`→`POST /api/backtest`，离线 testfx 行情，TA_ALLOW_LIVE 未设）→ `go test ./...` 全量回归。`make e2e` 本地全绿，产物为可执行 ELF。
 
 ## 约定（每轮任务都要守）
 

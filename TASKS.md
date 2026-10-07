@@ -73,7 +73,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 可做：补失败路径测试（超时、部分成交、拒单）、合约单向持仓校验
 - 约束：不削弱现有护栏。Hedge Mode 目前显式拒绝，不要静默放开
 - 认领：coding（钱路径：broker/live）
-- 状态：claimed — P0 最先做：交易所侧保护性止损 + execute env 开关（见 PLAN.md）
+- 状态：partial — P0-1 交易所侧保护性止损已落地（commit cbf151f，18 包全绿）：开仓后挂 closePosition 的 STOP_MARKET/TAKE_PROFIT_MARKET（MARK_PRICE、价格与本地 risk 同源），平仓前先撤单，reconcile 幂等补挂/清裸单，撤单失败 fail-safe、挂单失败 fail-open。P0-2 execute env 开关（TA_ALLOW_LIVE）尚未做。
 
 ### T6. 风控与组合记账
 
@@ -118,7 +118,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | open |
-| T5 | coding（broker/live 钱路径） | 2026-10-08 | claimed |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 done) |
 | T6 | coding（单人） | 2026-10-08 | open |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | claimed |
 | T8 | coding（单人） | 2026-10-08 | open |

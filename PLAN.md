@@ -41,7 +41,7 @@
 - **验证**：全离线 httptest；`CVFolds=0` 行为与现状逐字节一致（旧断言不改）。
 
 ### P1-2 CI（GitHub Actions）
-- **状态：partial（实现与本地验证 done，远端 CI 待验证）** — 新增 `.github/workflows/ci.yml`，push/PR/手动触发；Go 1.23.4 的 format/build/vet/test matrix，Windows amd64 desktop 与 Linux amd64/arm64 server 交叉构建；只读权限、action SHA 固定、禁实盘且不注入密钥。本地执行相同命令全部通过。远端 Actions/PR 状态尚未验证，不宣称 CI 已绿；未设置分支保护。
+- **状态：done（cfc7b5b）** — 新增 `.github/workflows/ci.yml`，push/PR/手动触发；Go 1.23.4 的 format/build/vet/test matrix，Windows amd64 desktop 与 Linux amd64/arm64 server 交叉构建；只读权限、action SHA 固定、禁实盘且不注入密钥。本地相同命令全部通过；fork/main 的 GitHub Actions run 37694155551 已读回 completed/success，7 个 job 全绿：https://github.com/rdone44/trading-agent-go/actions/runs/37694155551 。fork 无开放 PR，上游 PR #1 查询 404，未更新 PR 描述；未设置分支保护，因此不声称已强制阻止红灯合并。
 - `.github/workflows/ci.yml`：Go 1.23，matrix（build + vet + `go test ./...`），加 desktop/server 双端 `go build`。每次 PR 强制全绿。
 - **验证**：本地跑通 workflow 里同一段命令；推 PR 后看 CI 绿。
 

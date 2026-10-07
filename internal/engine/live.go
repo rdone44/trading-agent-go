@@ -9,6 +9,7 @@ import (
 
 	"github.com/huijun/trading-agent-go/internal/broker"
 	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/huijun/trading-agent-go/internal/strategy"
 )
 
 // StepResult describes what one live cycle did.
@@ -40,15 +41,24 @@ func (a *Agent) LiveStep(series model.Series, price float64, now time.Time) (Ste
 	}
 	a.Symbol = series.Symbol
 
-	signals, err := a.Strategy.Generate(series, a.Config)
-	if err != nil {
-		return StepResult{}, err
-	}
-	signals = signals.Normalize(series.Len())
+	// Strategies that are cheap over a whole series (the indicator ones)
+	// regenerate the full signal; expensive ones (the LLM) expose a
+	// single-decision path so a poll bills the model once instead of O(bars)
+	// times. Both yield the same (target, stop, target-price) triple.
 	n := series.Len()
-	target := signals.Signal[n-1]
-	stop := signals.Stop[n-1]
-	takeProfit := signals.TakeProfit[n-1]
+	var target, stop, takeProfit float64
+	if ld, ok := a.Strategy.(strategy.LiveDecision); ok {
+		target, stop, takeProfit = ld.LastDecision(series, a.Config)
+	} else {
+		signals, err := a.Strategy.Generate(series, a.Config)
+		if err != nil {
+			return StepResult{}, err
+		}
+		signals = signals.Normalize(n)
+		target = signals.Signal[n-1]
+		stop = signals.Stop[n-1]
+		takeProfit = signals.TakeProfit[n-1]
+	}
 
 	res := StepResult{}
 

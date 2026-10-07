@@ -53,6 +53,16 @@ type Strategy interface {
 	Describe() string
 }
 
+// LiveDecision is implemented by strategies that are expensive to regenerate
+// across a whole series — an LLM that would otherwise be called once per
+// historical bar on every live poll. The live loop asks such a strategy for a
+// single decision on the most recent bar instead of regenerating the full
+// signal, so a poll bills the model once rather than O(bars) times. Backtests
+// keep using Generate, which genuinely needs every bar.
+type LiveDecision interface {
+	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64)
+}
+
 // New builds a strategy by name.
 func New(name string, cfg config.Config) (Strategy, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {

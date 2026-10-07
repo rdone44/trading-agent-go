@@ -274,6 +274,13 @@ OpenAI-compatible endpoint works: set `llm.base_url` and `llm.model`.
 | LLM post-mortem | `backtest --review`, `trade --review` | `llm.*` | the report notes "LLM review unavailable" |
 | LLM tuning loop | `tune` | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
 
+In the live loop the LLM strategy takes a single-decision path
+(`LastDecision`): one model call per poll on the most recent bar, not a full
+per-bar regeneration across the lookback window. A 400-day lookback therefore
+costs one call a poll instead of ~400. Backtests keep the per-bar signal
+(`Generate`), which genuinely needs every bar; raise `llm_step` there to cap
+the model calls.
+
 The veto is **fail-open on purpose**: a disabled client, a transport error or an
 unparseable answer all let the trade through, so a down model can never
 silently block a stop-loss or risk-halt flatten. Only an explicit model

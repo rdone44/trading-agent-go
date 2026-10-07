@@ -235,3 +235,80 @@ func TestLiveStepShortProtectiveExit(t *testing.T) {
 		})
 	}
 }
+
+// countStrat is a strategy that records which seam the live loop used: the
+// full-signal Generate or the single-decision LastDecision. It is flat, so no
+// trades occur and the test stays focused on call counting.
+type countStrat struct {
+	generateCalls int
+	lastCalls     int
+}
+
+func (c *countStrat) Name() string     { return "count" }
+func (c *countStrat) Describe() string { return "count" }
+
+func (c *countStrat) Generate(s model.Series, cfg config.Config) (strategy.Signals, error) {
+	c.generateCalls++
+	return strategy.Signals{Signal: make([]float64, s.Len())}, nil
+}
+
+func (c *countStrat) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64) {
+	c.lastCalls++
+	return 0, math.NaN(), math.NaN()
+}
+
+// TestLiveStepUsesSingleDecisionForExpensiveStrategy locks the P0 guarantee:
+// a strategy that exposes a single-decision path (like the LLM one) is billed
+// exactly one model call per live poll, even when the runner feeds a long
+// lookback. Regenerating the full per-bar signal would cost O(bars) calls.
+func TestLiveStepUsesSingleDecisionForExpensiveStrategy(t *testing.T) {
+	cfg := testConfig()
+	// 400 bars mirrors a realistic live lookback window.
+	series := testfx.Bars(cfg.Agent.Symbol, 400, 7, time.Now().UTC())
+
+	s := &countStrat{}
+	agent := engine.NewWithBroker(cfg, s,
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+
+	price := series.Close()[series.Len()-1]
+	if _, err := agent.LiveStep(series, price, time.Now()); err != nil {
+		t.Fatalf("LiveStep: %v", err)
+	}
+	if s.lastCalls != 1 {
+		t.Fatalf("LastDecision called %d times, want exactly 1 (single-decision path)", s.lastCalls)
+	}
+	if s.generateCalls != 0 {
+		t.Fatalf("Generate called %d times; an expensive strategy must not regenerate the full signal on a live poll", s.generateCalls)
+	}
+}
+
+// TestLiveStepFallsBackToGenerateForPlainStrategy confirms the cheap
+// indicator strategies still go through the full-signal path (they do not
+// implement the single-decision seam), so this change is strictly additive.
+type plainStrat struct {
+	generateCalls int
+}
+
+func (p *plainStrat) Name() string     { return "plain" }
+func (p *plainStrat) Describe() string { return "plain" }
+
+func (p *plainStrat) Generate(s model.Series, cfg config.Config) (strategy.Signals, error) {
+	p.generateCalls++
+	return strategy.Signals{Signal: make([]float64, s.Len())}, nil
+}
+
+func TestLiveStepFallsBackToGenerateForPlainStrategy(t *testing.T) {
+	cfg := testConfig()
+	series := testfx.Bars(cfg.Agent.Symbol, 400, 7, time.Now().UTC())
+
+	p := &plainStrat{}
+	agent := engine.NewWithBroker(cfg, p,
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+
+	if _, err := agent.LiveStep(series, series.Close()[series.Len()-1], time.Now()); err != nil {
+		t.Fatalf("LiveStep: %v", err)
+	}
+	if p.generateCalls != 1 {
+		t.Fatalf("plain strategy: Generate called %d times, want 1 (full-signal fallback)", p.generateCalls)
+	}
+}

@@ -13,6 +13,12 @@
 // Without an API key the strategy degrades to an all-flat signal rather than
 // failing the run, so a backtest without a key still produces a coherent
 // equity curve and can be inspected.
+//
+// The indicators (SMA, RSI, ATR) are cheap and are always computed over the
+// whole series; only the model call is expensive. LastDecision — used by the
+// live loop — asks the model for one decision on the most recent bar instead
+// of regenerating a per-bar signal across every historical bar, so a poll
+// bills the model once rather than O(bars) times.
 package strategy
 
 import (
@@ -42,20 +48,46 @@ func (LLM) Name() string { return "llm" }
 
 func (LLM) Describe() string { return "llm" }
 
+// llmIndicators bundles the cheap per-bar indicator series so they can be
+// computed once and shared between the full-signal path (Generate) and the
+// single-decision path (LastDecision).
+type llmIndicators struct {
+	fast, slow, atrPeriod, rsiPeriod int
+	smaF, smaS, rsi, atr             []float64
+}
+
+// buildIndicators computes the indicator series and the parameters that shape
+// the prompt. It is pure arithmetic (no model call), so it is cheap even on a
+// long lookback window.
+func buildIndicators(series model.Series, cfg config.Config) llmIndicators {
+	close := series.Close()
+	high, low := series.High(), series.Low()
+	fast := cfg.IntParam("fast", 10)
+	slow := cfg.IntParam("slow", 30)
+	rsiPeriod := cfg.IntParam("period", 14)
+	atrPeriod := cfg.IntParam("atr_period", 14)
+	return llmIndicators{
+		fast: fast, slow: slow, atrPeriod: atrPeriod, rsiPeriod: rsiPeriod,
+		smaF: indicators.SMA(close, fast), smaS: indicators.SMA(close, slow),
+		rsi: indicators.RSI(close, rsiPeriod), atr: indicators.ATR(high, low, close, atrPeriod),
+	}
+}
+
+// resolver returns the model call and whether the strategy is usable at all
+// (a usable strategy can also be a stub injected for tests).
+func (s LLM) resolver(cfg config.Config) (func(string, string) (string, error), bool) {
+	if s.ask != nil {
+		return s.ask, s.enabled
+	}
+	client := llm.New(cfg.LLM)
+	return client.Complete, client.Enabled()
+}
+
 // Generate walks the series with a causal window and, on the bars it chooses
 // to call the model on, asks for a target position. Answers are
 // forward-filled so the engine sees a complete per-bar signal.
 func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
-	// Pick the model call and whether it is usable at all.
-	var ask func(string, string) (string, error)
-	enabled := true
-	if s.ask != nil {
-		ask, enabled = s.ask, s.enabled
-	} else {
-		client := llm.New(cfg.LLM)
-		enabled = client.Enabled()
-		ask = client.Complete
-	}
+	ask, enabled := s.resolver(cfg)
 
 	n := series.Len()
 	if n == 0 {
@@ -67,6 +99,8 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 		return Signals{Signal: make([]float64, n)}, nil
 	}
 
+	ind := buildIndicators(series, cfg)
+
 	window := cfg.IntParam("llm_window", 30)
 	if window < 5 {
 		window = 5
@@ -75,31 +109,23 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 	if step < 1 {
 		step = 1
 	}
-	fast := cfg.IntParam("fast", 10)
-	slow := cfg.IntParam("slow", 30)
-	period := cfg.IntParam("period", 14)
-
-	close := series.Close()
-	high, low := series.High(), series.Low()
-	smaF, smaS := indicators.SMA(close, fast), indicators.SMA(close, slow)
-	rsi := indicators.RSI(close, period)
-	atr := indicators.ATR(high, low, close, period)
 
 	sig, stop, target := make([]float64, n), make([]float64, n), make([]float64, n)
 	for i := range sig {
 		sig[i], stop[i], target[i] = math.NaN(), math.NaN(), math.NaN()
 	}
 
-	for i := 0; i < n; i++ {
-		if i%step != 0 || i < slow { // skip warm-up and held-back bars
+	// warm-up: skip until the slowest indicator is defined.
+	start := ind.slow
+	if start >= n {
+		start = n - 1
+	}
+
+	for i := start; i < n; i++ {
+		if i%step != 0 {
 			continue
 		}
-		user := llmUserPrompt(series.Symbol, i, window, fast, slow, close, smaF, smaS, rsi, atr)
-		answer, err := ask(llmSystemPrompt(cfg), user)
-		if err != nil {
-			return Signals{}, fmt.Errorf("llm 策略在第 %d 根K线调用模型失败: %w", i, err)
-		}
-		pos, sp, tp, ok := parseLLMAnswer(answer)
+		pos, sp, tp, ok := s.decideAt(ask, series, cfg, ind, i, window)
 		if !ok {
 			continue // unusable answer: hold the previous state
 		}
@@ -117,6 +143,44 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 		Stop:       forwardFill(stop, math.NaN()),
 		TakeProfit: forwardFill(target, math.NaN()),
 	}, nil
+}
+
+// LastDecision answers the live loop's question: what position would the
+// strategy take right now, given the most recent bar? It is a single model
+// call — not a full per-bar regeneration — so a poll bills the model once.
+//
+// A model error or a missing key degrades to flat (0, NaN, NaN) rather than
+// erroring: the live loop must stay alive when the model is down, exactly the
+// fail-open philosophy the entry veto uses. A flat answer is always a safe
+// no-op for the engine.
+func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64) {
+	ask, enabled := s.resolver(cfg)
+	if !enabled || series.Len() == 0 {
+		return 0, math.NaN(), math.NaN()
+	}
+	ind := buildIndicators(series, cfg)
+	window := cfg.IntParam("llm_window", 30)
+	if window < 5 {
+		window = 5
+	}
+	pos, sp, tp, ok := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
+	if !ok {
+		return 0, math.NaN(), math.NaN()
+	}
+	return pos, sp, tp
+}
+
+// decideAt asks the model for one target-position decision on bar i and
+// returns the snapped position plus any stop/target it supplied. ok is false
+// when the model could not be called or its answer did not parse, in which
+// case the caller holds the previous state.
+func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, ok bool) {
+	user := llmUserPrompt(series.Symbol, i, window, series.Close(), ind)
+	answer, err := ask(llmSystemPrompt(cfg), user)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return parseLLMAnswer(answer)
 }
 
 // parseLLMAnswer extracts {position, stop, target} from a model reply. The
@@ -145,8 +209,16 @@ func parseLLMAnswer(answer string) (position, stop, target float64, ok bool) {
 	default:
 		pos = 0
 	}
+	// Missing stop/target come back as the JSON null / empty number; treat a
+	// non-finite value as "no level" so the engine falls back to its own.
 	sp, _ := payload.Stop.Float64()
 	tp, _ := payload.Target.Float64()
+	if math.IsNaN(sp) || math.IsInf(sp, 0) {
+		sp = 0
+	}
+	if math.IsNaN(tp) || math.IsInf(tp, 0) {
+		tp = 0
+	}
 	return pos, sp, tp, true
 }
 
@@ -187,8 +259,9 @@ func llmSystemPrompt(cfg config.Config) string {
 }
 
 // llmUserPrompt renders one causal snapshot as compact text: the recent close
-// path plus the current indicator readings.
-func llmUserPrompt(symbol string, i, window, fast, slow int, close, smaF, smaS, rsi, atr []float64) string {
+// path plus the current indicator readings. The indicator periods are the
+// ones actually configured, so the labels the model reads are honest.
+func llmUserPrompt(symbol string, i, window int, close []float64, ind llmIndicators) string {
 	lo := i - window + 1
 	if lo < 0 {
 		lo = 0
@@ -202,8 +275,8 @@ func llmUserPrompt(symbol string, i, window, fast, slow int, close, smaF, smaS, 
 			"SMA%d=%s SMA%d=%s RSI%d=%s ATR%d=%s last_close=%s\n"+
 			"Symbol=%s bar_index=%d",
 		i-lo+1, strings.Join(seg, ","),
-		fast, fmtNum(smaF[i], 2), slow, fmtNum(smaS[i], 2),
-		14, fmtNum(rsi[i], 1), 14, fmtNum(atr[i], 2), fmtNum(close[i], 2),
+		ind.fast, fmtNum(ind.smaF[i], 2), ind.slow, fmtNum(ind.smaS[i], 2),
+		ind.rsiPeriod, fmtNum(ind.rsi[i], 1), ind.atrPeriod, fmtNum(ind.atr[i], 2), fmtNum(close[i], 2),
 		symbol, i,
 	)
 }

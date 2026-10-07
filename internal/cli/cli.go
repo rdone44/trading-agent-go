@@ -611,6 +611,7 @@ func runTune(args []string) int {
 	var f flags
 	bind(fs, &f)
 
+	cv := fs.Int("cv", 0, "disjoint cross-validation folds plus a final holdout (0 disables)")
 	rounds := fs.Int("rounds", 4, "number of LLM proposal rounds after the baseline")
 	objective := fs.String("objective", "sharpe", "metric to maximize: sharpe, sortino, total_return, profit_factor, win_rate")
 	saveBest := fs.String("save-best", "", "write the best parameters into this YAML config path")
@@ -619,6 +620,9 @@ func runTune(args []string) int {
 
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *cv < 0 || *cv > 32 {
+		return fail(fmt.Errorf("cv folds must be between 0 and 32"))
 	}
 
 	cfg, err := loadConfig(f)
@@ -638,6 +642,7 @@ func runTune(args []string) int {
 		Rounds:    *rounds,
 		Stall:     *stall,
 		NoClamp:   *noClamp,
+		CVFolds:   *cv,
 		Seed:      cfg.Strategy.Params,
 	})
 	if err != nil {
@@ -665,6 +670,13 @@ func runTune(args []string) int {
 	}
 
 	fmt.Printf("\nbest %s = %.4f\n  params=%s\n", *objective, report.BestValue, tune.FormatParams(report.BestParams))
+	if report.Validation != nil {
+		fmt.Printf("cross-validation: accepted=%t\n", report.Validation.Accepted)
+		for _, window := range report.Validation.Windows {
+			fmt.Printf("  window %d holdout=%t bars=[%d,%d) baseline=%.4f winner=%.4f valid=%t passed=%t\n",
+				window.Index, window.Holdout, window.Start, window.End, window.Baseline, window.Winner, window.Valid, window.Passed)
+		}
+	}
 	if set(saveBest) && *saveBest != "" {
 		best := cfg
 		best.Strategy.Params = map[string]float64{}

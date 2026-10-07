@@ -36,6 +36,7 @@
 ## P1 — 稳健 / 实用
 
 ### P1-1 调参多窗口交叉验证（防单窗口过拟合）
+- **状态：done** — `CVFolds` / CLI `--cv` / Web `cv_folds` 已贯通；首窗口独立训练、K 个不重叠验证窗口、末尾独立 holdout。严格多数验证窗口不劣于基线且 holdout 通过才保留 winner，否则恢复基线；undefined 指标拒绝。Report/CLI 输出逐窗口摘要；CVFolds=0 不新增 JSON 字段，旧测试保持不变。验证：离线 httptest、拒绝过拟合 winner/恢复基线、零值 JSON 字节一致性、窗口边界/余数/非法值回归，以及全量 gofmt/build/vet/test。
 - `tune.Options` 加 `CVFolds int`（0=关闭，向后兼容）；数据切 K 个不重叠子窗口（末尾留 holdout），基线与 winner 在每个窗口回测，**多数窗口上 objective 不低于基线**才认 winner；Report 加逐窗口摘要；CLI `--cv N` + web `cv_folds` 透传。
 - **验证**：全离线 httptest；`CVFolds=0` 行为与现状逐字节一致（旧断言不改）。
 

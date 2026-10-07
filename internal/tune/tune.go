@@ -38,6 +38,9 @@ type Options struct {
 	// user picked in the web form). It layers over the strategy's documented
 	// defaults.
 	Seed map[string]float64
+	// CVFolds enables disjoint validation windows plus a final holdout.
+	// Zero preserves the legacy full-series tuning path and JSON output.
+	CVFolds int
 }
 
 // RoundResult is one round of the loop (round 0 is the baseline).
@@ -65,6 +68,7 @@ type Report struct {
 	Baseline     float64            `json:"baseline"`
 	BestValue    float64            `json:"best_value"`
 	BestParams   map[string]float64 `json:"best_params"`
+	Validation   *ValidationReport  `json:"validation,omitempty"`
 }
 
 // ObjectiveValue extracts the numeric value of a named objective from metrics;
@@ -129,6 +133,12 @@ func Run(cfg config.Config, series model.Series, opts Options) (Report, error) {
 		opts.Rounds = 0
 	}
 
+	training, windows, err := splitCV(series, opts.CVFolds, cfg.Backtest.WarmupBars)
+	if err != nil {
+		return Report{}, err
+	}
+	original := series
+	series = training
 	spec, hasSpec := strategy.SpecFor(cfg.Strategy.Name)
 	clamp := func(p map[string]float64) map[string]float64 {
 		if hasSpec && !opts.NoClamp {
@@ -223,7 +233,19 @@ func Run(cfg config.Config, series model.Series, opts Options) (Report, error) {
 		}
 	}
 
+	var validation *ValidationReport
+	if opts.CVFolds > 0 {
+		validation = validateWinner(cfg, original, windows, rounds[0].Params, bestParams, opts.Objective)
+		if !validation.Accepted {
+			bestParams, bestVal = copyParams(rounds[0].Params), baseVal
+			for i := range rounds {
+				rounds[i].Improved = false
+			}
+			rounds = append(rounds, RoundResult{Index: -1, Note: "cross-validation rejected winner; restored baseline"})
+		}
+	}
 	return Report{
+		Validation:   validation,
 		Objective:    opts.Objective,
 		Strategy:     cfg.Strategy.Name,
 		Symbol:       cfg.Agent.Symbol,

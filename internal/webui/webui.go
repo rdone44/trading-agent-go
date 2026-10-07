@@ -474,6 +474,7 @@ type TuneRequest struct {
 	Rounds          int    `json:"rounds"`
 	Stall           int    `json:"stall"`
 	NoClamp         bool   `json:"no_clamp"`
+	CVFolds         int    `json:"cv_folds"`
 }
 
 // EquityPoint is one sampled point of the equity and drawdown curves.
@@ -708,6 +709,10 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
 		return
 	}
+	if req.CVFolds < 0 || req.CVFolds > 32 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("cv folds must be between 0 and 32"))
+		return
+	}
 	if req.Objective == "" {
 		req.Objective = "sharpe"
 	}
@@ -730,6 +735,7 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		Rounds:    req.Rounds,
 		Stall:     req.Stall,
 		NoClamp:   req.NoClamp,
+		CVFolds:   req.CVFolds,
 		Seed:      cfg.Strategy.Params,
 	})
 	if err != nil {

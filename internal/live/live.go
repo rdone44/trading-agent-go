@@ -41,6 +41,24 @@ type Runner struct {
 	PriceLoader  func(symbol string) (float64, time.Time, error)
 }
 
+// futuresProtective adapts a real futures broker to the engine's Protective
+// interface, covering an open position with exchange-side stop/target orders
+// so it survives a process crash, network blip or restart. Every method is a
+// no-op in dry-run (the broker returns nil / false immediately), so paper and
+// backtest paths are untouched.
+type futuresProtective struct{ b *broker.FuturesBroker }
+
+// Open implements engine.Protective.
+func (p *futuresProtective) Open(side broker.Side, stop, target float64) error {
+	return p.b.PlaceProtective(side, stop, target)
+}
+
+// Cancel implements engine.Protective.
+func (p *futuresProtective) Cancel() error { return p.b.CancelProtective() }
+
+// Has implements engine.Protective.
+func (p *futuresProtective) Has() (bool, error) { return p.b.HasProtective() }
+
 // New builds a runner. execute=true places real orders on Binance (keys come
 // from the environment); execute=false simulates fills locally. The venue
 // (spot vs USDT-margined perpetual) and the leverage multiplier come from the
@@ -93,6 +111,17 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	}
 
 	agent := engine.NewWithBroker(cfg, strat, bk, book, rm)
+
+	// Exchange-side protective orders: only on a real order-placing perpetual
+	// venue. The adapter is a no-op in dry-run and spot, so installing it there
+	// would still be safe, but the cost of a protective-order placement (an
+	// extra signed call) is only justified when we would otherwise be leaving a
+	// naked position on the exchange.
+	if execute && futures {
+		if fb, ok := bk.(*broker.FuturesBroker); ok {
+			agent.Protective = &futuresProtective{b: fb}
+		}
+	}
 
 	// Wire the LLM second-opinion gate on new entries. It is fail-open (a
 	// missing key or a model error lets the trade through), so it is safe to
@@ -305,6 +334,36 @@ func (r *Runner) reconcileFutures() error {
 		return fmt.Errorf(
 			"本地状态与交易所不一致: 本地持仓=%.6f, 交易所 %s=%.6f。请人工核对后再启动",
 			localSigned, r.agent.Symbol, exchangeSigned)
+	}
+	// Reconcile the exchange-side protective orders so a restart can never leave
+	// a position naked, nor a stale protective order dangling:
+	//   - local flat but protective orders still open  -> cancel the strays
+	//   - local open but protective orders are gone     -> re-place them
+	// The re-place is idempotent: Has() inspects openOrders first, so a leg
+	// that survived is never placed twice. The stop/target come straight from
+	// the restored position — the same single source the risk engine used.
+	if r.agent.Protective != nil {
+		open := pos.IsOpen()
+		has, err := r.agent.Protective.Has()
+		if err != nil {
+			return fmt.Errorf("查询交易所保护单失败: %w", err)
+		}
+		switch {
+		case !open && has:
+			// A crash left protective orders with no position behind them.
+			if err := r.agent.Protective.Cancel(); err != nil {
+				return fmt.Errorf("撤销残留保护单失败: %w", err)
+			}
+		case open && !has:
+			// The position was restored but its protective orders are gone.
+			side := broker.Buy
+			if pos.Quantity < 0 {
+				side = broker.Sell
+			}
+			if err := r.agent.Protective.Open(side, pos.StopPrice, pos.TakeProfitPrice); err != nil {
+				return fmt.Errorf("重启后补挂保护单失败: %w", err)
+			}
+		}
 	}
 	return nil
 }

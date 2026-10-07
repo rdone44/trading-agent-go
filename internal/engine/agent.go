@@ -91,6 +91,27 @@ type VetoContext struct {
 // answer lets the entry through. A nil Veto is a no-op gate.
 type Veto func(now time.Time, ctx VetoContext) (blocked bool, reason string)
 
+// Protective manages exchange-side protective orders (stop-loss / take-profit)
+// so an open position stays covered even when the local process dies. It is a
+// deliberately small interface the engine calls at two points: Open right
+// after a successful entry, and Cancel before a local flatten. A nil
+// Protective is a no-op — backtests and paper runs leave it unset, so the
+// historical replay path is unchanged. The live runner wires it to the
+// real-order venue.
+type Protective interface {
+	// Open places the protective orders for the position just opened. The
+	// stop and target prices are the same values the risk engine already
+	// computed for sizing and local exits — a single source, never
+	// recomputed at the venue.
+	Open(side broker.Side, stopPrice, takeProfit float64) error
+	// Cancel removes the position's open protective orders. It is called
+	// before the local flatten so the exchange does not double-close.
+	Cancel() error
+	// Has reports whether protective orders are currently open on the venue,
+	// used by reconciliation to avoid double-placing on a restart.
+	Has() (bool, error)
+}
+
 // Agent wires a strategy to the broker, portfolio and risk manager.
 type Agent struct {
 	Config   config.Config
@@ -102,6 +123,14 @@ type Agent struct {
 	// Veto, when set, is consulted before every new entry in the live loop.
 	// Backtests leave it nil so historical runs stay deterministic.
 	Veto Veto
+	// Protective, when set, manages exchange-side protective orders so a
+	// position stays covered even if this process dies (crash, network
+	// blip, restart). It is a no-op nil in backtests and paper runs; the
+	// live runner installs it for a real order-placing venue. Open is called
+	// right after a successful entry (stopPrice/targetPrice are the
+	// risk-engine's own levels, single source); Cancel before any local
+	// flatten so the exchange side cannot double-close.
+	Protective Protective
 
 	open   *OpenTrade
 	trades []Trade
@@ -320,6 +349,14 @@ func (a *Agent) closePosition(ts time.Time, price float64, reason string) {
 	pos := a.Book.Position(a.Symbol)
 	if !pos.IsOpen() {
 		return
+	}
+	// Cancel exchange-side protective orders before the local flatten so
+	// the venue cannot double-close a position the book already closed.
+	if a.Protective != nil {
+		if err := a.Protective.Cancel(); err != nil {
+			a.Risk.RequireReconciliation("保护单撤销失败：" + err.Error())
+			return
+		}
 	}
 	side := broker.Sell
 	if pos.Quantity < 0 {

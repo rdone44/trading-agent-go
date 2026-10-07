@@ -415,6 +415,146 @@ func (b *FuturesBroker) applyContract(raw json.RawMessage) error {
 	return nil
 }
 
+// ---------------------------------------------------------------- protective orders
+
+// PlaceProtective puts exchange-side protective orders on an open position:
+// a STOP_MARKET stop-loss leg and, when a target is also present, a
+// TAKE_PROFIT_MARKET leg. Each is a self-contained closePosition=true order
+// requiring no quantity, so a fill on one leg does not orphan the other and
+// the exchange independently guarantees each protective level. Prices are
+// taken verbatim from the risk engine (single source) — never recomputed
+// here, so the local and exchange stops cannot drift apart. No-op in dry-run.
+//
+// Trade-off: closePosition MARKET legs buy a guarantee the position is always
+// covered at the cost of a little execution slippage. The slippage-controlled
+// alternative (a LIMIT_STOP + OCO list) is a documented future hardening, not
+// a first cut: OCO leg-side/price semantics differ by long/short and cannot
+// be verified against the real exchange offline.
+func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) error {
+	if b.cfg.DryRun {
+		return nil
+	}
+	if stop > 0 {
+		if err := b.placeClosePosition("STOP_MARKET", "stopPrice", side, stop); err != nil {
+			return err
+		}
+	}
+	if takeProfit > 0 {
+		if err := b.placeClosePosition("TAKE_PROFIT_MARKET", "price", side, takeProfit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// placeClosePosition places one closePosition protective leg. For
+// STOP_MARKET the trigger is stopPrice; for TAKE_PROFIT_MARKET it is price.
+// The close side is opposite to the position side (closing a long = SELL).
+func (b *FuturesBroker) placeClosePosition(orderType, triggerKey string, side Side, level float64) error {
+	closeSide := "SELL" // closing a long
+	if side != Buy {
+		closeSide = "BUY" // closing a short
+	}
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(b.cfg.Symbol))
+	q.Set("side", closeSide)
+	q.Set("type", orderType)
+	q.Set("closePosition", "true")
+	q.Set("positionSide", "BOTH")
+	q.Set("workingType", "MARK_PRICE")
+	q.Set(triggerKey, strconv.FormatFloat(level, 'f', -1, 64))
+	q.Set("newClientOrderId", newClientID("tap-"))
+	q.Set("newOrderRespType", "ACK")
+	_, err := b.postSigned("/fapi/v1/order", q)
+	return err
+}
+
+// CancelProtective cancels every protective open order on the position's
+// symbol. Called before any local flatten so the exchange side cannot
+// double-close a position the book already closed. No-op in dry-run.
+func (b *FuturesBroker) CancelProtective() error {
+	if b.cfg.DryRun {
+		return nil
+	}
+	return b.deleteAllOpenOrders()
+}
+
+// HasProtective reports whether any protective (close-position stop) order is
+// still open on the symbol, so a restart does not double-place. It looks at
+// the symbol's open orders for STOP_MARKET/TAKE_PROFIT_MARKET closePosition
+// legs. Returns false in dry-run.
+func (b *FuturesBroker) HasProtective() (bool, error) {
+	if b.cfg.DryRun {
+		return false, nil
+	}
+	body, err := b.getSigned("/fapi/v1/openOrders", url.Values{})
+	if err != nil {
+		return false, err
+	}
+	var rows []struct {
+		Symbol   string      `json:"symbol"`
+		Type     string      `json:"type"`
+		ClosePos interface{} `json:"closePosition"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return false, fmt.Errorf("解析 openOrders 失败: %w", err)
+	}
+	want := strings.ToUpper(b.cfg.Symbol)
+	for _, row := range rows {
+		if strings.ToUpper(row.Symbol) != want {
+			continue
+		}
+		if row.Type == "STOP_MARKET" || row.Type == "TAKE_PROFIT_MARKET" || row.Type == "STOP" || row.Type == "TAKE_PROFIT" {
+			if protectiveFlag(row.ClosePos) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// protectiveFlag tolerates the exchange returning closePosition as either a
+// boolean or a string, so the reconciliation check does not depend on the
+// exact response encoding.
+func protectiveFlag(v interface{}) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return x == "true"
+	}
+	return false
+}
+
+// deleteAllOpenOrders cancels all open orders on the symbol. It is used by
+// CancelProtective; only protective orders exist in a well-formed session.
+func (b *FuturesBroker) deleteAllOpenOrders() error {
+	query := url.Values{}
+	query.Set("symbol", strings.ToUpper(b.cfg.Symbol))
+	if err := signQuery(b.cfg.SecretKey, query); err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodDelete,
+		b.cfg.BaseURL+"/fapi/v1/allOpenOrders"+"?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-MBX-APIKEY", b.cfg.APIKey)
+	response, err := b.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("撤销保护单失败: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return httpError(response.StatusCode, body)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------- HTTP
 
 // getPublic performs an unauthenticated GET against the futures base.

@@ -289,6 +289,17 @@ func (a *Agent) liveRebalance(now time.Time, target, strategyStop, strategyTarge
 		Quantity: fill.Quantity, Side: fill.Side, EntryFee: fill.Commission,
 	}
 	a.open.Quantity = math.Abs(updated.Quantity)
+	// Exchange-side protective orders: the position is now open on the venue,
+	// so cover it. stopPrice/targetPrice are the exact levels the risk engine
+	// used for sizing — a single source, never recomputed at the venue.
+	// Fail-open on error: local protective exits still run every cycle, so a
+	// failed placement degrades to (slightly weaker) local-only protection and
+	// flags the uncertainty rather than stalling the loop.
+	if a.Protective != nil {
+		if err := a.Protective.Open(fill.Side, stopPrice, targetPrice); err != nil {
+			a.Risk.RequireReconciliation("交易所侧保护单挂单失败：" + err.Error())
+		}
+	}
 	res.Entered = true
 	res.Action = reason
 }

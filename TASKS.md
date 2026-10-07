@@ -20,14 +20,21 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 两个构建：Windows desktop（`127.0.0.1:8765`，无鉴权）和 Linux server（`0.0.0.0:8080`，token 鉴权）
 - 单测离线：`internal/testfx` 生成确定性 K 线，不碰网络
 
-## 认领规则（单人模式：coding 全责）
+## 认领规则（双 agent 协作：coding 统筹 + as 并写）
 
-1. 当前由 coding 一个 agent 负责全部任务，不再拆分给 muse。做完把状态改成 `done`，附上验证方式（跑了什么命令、结果是什么）。
-2. 每个任务仍保持独立、一次改一件事，便于回退。
-3. 不改 `go.mod` 里已有的依赖约束，不新增非必要依赖。
-4. 涉及密钥的代码只从环境变量读，不写进配置、不打印明文。
-5. live 下单路径保持现有护栏：默认 paper，`--execute` 才真下单，启动时与交易所对账不一致就拒绝继续。
-6. 提交用中文或英文均可，commit message 写清改了什么。
+1. 两个 agent 并行开发，**按领地划分，不碰同一批文件**，避免合并冲突：
+   - **coding（本 profile）** 主导 + 统筹验证：`internal/broker/`、`internal/live/`、`internal/engine/`、`internal/risk/`、`internal/llm/`、`internal/tune/`、`internal/strategy/`、`internal/webui/`（钱路径 + AI + 实盘会话）。
+   - **as（assistant profile，A2A 9902）** 并写：`internal/marketdata/`、`internal/portfolio/`、`internal/report/`、`deploy/`、`cmd/`、`README.md`/文档（行情、记账、部署、文档——与 coding 钱路径零重叠）。
+2. 各用独立 worktree + 独立分支：
+   - coding：`/root/projects/trading-agent-go`（分支 `main`，推 `fork main`）。
+   - as：`/root/projects/trading-agent-go-as`（分支 `as/main`，推 `fork as/main`）。
+   - 共享同一 fork 远端和同一份 root git 凭据（token 只从 env/`~/.git-credentials` 读）。
+3. **合并只由 coding 做**：coding 每个周期 pull `as/main` 的新 commit，`gofmt -l` 干净 + `go build ./...` + `go vet ./...` + `go test ./...` 全绿才 merge 进 `main`；不绿就在 TASKS.md 记一条 as 的分支需修复，不硬合。as 不直接推 `main`。
+4. 每个任务保持独立、一次改一件事，便于回退。
+5. 不改 `go.mod` 里已有的依赖约束，不新增非必要依赖。
+6. 涉及密钥的代码只从环境变量读，不写进配置、不打印明文。
+7. live 下单路径保持现有护栏：默认 paper，`--execute` 才真下单，启动时与交易所对账不一致就拒绝继续。
+8. 提交用中文或英文均可，commit message 写清改了什么。
 
 ## 任务
 

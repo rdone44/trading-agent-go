@@ -72,8 +72,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 现状：现货与合约客户端、下单前写 `*.order-pending.json`、超时按 clientOrderId 回查而不是重下、对账不一致拒绝继续
 - 可做：补失败路径测试（超时、部分成交、拒单）、合约单向持仓校验
 - 约束：不削弱现有护栏。Hedge Mode 目前显式拒绝，不要静默放开
-- 认领：
-- 状态：open
+- 认领：coding（钱路径：broker/live）
+- 状态：claimed — P0 最先做：交易所侧保护性止损 + execute env 开关（见 PLAN.md）
 
 ### T6. 风控与组合记账
 
@@ -116,10 +116,10 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | --- | --- | --- | --- |
 | T1 |  |  | open |
 | T2 |  |  | open |
-| T3 |  |  | open |
+| T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 |  |  | open |
-| T5 |  |  | open |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | claimed |
 | T6 |  |  | open |
-| T7 |  |  | open |
+| T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | claimed |
 | T8 |  |  | open |
 | T9 |  |  | open |

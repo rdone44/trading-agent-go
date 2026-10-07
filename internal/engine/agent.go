@@ -69,6 +69,28 @@ type OpenTrade struct {
 	EntryFee   float64
 }
 
+// VetoContext is what a second-opinion gate is shown when deciding whether
+// to let a new entry through. It is deliberately a value type so a gate can
+// be wired in without holding a reference to the agent.
+type VetoContext struct {
+	Symbol      string
+	Side        broker.Side
+	Quantity    float64
+	EntryPrice  float64
+	StopPrice   float64
+	TargetPrice float64
+	Equity      float64
+	Cash        float64
+	Leverage    int
+	Reason      string // the strategy's stated reason for the entry
+}
+
+// Veto is a second-opinion gate on a new entry. It returns blocked=true only
+// when the gate actively objects; any error inside the gate is the caller's
+// to treat, and the engine's contract is fail-open: a gate that cannot
+// answer lets the entry through. A nil Veto is a no-op gate.
+type Veto func(now time.Time, ctx VetoContext) (blocked bool, reason string)
+
 // Agent wires a strategy to the broker, portfolio and risk manager.
 type Agent struct {
 	Config   config.Config
@@ -77,6 +99,9 @@ type Agent struct {
 	Broker   broker.Broker
 	Book     *portfolio.Portfolio
 	Risk     *risk.Manager
+	// Veto, when set, is consulted before every new entry in the live loop.
+	// Backtests leave it nil so historical runs stay deterministic.
+	Veto Veto
 
 	open   *OpenTrade
 	trades []Trade
@@ -348,6 +373,40 @@ func (a *Agent) OpenTrade() *OpenTrade {
 	}
 	c := *a.open
 	return &c
+}
+
+// Trades returns the closed round trips recorded this run, for the post-mortem
+// reviewer and the CLI. It is a copy so a caller cannot mutate the agent's log.
+func (a *Agent) Trades() []Trade {
+	out := make([]Trade, len(a.trades))
+	copy(out, a.trades)
+	return out
+}
+
+// ResultSnapshot builds a Result view of the agent's current state so the
+// post-mortem reviewer and the live loop can summarise a session the same way
+// a backtest is summarized. Equity metrics are recomputed from the book curve
+// that has accumulated during the session; a session with no recorded bars
+// produces a zero-bars result whose metric pointer fields are null.
+func (a *Agent) ResultSnapshot() Result {
+	m := metrics.Compute(a.Book.Curve, a.trades, a.Book.InitialCash, a.Config.BarsPerYear())
+	var start, end time.Time
+	if len(a.Book.Curve) > 0 {
+		start = a.Book.Curve[0].Time
+		end = a.Book.Curve[len(a.Book.Curve)-1].Time
+	}
+	return Result{
+		Symbol:     a.Symbol,
+		Strategy:   a.Strategy.Describe(),
+		DataSource: a.Config.Data.Provider,
+		Start:      start,
+		End:        end,
+		Bars:       len(a.Book.Curve),
+		Metrics:    m,
+		Trades:     a.Trades(),
+		Orders:     a.Broker.Fills(),
+		RiskEvents: a.Risk.Events,
+	}
 }
 
 // RestoreState rebuilds the agent's mutable state from a persisted session:

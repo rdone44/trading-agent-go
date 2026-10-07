@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,7 +18,9 @@ import (
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
 	"github.com/huijun/trading-agent-go/internal/live"
+	"github.com/huijun/trading-agent-go/internal/llm"
 	"github.com/huijun/trading-agent-go/internal/marketdata"
+	"github.com/huijun/trading-agent-go/internal/metrics"
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/report"
 	"github.com/huijun/trading-agent-go/internal/strategy"
@@ -27,25 +30,35 @@ import (
 
 const usage = `trading-agent - a small trading agent (Go)
 
-Data source: Binance spot (public REST API), daily bars.
+Data source: Binance spot + USDT perpetuals (public REST API), daily bars.
+
+AI features (all degrade gracefully without LLM_API_KEY):
+  LLM strategy    --strategy llm         a model proposes target positions
+  LLM veto        --veto (trade)         model second-opinion gates new entries
+  LLM review      --review (backtest/trade) model writes a post-mortem to the report
+  LLM tune        tune [flags]           model proposes params, we backtest + compare
 
 Usage:
   trading-agent backtest [flags]   run a backtest and write a report
   trading-agent scan [flags]       backtest several symbols and rank them
   trading-agent live [flags]       paper-trade the latest bars (no real orders)
   trading-agent trade [flags]      run the live trading loop (paper by default;
-                                   --execute places real orders)
+                                   --execute places real orders; --futures for
+                                   perpetuals with --leverage N)
+  trading-agent tune [flags]       LLM parameter-tuning loop (rounds of propose+backtest)
   trading-agent web [flags]        serve the interactive dashboard
   trading-agent strategies         list the built-in strategies
   trading-agent version            print the version
 
 Examples:
   trading-agent backtest --symbol BTCUSDT --days 730
-  trading-agent backtest --strategy breakout --symbol ETHUSDT --days 730
+  trading-agent backtest --strategy breakout --symbol ETHUSDT --days 730 --review
   trading-agent scan --symbols BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
   trading-agent trade --symbol BTCUSDT --strategy rsi_reversion
+  trading-agent trade --futures --leverage 5 --strategy llm --veto
   trading-agent trade --execute   # real orders: needs BINANCE_API_KEY /
                                   # BINANCE_SECRET_KEY and a typed "yes"
+  trading-agent tune --strategy rsi_reversion --objective sharpe --rounds 6
   trading-agent web --addr :8080
 
 Run "trading-agent backtest -h" for the full flag list.
@@ -66,6 +79,8 @@ func Run(args []string) int {
 		return runLive(args[1:])
 	case "trade":
 		return runTrade(args[1:])
+	case "tune":
+		return runTune(args[1:])
 	case "web":
 		return runWeb(args[1:])
 	case "strategies":
@@ -103,6 +118,7 @@ type flags struct {
 	saveConfig *string
 	addr       *string
 	noOpen     *bool
+	review     *bool
 }
 
 func bind(fs *flag.FlagSet, f *flags) {
@@ -120,6 +136,7 @@ func bind(fs *flag.FlagSet, f *flags) {
 	f.saveConfig = fs.String("save-config", "", "write the effective config to this path")
 	f.addr = fs.String("addr", ":8080", "dashboard listen address")
 	f.noOpen = fs.Bool("no-open", false, "do not open a browser automatically")
+	f.review = fs.Bool("review", false, "after the run, ask the LLM for a short post-mortem (needs LLM_API_KEY)")
 }
 
 func (f flags) overrides() config.Overrides {
@@ -213,7 +230,35 @@ reports written
   Metrics JSON: %s
   Trades CSV  : %s
 `, paths.HTML, paths.Markdown, paths.MetricsJSON, paths.TradesCSV)
+
+	if set(f.review) && *f.review {
+		if err := writeLLMReview(cfg, result, paths); err != nil {
+			fmt.Fprintf(os.Stderr, "\nLLM 复盘不可用: %v\n", err)
+		}
+	}
 	return 0
+}
+
+// writeLLMReview asks the model for a post-mortem of `result` and appends it
+// to the run's markdown report (and stdout). A missing key or model error is
+// reported, not fatal: the backtest itself is complete.
+func writeLLMReview(cfg config.Config, result engine.Result, paths report.Paths) error {
+	facts := engine.ReviewFacts(result, 5)
+	text, err := llm.Review(cfg.LLM, facts)
+	if err != nil {
+		return err
+	}
+	section := "\n---\n\n## LLM 复盘\n\n" + text + "\n"
+	out, openErr := os.OpenFile(paths.Markdown, os.O_APPEND|os.O_WRONLY, 0)
+	if openErr == nil {
+		defer out.Close()
+		if _, werr := out.WriteString(section); werr != nil {
+			return werr
+		}
+	}
+	// Echo to stdout regardless of whether the file append succeeded.
+	fmt.Printf("\n--- LLM 复盘 ---\n%s\n", text)
+	return nil
 }
 
 func runScan(args []string) int {
@@ -391,6 +436,7 @@ func runTrade(args []string) int {
 		cycles    *int
 		futures   *bool
 		leverage  *int
+		veto      *bool
 	}
 	var tf tradeFlags
 	tf.execute = fs.Bool("execute", false, "place real orders (default: paper, no orders)")
@@ -399,6 +445,7 @@ func runTrade(args []string) int {
 	tf.cycles = fs.Int("cycles", 0, "run exactly N cycles then exit (0 = run until stopped)")
 	tf.futures = fs.Bool("futures", false, "trade USDT-margined perpetuals (leverage + shorts)")
 	tf.leverage = fs.Int("leverage", 0, "leverage multiplier for the futures venue (default from config, 1 = spot-like)")
+	tf.veto = fs.Bool("veto", false, "gate new entries with an LLM second opinion (fail-open; needs LLM_API_KEY)")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -427,6 +474,10 @@ func runTrade(args []string) int {
 		if cfg.Risk.Leverage > 1 {
 			cfg.Live.Futures = true
 		}
+	}
+	// The LLM veto is enabled by an explicit flag or by the config.
+	if set(tf.veto) {
+		cfg.LLM.VetoEnabled = *tf.veto
 	}
 
 	execute := set(tf.execute) && *tf.execute
@@ -468,8 +519,19 @@ func runTrade(args []string) int {
 	if execute {
 		mode = "EXECUTE"
 	}
-	fmt.Printf("trade loop started: %s %s [mode=%s] state=%s\n",
-		cfg.Agent.Symbol, strat.Describe(), mode, statePath)
+	venue := "spot"
+	if runner.IsFutures() {
+		venue = fmt.Sprintf("futures %dx", runner.Leverage())
+	}
+	fmt.Printf("trade loop started: %s %s [mode=%s venue=%s] state=%s\n",
+		cfg.Agent.Symbol, strat.Describe(), mode, venue, statePath)
+	if cfg.LLM.VetoEnabled {
+		fmt.Printf("  LLM 风控否决已开启（--veto / live.veto）：每次新开仓前征询模型；模型不可用时放行。")
+		if !llm.New(cfg.LLM).Enabled() {
+			fmt.Printf(" ⚠ 未检测到 LLM_API_KEY，veto 实际处于放行状态。")
+		}
+		fmt.Println()
+	}
 	if execute {
 		fmt.Printf("  交易所余额校验通过；每周期最多下一单。按 Ctrl+C 安全停止并保存状态。\n\n")
 	}
@@ -527,12 +589,197 @@ func runTrade(args []string) int {
 		}
 	}
 
+	if set(f.review) && *f.review {
+		// Review the trades this session actually made. Writing the report to a
+		// dedicated run directory keeps the LLM narrative out of the state file.
+		snap := runner.Agent().ResultSnapshot()
+		paths, perr := report.Write(snap, cfg.Backtest.OutputDir, "trade-review")
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "复盘报告目录创建失败: %v\n", perr)
+		} else if werr := writeLLMReview(cfg, snap, paths); werr != nil {
+			fmt.Fprintf(os.Stderr, "LLM 复盘不可用: %v\n", werr)
+		}
+	}
+
 	if err := runner.Save(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: 保存状态失败: %v\n", err)
 	} else if statePath != "" {
 		fmt.Printf("state saved -> %s\n", statePath)
 	}
 	return 0
+}
+
+// runTune runs the LLM parameter-tuning loop: propose a parameter set, backtest
+// it, compare the target metric against the best-so-far, and keep the winner.
+// Series are fetched once and reused across every round; only the params
+// change. Without an LLM key the loop still runs but every proposal is skipped
+// (the model can't propose), so it degrades to a baseline report.
+func runTune(args []string) int {
+	fs := flag.NewFlagSet("tune", flag.ContinueOnError)
+	var f flags
+	bind(fs, &f)
+
+	rounds := fs.Int("rounds", 4, "number of LLM proposal rounds after the baseline")
+	objective := fs.String("objective", "sharpe", "metric to maximize: sharpe, sortino, total_return, profit_factor, win_rate")
+	saveBest := fs.String("save-best", "", "write the best parameters into this YAML config path")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfig(f)
+	if err != nil {
+		return fail(err)
+	}
+
+	series, err := loadSeries(cfg)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("tune: %s %s over %d bars, objective=%s, %d rounds\n",
+		cfg.Agent.Symbol, cfg.Strategy.Name, len(series.Close()), *objective, *rounds)
+
+	// Seed the parameter map with the strategy's documented defaults, then
+	// layer any user-supplied params on top so the baseline respects them.
+	spec, ok := strategy.SpecFor(cfg.Strategy.Name)
+	params := map[string]float64{}
+	for _, p := range spec.Params {
+		params[p.Key] = p.Default
+	}
+	for k, v := range cfg.Strategy.Params {
+		params[k] = v
+	}
+	_ = ok // a strategy with no spec just starts from the current params
+
+	// runOnce backtests the given params against the shared series.
+	runOnce := func(p map[string]float64) (engine.Result, float64, bool) {
+		clone := cfg
+		clone.Strategy.Params = map[string]float64{}
+		for k, v := range p {
+			clone.Strategy.Params[k] = v
+		}
+		strat, err := strategy.New(cfg.Strategy.Name, clone)
+		if err != nil {
+			return engine.Result{}, 0, false
+		}
+		agent := engine.New(clone, strat)
+		res, err := agent.RunBacktest(series)
+		if err != nil {
+			return engine.Result{}, 0, false
+		}
+		v, valid := objectiveValue(res.Metrics, *objective)
+		return res, v, valid
+	}
+
+	// Baseline round.
+	latest, baseVal, baseValid := runOnce(params)
+	if !baseValid {
+		return fail(fmt.Errorf("objective %q 在当前结果里不可用（无交易或指标为 null）", *objective))
+	}
+	bestParams, bestVal := params, baseVal
+	fmt.Printf("baseline  %-24s = %.4f   params=%s\n", *objective, baseVal, formatParams(params))
+
+	client := llm.New(cfg.LLM)
+	for i := 1; i <= *rounds; i++ {
+		if !client.Enabled() {
+			fmt.Printf("round %d: 跳过（未设置 LLM_API_KEY，无法生成新参数）\n", i)
+			break
+		}
+		proposal, err := llm.Propose(cfg.LLM, *objective, cfg.Strategy.Name, params, metricsSummary(latest.Metrics))
+		if err != nil {
+			fmt.Printf("round %d: 提议失败，沿用当前参数 — %v\n", i, err)
+			continue
+		}
+		proposed := proposal.Params
+		res, val, valid := runOnce(proposed)
+		if !valid {
+			// No trades under the proposal: keep the current params and the
+			// last valid result so the next round reasons from a baseline.
+			params = bestParams
+			fmt.Printf("round %d: 该参数组合无交易，已还原 — %s\n", i, formatParams(params))
+			continue
+		}
+		// Adopt the proposal as the new current state.
+		params, latest = proposed, res
+		marker := "  "
+		if val > bestVal {
+			bestParams, bestVal = params, val
+			marker = "★"
+		}
+		fmt.Printf("%s round %d  %-24s = %.4f   %s\n        rationale: %s\n",
+			marker, i, *objective, val, formatParams(params), proposal.Rationale)
+	}
+
+	fmt.Printf("\nbest %s = %.4f\n  params=%s\n", *objective, bestVal, formatParams(bestParams))
+	if set(saveBest) && *saveBest != "" {
+		best := cfg
+		best.Strategy.Params = map[string]float64{}
+		for k, v := range bestParams {
+			best.Strategy.Params[k] = v
+		}
+		if err := saveConfig(best, *saveBest); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("  最佳参数已写入 %s\n", *saveBest)
+	}
+	return 0
+}
+
+// objectiveValue extracts the numeric value of a named objective from metrics;
+// the second return is false when the metric is undefined for this run.
+func objectiveValue(m metrics.Metrics, obj string) (float64, bool) {
+	var p *float64
+	switch obj {
+	case "sharpe":
+		p = m.Sharpe
+	case "sortino":
+		p = m.Sortino
+	case "total_return":
+		p = m.TotalReturnPct
+	case "profit_factor":
+		p = m.ProfitFactor
+	case "win_rate":
+		p = m.WinRatePct
+	default:
+		return 0, false
+	}
+	if p == nil {
+		return 0, false
+	}
+	return *p, true
+}
+
+// metricsSummary renders the headline metrics into a compact string the model
+// can reason about when proposing the next parameter set.
+func metricsSummary(m metrics.Metrics) string {
+	return fmt.Sprintf(
+		"total=%s%% annual=%s%% sharpe=%s sortino=%s maxDD=%s%% trades=%d winrate=%s%% PF=%s",
+		plainMetricLocal(m.TotalReturnPct, 2), plainMetricLocal(m.AnnualReturnPct, 2),
+		plainMetricLocal(m.Sharpe, 2), plainMetricLocal(m.Sortino, 2),
+		plainMetricLocal(m.MaxDrawdownPct, 2), m.NumTrades,
+		plainMetricLocal(m.WinRatePct, 1), plainMetricLocal(m.ProfitFactor, 2))
+}
+
+// plainMetricLocal is the tune-local metric renderer (n/a when null).
+func plainMetricLocal(v *float64, digits int) string {
+	if v == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.*f", digits, *v)
+}
+
+// formatParams renders a parameter map deterministically (sorted by key).
+func formatParams(params map[string]float64) string {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // runCycle fetches the latest price, runs one agent step, and persists.

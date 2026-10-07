@@ -62,6 +62,10 @@ func New(name string, cfg config.Config) (Strategy, error) {
 		return RSIReversion{}, nil
 	case "breakout":
 		return Breakout{}, nil
+	case "llm":
+		// A fresh client is built from the config inside Generate; the
+		// key is resolved from the environment only when a call happens.
+		return LLM{}, nil
 	default:
 		return nil, fmt.Errorf("未知策略 %q，可用策略：%s", name, strings.Join(Available(), "、"))
 	}
@@ -69,7 +73,7 @@ func New(name string, cfg config.Config) (Strategy, error) {
 
 // Available lists the built-in strategy names.
 func Available() []string {
-	names := []string{"breakout", "ma_cross", "rsi_reversion"}
+	names := []string{"breakout", "llm", "ma_cross", "rsi_reversion"}
 	sort.Strings(names)
 	return names
 }

@@ -18,6 +18,7 @@ type Config struct {
 	Execution Execution `yaml:"execution"`
 	Backtest  Backtest  `yaml:"backtest"`
 	Live      Live      `yaml:"live"`
+	LLM       LLM       `yaml:"llm"`
 }
 
 type Agent struct {
@@ -82,6 +83,22 @@ type Live struct {
 	MarginMode string `yaml:"margin_mode"` // "ISOLATED" (default) or "CROSS"
 }
 
+// LLM configures the OpenAI-compatible model used by the AI features
+// (the llm strategy, the entry veto, the post-mortem review and the tune
+// loop). The API key is deliberately NOT part of this block: it is read
+// from the LLM_API_KEY (or OPENAI_API_KEY) environment variable at call
+// time, so a config file can never leak a secret.
+type LLM struct {
+	BaseURL     string  `yaml:"base_url"` // default https://api.openai.com/v1
+	Model       string  `yaml:"model"`    // default gpt-4o-mini
+	TimeoutSec  int     `yaml:"timeout_sec"`
+	MaxTokens   int     `yaml:"max_tokens"`
+	Temperature float64 `yaml:"temperature"`
+	// VetoEnabled gates new live entries with an LLM second opinion.
+	// Fail-open: a model error or a missing key lets the entry through.
+	VetoEnabled bool `yaml:"veto_enabled"`
+}
+
 // Default returns the built-in settings used when no config file is present.
 func Default() Config {
 	return Config{
@@ -100,6 +117,12 @@ func Default() Config {
 		},
 		Backtest: Backtest{WarmupBars: 60, OutputDir: "reports"},
 		Live:     Live{PollSeconds: 60, LookbackDays: 400, PaperTrading: true},
+		LLM: LLM{
+			BaseURL:    "https://api.openai.com/v1",
+			Model:      "gpt-4o-mini",
+			TimeoutSec: 30,
+			MaxTokens:  1024,
+		},
 	}
 }
 
@@ -192,6 +215,17 @@ func (c Config) BarsPerYear() int {
 // IntParam is Param for integer parameters.
 func (c Config) IntParam(key string, def int) int {
 	return int(c.Param(key, float64(def)))
+}
+
+// LLMAPIKey returns the API key the LLM features should use. It is read only
+// from the environment so a secret can never be committed in a config file:
+// LLM_API_KEY wins, falling back to OPENAI_API_KEY. An empty result means
+// the AI features are unavailable (they degrade to their non-LLM behaviour).
+func LLMAPIKey() string {
+	if k := os.Getenv("LLM_API_KEY"); k != "" {
+		return k
+	}
+	return os.Getenv("OPENAI_API_KEY")
 }
 
 func f(v float64) *float64 { return &v }

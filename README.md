@@ -24,8 +24,9 @@ leverage can lose more than the margin posted; treat a live run accordingly.
 - Realistic frictions: commission, slippage, lot rounding, minimum notional
 - Look-ahead safe: signals decided on the close, executed on the next open
 - Live loop: state persistence, restart reconciliation, idempotent client order ids
+- AI features: an LLM strategy, an entry veto, a post-mortem reviewer and a parameter-tuning loop, all behind one OpenAI-compatible client
 - Reports: HTML (with an inline SVG equity curve), Markdown, CSV and JSON
-- Only one dependency (`yaml.v3`); the Binance clients use `net/http`
+- Only one dependency (`yaml.v3`); the Binance clients and the LLM client use `net/http`
 
 ## Quickstart
 
@@ -161,7 +162,7 @@ cmd/trading-agent/     main entry point
 internal/
   model/               Bar and Series types
   indicators/          SMA, EMA, RSI, ATR, rolling max/min, shift
-  strategy/            ma_cross, rsi_reversion, breakout
+  strategy/            ma_cross, rsi_reversion, breakout, llm
   risk/                sizing, stops, kill switches
   broker/              paper broker + live Binance spot & futures clients
   portfolio/           cash, positions, realized PnL, equity curve
@@ -173,6 +174,7 @@ internal/
   report/              CSV / JSON / Markdown / HTML writers
   webui/               HTTP server, JSON API and the embedded dashboard
   cli/                 command line interface
+  llm/                 OpenAI-compatible client: strategy, veto, review, tune
   testfx/              deterministic offline bars for the unit tests only
 ```
 
@@ -254,6 +256,49 @@ Before real money: run the paper loop against a broker testnet or demo
 account for a meaningful period, size `max_risk_per_trade_pct` for the
 leverage you actually intend to use, and confirm the venue's rules for your
 account (leverage caps, isolation, taxes, regional availability).
+
+## AI features
+
+Four model-driven features sit on top of the same agent. They all share one
+`llm` client — a thin OpenAI-compatible REST wrapper on `net/http`, so the
+project still has a single non-stdlib dependency — and they all degrade
+gracefully when the model is unavailable. The API key is read from the
+environment only (`LLM_API_KEY`, falling back to `OPENAI_API_KEY`); it is never
+stored in the config file, so a config can never leak a secret. Any
+OpenAI-compatible endpoint works: set `llm.base_url` and `llm.model`.
+
+| Feature | Where | Flag / config | Without a key |
+| --- | --- | --- | --- |
+| LLM strategy | `--strategy llm` | `llm.*` | backtest still runs; the strategy emits an all-flat (hold) curve |
+| LLM entry veto | `trade --veto` | `live.veto_enabled` | fail-open: entries pass, protective stops are never blocked |
+| LLM post-mortem | `backtest --review`, `trade --review` | `llm.*` | the report notes "LLM review unavailable" |
+| LLM tuning loop | `tune` | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
+
+The veto is **fail-open on purpose**: a disabled client, a transport error or an
+unparseable answer all let the trade through, so a down model can never
+silently block a stop-loss or risk-halt flatten. Only an explicit model
+refusal (`approve: false`) blocks, and it blocks a *new entry* — protective
+exits and the drawdown kill switch are never gated.
+
+The `tune` loop is the proposer: each round the model suggests a new parameter
+set for the strategy, the loop backtests it on the same series and keeps the
+winner against the objective (`--objective sharpe|sortino|total_return|
+profit_factor|win_rate`). `--save-best PATH` writes the winning parameters into
+a reproducible config.
+
+```powershell
+# strategy that lets the model choose target positions
+.\bin\trading-agent.exe backtest --strategy llm --symbol BTCUSDT
+
+# gate new live entries with a model second opinion (fail-open)
+.\bin\trading-agent.exe trade --symbol BTCUSDT --strategy rsi_reversion --veto
+
+# post-mortem review appended to the run's report
+.\bin\trading-agent.exe backtest --symbol BTCUSDT --review
+
+# tuning loop: 4 proposal rounds, keep the best Sharpe, save it
+.\bin\trading-agent.exe tune --strategy rsi_reversion --objective sharpe --rounds 4 --save-best runs\best.yaml
+```
 
 ## License
 

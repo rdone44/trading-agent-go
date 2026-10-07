@@ -13,6 +13,7 @@ import (
 	"github.com/huijun/trading-agent-go/internal/broker"
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
+	"github.com/huijun/trading-agent-go/internal/llm"
 	"github.com/huijun/trading-agent-go/internal/marketdata"
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/portfolio"
@@ -75,6 +76,22 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	}
 
 	agent := engine.NewWithBroker(cfg, strat, bk, book, rm)
+
+	// Wire the LLM second-opinion gate on new entries. It is fail-open (a
+	// missing key or a model error lets the trade through), so it is safe to
+	// install; it is only *active* when the user opted in via live.veto.
+	if cfg.LLM.VetoEnabled {
+		llmCfg := cfg.LLM
+		agent.Veto = func(now time.Time, ctx engine.VetoContext) (bool, string) {
+			req := llm.VetoRequest{
+				Side: string(ctx.Side), Symbol: ctx.Symbol, Quantity: ctx.Quantity,
+				EntryPrice: ctx.EntryPrice, StopPrice: ctx.StopPrice, TargetPrice: ctx.TargetPrice,
+				Equity: ctx.Equity, Cash: ctx.Cash, Leverage: ctx.Leverage, Reason: ctx.Reason,
+			}
+			return llm.VetoDecision(llmCfg, req)
+		}
+	}
+
 	return &Runner{
 		cfg: cfg, agent: agent, broker: bk, statePath: statePath,
 		executed: execute, futures: futures, leverage: leverage, marginMode: marginMode,

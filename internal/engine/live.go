@@ -185,6 +185,27 @@ func (a *Agent) liveRebalance(now time.Time, target, strategyStop, strategyTarge
 	if side == broker.Sell {
 		reason = "entry_short"
 	}
+
+	// Second-opinion gate: a nil or disabled veto is a no-op. It only ever
+	// objects to a *new* entry; protective exits above are never gated, so
+	// a veto can never block a stop-loss or a risk-halt flatten.
+	if a.Veto != nil {
+		leverage := a.Config.Risk.Leverage
+		if leverage < 1 {
+			leverage = 1
+		}
+		blocked, vetoReason := a.Veto(now, VetoContext{
+			Symbol: a.Symbol, Side: side, Quantity: quantity,
+			EntryPrice: price, StopPrice: stopPrice, TargetPrice: targetPrice,
+			Equity: a.Book.LastEquity(), Cash: a.Book.Cash,
+			Leverage: leverage, Reason: reason,
+		})
+		if blocked {
+			res.Action = "veto_blocked: " + vetoReason
+			return
+		}
+	}
+
 	fill := a.Broker.MarketOrder(now, a.Symbol, side, quantity, price, reason)
 	if fill.Rejected {
 		res.Action = "order_rejected: " + fill.Reason

@@ -1,25 +1,31 @@
 # trading-agent (Go)
 
 A small, readable trading agent in Go: load market data, run a strategy, size
-every trade through a risk manager, execute on a paper broker, and write a
-report you can open in the browser.
+every trade through a risk manager, execute on a paper or live broker, and
+write a report you can open in the browser.
 
 ```
-data -> strategy -> risk -> paper broker -> portfolio -> metrics -> report
+data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 ```
 
-**This is research/education code, not investment advice.** It sends no real
-orders.
+Two execution venues: **Binance spot** and **Binance USDT-margined perpetual
+futures** (leverage, long and short). The live loop is paper by default and
+only places real orders with an explicit `--execute` and a typed `yes`.
+
+**This is research/education code, not investment advice.** Futures and
+leverage can lose more than the margin posted; treat a live run accordingly.
 
 ## Features
 
 - Three built-in strategies: `ma_cross`, `rsi_reversion`, `breakout`
-- Risk layer: position sizing, ATR/% stops, take-profit, max drawdown kill switch, daily loss limit
-- Data source: Binance spot (public REST API, daily bars)
+- Risk layer: position sizing (leverage-aware), ATR/% stops, take-profit, max drawdown kill switch, daily loss limit
+- Data source: Binance spot **and** USDT-perp futures (public REST API, daily bars)
+- Two brokers: paper (simulated fills) and live Binance spot / futures, behind one `Broker` interface
 - Realistic frictions: commission, slippage, lot rounding, minimum notional
 - Look-ahead safe: signals decided on the close, executed on the next open
+- Live loop: state persistence, restart reconciliation, idempotent client order ids
 - Reports: HTML (with an inline SVG equity curve), Markdown, CSV and JSON
-- Only one dependency (`yaml.v3`); the Binance client uses `net/http`
+- Only one dependency (`yaml.v3`); the Binance clients use `net/http`
 
 ## Quickstart
 
@@ -90,10 +96,24 @@ curl.exe -X POST http://localhost:8080/api/backtest `
 # paper-trade loop (simulated, no orders leave your machine)
 .\bin\trading-agent.exe live --symbol BTCUSDT --iterations 3 --poll 10
 
+# continuous trading loop (paper by default; real orders only with --execute)
+.\bin\trading-agent.exe trade --symbol BTCUSDT --strategy rsi_reversion
+
+# perpetual venue with leverage; shorts allowed. --execute + BINANCE_API_KEY /
+# BINANCE_SECRET_KEY + a typed "yes" (or --yes) to place real orders.
+.\bin\trading-agent.exe trade --symbol BTCUSDT --futures --leverage 5
+.\bin\trading-agent.exe trade --symbol BTCUSDT --futures --leverage 5 --execute
+
 # machine-readable output, and a saved config for reproducibility
 .\bin\trading-agent.exe backtest --json
 .\bin\trading-agent.exe backtest --save-config runs\btc.yaml
 ```
+
+The `trade` command is the continuous loop: one decision per poll (protective
+exits, mark-to-market, then act on the last closed signal), persisted to a state
+file so a restart resumes the open position, peak equity and risk-manager state
+instead of re-entering. `--cycles N` runs a bounded number of passes then
+exits; `--state PATH` picks the persistence file.
 
 ## Configuration
 
@@ -115,7 +135,24 @@ risk:
   take_profit_pct: 0.18
   max_drawdown_pct: 0.25
   max_daily_loss_pct: 0.05
+  allow_short: false       # enable to trade the strategy's short signals
+  leverage: 1             # >1 only applies on a futures venue
+
+live:
+  poll_seconds: 60
+  lookback_days: 400
+  paper_trading: true
+  state_file: trade-state.json
+  futures: false          # true = USDT-margined perpetuals (fapi.binance.com)
+  margin_mode: ISOLATED   # or CROSS
 ```
+
+Sizing is leverage-aware: the notional a position may control is the smallest
+of `equity × max_position_pct × leverage`, the fixed-fractional risk cap
+(`equity × max_risk_per_trade_pct` divided by the stop distance), and the
+margin the balance can post (`cash × leverage`). With `leverage: 1` the formula
+collapses to the historical spot behaviour. The per-trade risk *dollars* do
+not grow with leverage — only the notional does.
 
 ## Project layout
 
@@ -126,11 +163,13 @@ internal/
   indicators/          SMA, EMA, RSI, ATR, rolling max/min, shift
   strategy/            ma_cross, rsi_reversion, breakout
   risk/                sizing, stops, kill switches
-  broker/              paper broker: slippage, commission, lot rounding
+  broker/              paper broker + live Binance spot & futures clients
   portfolio/           cash, positions, realized PnL, equity curve
-  engine/              the event loop
+  engine/              the event loop (backtest + live step)
   metrics/             Sharpe, Sortino, Calmar, drawdown, win rate, profit factor
-  marketdata/          Binance spot klines client
+  marketdata/          Binance spot and futures klines clients
+  state/               JSON session persistence (atomic write)
+  live/                the live session runner: broker wiring, reconciliation
   report/              CSV / JSON / Markdown / HTML writers
   webui/               HTTP server, JSON API and the embedded dashboard
   cli/                 command line interface
@@ -192,18 +231,29 @@ reproducible while the CLI and dashboard keep talking to real Binance.
 
 ## Going live
 
-`live` re-simulates recent bars and reports the orders it *would* send. To trade
-for real you need a broker adapter and, realistically, more work:
+The `trade` command is the live loop, already wired to real Binance:
 
-1. Implement a broker client (Alpaca, IBKR, Binance, ...) with the same shape as
-   `broker.PaperBroker.MarketOrder`, then swap it into `engine.Agent`.
-2. Keep `risk.Manager` in front of every order - it is the only thing standing
-   between a bug and your capital.
-3. Add state persistence (positions must survive a restart), reconciliation
-   against the broker, idempotent order IDs, and alerting.
-4. Test on a broker paper account for weeks before considering real money.
-5. Check the rules that apply to you: PDT in the US, leverage limits, taxes,
-   market data licensing.
+- **Venue.** `--futures` switches the runner to USDT-margined perpetuals
+  (`fapi.binance.com`): signed positions, so the strategy's short signals are
+  tradable, and leverage via `--leverage` / `risk.leverage`. Without it the
+  loop trades spot. `risk.allow_short` keeps the short side opt-in even on a
+  futures venue.
+- **Paper by default.** No `--execute` means fills are simulated locally
+  (`DryRun`), so you can run the loop with real market data and zero financial
+  risk. `--execute` places real orders and reads the API key/secret from the
+  `BINANCE_API_KEY` / `BINANCE_SECRET_KEY` environment variables only.
+- **Safe by default.** `--execute` requires a typed `yes` on stdin unless
+  `--yes` is given. On startup the runner reconciles the local book against
+  the exchange (balances for spot, the signed position for futures) and
+  refuses to continue if the two disagree. Client order ids are idempotent.
+- **Restart-safe.** Each cycle persists the open position, equity
+  high-water mark and risk-manager state to `--state`. A restart resumes
+  rather than re-entering.
+
+Before real money: run the paper loop against a broker testnet or demo
+account for a meaningful period, size `max_risk_per_trade_pct` for the
+leverage you actually intend to use, and confirm the venue's rules for your
+account (leverage caps, isolation, taxes, regional availability).
 
 ## License
 

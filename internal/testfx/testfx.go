@@ -31,7 +31,7 @@ func Bars(symbol string, days int, seed int64, end time.Time) model.Series {
 	dt := 1.0 / 252.0
 	for i := 0; i < days; i++ {
 		shock := rng.NormFloat64()
-		cum += (annualDrift - 0.5*annualVol*annualVol)*dt + annualVol*math.Sqrt(dt)*shock
+		cum += (annualDrift-0.5*annualVol*annualVol)*dt + annualVol*math.Sqrt(dt)*shock
 		closes[i] = 100.0 * math.Exp(cum)
 	}
 
@@ -46,7 +46,7 @@ func Bars(symbol string, days int, seed int64, end time.Time) model.Series {
 			Time:   dates[i],
 			Open:   open,
 			High:   math.Max(open, close) * (1 + intraday),
-			Low:    math.Min(open, close) * (1-intraday),
+			Low:    math.Min(open, close) * (1 - intraday),
 			Close:  close,
 			Volume: 200_000 + float64(rng.Intn(2_800_000)),
 		}

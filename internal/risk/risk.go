@@ -86,23 +86,73 @@ func (m *Manager) CanEnter(openPositions int, sameSymbol bool) Decision {
 // EntriesBlockedToday exposes the daily-loss pause to the engine.
 func (m *Manager) EntriesBlockedToday() bool { return m.entriesBlockedDay }
 
-// PositionSize implements the fixed-fractional rule:
+// RiskState is the serializable subset of a Manager, so a live session can
+// survive a restart: a halted risk manager stays halted, and a daily-loss
+// pause keeps blocking entries for the rest of that day.
+type RiskState struct {
+	Halted            bool
+	HaltReason        string
+	Day               time.Time
+	DayStartEquity    float64
+	EntriesBlockedDay bool
+}
+
+// Snapshot captures the manager's mutable state.
+func (m *Manager) Snapshot() RiskState {
+	return RiskState{
+		Halted:            m.Halted,
+		HaltReason:        m.HaltReason,
+		Day:               m.day,
+		DayStartEquity:    m.dayStartEquity,
+		EntriesBlockedDay: m.entriesBlockedDay,
+	}
+}
+
+// Restore puts a manager back into the state another process persisted. The
+// event log is intentionally not restored: it is a per-run report artifact.
+func (m *Manager) Restore(s RiskState) {
+	m.Halted = s.Halted
+	m.HaltReason = s.HaltReason
+	m.day = s.Day
+	m.dayStartEquity = s.DayStartEquity
+	m.entriesBlockedDay = s.EntriesBlockedDay
+}
+
+// PositionSize implements the fixed-fractional rule, leverage-aware.
 //
-//	qty = equity * max_risk_per_trade_pct / |entry - stop|
+//	quantity = notional / price
 //
-// then caps it by the position limit and the cash available.
+// where notional is the smallest of:
+//
+//   - equity × max_position_pct × leverage   (the account's position budget),
+//   - equity × max_risk_per_trade_pct / stop distance (fixed-fractional risk cap),
+//   - cash × leverage                         (margin a balance can post).
+//
+// With leverage 1 the first and third terms collapse to the historical
+// spot behaviour (full notional, cash-constrained), so backtests and spot
+// runs are unchanged. With leverage > 1 the same risk budget controls more
+// notional and a small balance can still open a full position — that is the
+// leverage effect. The risk cap is expressed in dollars lost at the stop,
+// so the per-trade risk does not grow just because leverage does.
 func (m *Manager) PositionSize(equity, cash, price, stopPrice, lotSize float64) float64 {
 	if price <= 0 || equity <= 0 {
 		return 0
 	}
-	budget := equity * m.Settings.MaxPositionPct
-	if stopPrice > 0 && stopPrice < price {
-		riskPerShare := price - stopPrice
-		riskBudget := equity * m.Settings.MaxRiskPerTradePct
-		budget = math.Min(budget, riskBudget/riskPerShare*price)
+	leverage := float64(m.Settings.Leverage)
+	if leverage < 1 {
+		leverage = 1
+	}
+
+	budget := equity * m.Settings.MaxPositionPct * leverage
+	if stopPrice > 0 {
+		riskPerShare := math.Abs(price - stopPrice)
+		if riskPerShare > 0 {
+			riskBudget := equity * m.Settings.MaxRiskPerTradePct
+			budget = math.Min(budget, riskBudget/riskPerShare*price)
+		}
 	}
 	affordable := math.Max(cash, 0) * 0.999
-	notional := math.Min(budget, affordable)
+	notional := math.Min(budget, affordable*leverage)
 	quantity := notional / price
 	lot := lotSize
 	if lot <= 0 {

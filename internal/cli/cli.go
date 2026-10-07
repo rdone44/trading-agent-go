@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
+	"github.com/huijun/trading-agent-go/internal/live"
 	"github.com/huijun/trading-agent-go/internal/marketdata"
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/report"
@@ -29,6 +33,8 @@ Usage:
   trading-agent backtest [flags]   run a backtest and write a report
   trading-agent scan [flags]       backtest several symbols and rank them
   trading-agent live [flags]       paper-trade the latest bars (no real orders)
+  trading-agent trade [flags]      run the live trading loop (paper by default;
+                                   --execute places real orders)
   trading-agent web [flags]        serve the interactive dashboard
   trading-agent strategies         list the built-in strategies
   trading-agent version            print the version
@@ -37,6 +43,9 @@ Examples:
   trading-agent backtest --symbol BTCUSDT --days 730
   trading-agent backtest --strategy breakout --symbol ETHUSDT --days 730
   trading-agent scan --symbols BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
+  trading-agent trade --symbol BTCUSDT --strategy rsi_reversion
+  trading-agent trade --execute   # real orders: needs BINANCE_API_KEY /
+                                  # BINANCE_SECRET_KEY and a typed "yes"
   trading-agent web --addr :8080
 
 Run "trading-agent backtest -h" for the full flag list.
@@ -55,6 +64,8 @@ func Run(args []string) int {
 		return runScan(args[1:])
 	case "live":
 		return runLive(args[1:])
+	case "trade":
+		return runTrade(args[1:])
 	case "web":
 		return runWeb(args[1:])
 	case "strategies":
@@ -365,6 +376,189 @@ func runLive(args []string) int {
 	}
 	printSummary(result)
 	return 0
+}
+
+func runTrade(args []string) int {
+	fs := flag.NewFlagSet("trade", flag.ContinueOnError)
+	var f flags
+	bind(fs, &f)
+
+	// trade-specific flags; the shared ones are bound first.
+	type tradeFlags struct {
+		execute   *bool
+		stateFile *string
+		yes       *bool
+		cycles    *int
+		futures   *bool
+		leverage  *int
+	}
+	var tf tradeFlags
+	tf.execute = fs.Bool("execute", false, "place real orders (default: paper, no orders)")
+	tf.stateFile = fs.String("state", "", "state file for restart persistence (default ./trade-state.json when present)")
+	tf.yes = fs.Bool("yes", false, "skip the confirmation prompt when --execute is used")
+	tf.cycles = fs.Int("cycles", 0, "run exactly N cycles then exit (0 = run until stopped)")
+	tf.futures = fs.Bool("futures", false, "trade USDT-margined perpetuals (leverage + shorts)")
+	tf.leverage = fs.Int("leverage", 0, "leverage multiplier for the futures venue (default from config, 1 = spot-like)")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfig(f)
+	if err != nil {
+		return fail(err)
+	}
+	if set(f.days) {
+		cfg.Live.LookbackDays = *f.days
+	}
+	// Venue and leverage come from flags, defaulting to the config file.
+	if set(tf.futures) {
+		cfg.Live.Futures = *tf.futures
+	}
+	if set(tf.leverage) {
+		if *tf.leverage < 1 {
+			return fail(fmt.Errorf("--leverage 必须 >= 1"))
+		}
+		cfg.Risk.Leverage = *tf.leverage
+		// Leverage only exists on a futures venue: a multiplier > 1 must
+		// point the run at perpetuals, otherwise a spot account would be
+		// asked to post margin it cannot. The short side is left to
+		// Risk.AllowShort (long-only futures is a valid, safer default).
+		if cfg.Risk.Leverage > 1 {
+			cfg.Live.Futures = true
+		}
+	}
+
+	execute := set(tf.execute) && *tf.execute
+	strat, err := strategy.New(cfg.Strategy.Name, cfg)
+	if err != nil {
+		return fail(err)
+	}
+
+	statePath := ""
+	if set(tf.stateFile) {
+		statePath = *tf.stateFile
+	} else if cfg.Live.StateFile != "" {
+		statePath = cfg.Live.StateFile
+	} else {
+		statePath = "trade-state.json"
+	}
+
+	runner, err := live.New(cfg, strat, execute, statePath)
+	if err != nil {
+		return fail(err)
+	}
+
+	if execute {
+		if !(set(tf.yes) && *tf.yes) {
+			fmt.Printf("⚠  将以真实订单交易 %s（策略 %s，初始资金 %.0f）。\n",
+				runner.Agent().Symbol, strat.Describe(), cfg.Risk.InitialCash)
+			if !confirmExecute() {
+				fmt.Println("已取消。真实订单需要交互输入 yes，或在非交互环境使用 --yes。")
+				return 0
+			}
+		}
+	}
+
+	if err := runner.Init(); err != nil {
+		return fail(err)
+	}
+
+	mode := "paper"
+	if execute {
+		mode = "EXECUTE"
+	}
+	fmt.Printf("trade loop started: %s %s [mode=%s] state=%s\n",
+		cfg.Agent.Symbol, strat.Describe(), mode, statePath)
+	if execute {
+		fmt.Printf("  交易所余额校验通过；每周期最多下一单。按 Ctrl+C 安全停止并保存状态。\n\n")
+	}
+
+	// Poll for as long as Ctrl+C is not pressed.
+	poll := cfg.Live.PollSeconds
+	if set(f.poll) {
+		poll = *f.poll
+	}
+	if poll <= 0 {
+		poll = 60
+	}
+
+	ticker := time.NewTicker(time.Duration(poll) * time.Second)
+	defer ticker.Stop()
+
+	// done is closed exactly once — by either a signal handler or the cycle
+	// limit — to avoid a double-close panic.
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	stop := func() { closeOnce.Do(func() { close(done) }) }
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for range signals {
+			fmt.Printf("\nstopping and saving state…\n")
+			stop()
+			return
+		}
+	}()
+
+	// Run an initial cycle immediately, then one per tick until stopped.
+	// With --cycles N the loop exits after N cycles instead of running
+	// until stopped, which makes the poll loop testable and usable for a
+	// quick single-pass run.
+	maxCycles := 0
+	if set(tf.cycles) {
+		maxCycles = *tf.cycles
+	}
+
+	cycleNo := 0
+	for {
+		cycleNo++
+		if err := runCycle(runner, time.Now().UTC()); err != nil {
+			fmt.Fprintf(os.Stderr, "cycle error: %v\n", err)
+		}
+		if maxCycles > 0 && cycleNo >= maxCycles {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-done:
+			// Interrupted by a signal or by the --cycles limit.
+		}
+	}
+
+	if err := runner.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: 保存状态失败: %v\n", err)
+	} else if statePath != "" {
+		fmt.Printf("state saved -> %s\n", statePath)
+	}
+	return 0
+}
+
+// runCycle fetches the latest price, runs one agent step, and persists.
+func runCycle(runner *live.Runner, now time.Time) error {
+	res, err := runner.Cycle(now)
+	if err != nil {
+		return err
+	}
+	open := "flat"
+	if res.Open != nil {
+		open = fmt.Sprintf("%s %.6f @ %.2f", res.Open.Side, res.Open.Quantity, res.Open.EntryPrice)
+	}
+	fmt.Printf("[%s] %-22s equity=%12.2f  cash=%12.2f  open=%s\n",
+		now.Format("2006-01-02 15:04:05"), res.Action, res.Equity, res.Cash, open)
+	return nil
+}
+
+// confirmExecute asks for a typed "yes" on stdin before real orders run. A
+// non-interactive session (no TTY) or any other answer declines.
+func confirmExecute() bool {
+	var answer string
+	fmt.Print("输入 yes 确认真实订单 > ")
+	if _, err := fmt.Scanln(&answer); err != nil || answer != "yes" {
+		return false
+	}
+	return true
 }
 
 // execute loads data and runs the agent end to end.

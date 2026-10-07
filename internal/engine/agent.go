@@ -59,12 +59,14 @@ type Result struct {
 	RiskEvents []risk.Event
 }
 
-type openTrade struct {
-	entryTime  time.Time
-	entryPrice float64
-	quantity   float64
-	side       broker.Side
-	entryFee   float64
+// OpenTrade is one open position, tracked for the round-trip PnL report. It
+// is exported so the CLI layer can persist and restore it across restarts.
+type OpenTrade struct {
+	EntryTime  time.Time
+	EntryPrice float64
+	Quantity   float64
+	Side       broker.Side
+	EntryFee   float64
 }
 
 // Agent wires a strategy to the broker, portfolio and risk manager.
@@ -72,14 +74,19 @@ type Agent struct {
 	Config   config.Config
 	Strategy strategy.Strategy
 	Symbol   string
-	Broker   *broker.PaperBroker
+	Broker   broker.Broker
 	Book     *portfolio.Portfolio
 	Risk     *risk.Manager
 
-	open   *openTrade
+	open   *OpenTrade
 	trades []Trade
+	// PeakEquity is the running equity high-water mark used by the risk
+	// manager; it survives restarts through state persistence.
+	PeakEquity float64
 }
 
+// New builds an agent with a paper broker — the shape used by backtests and
+// the default trade loop (which simulates fills, no real orders).
 func New(cfg config.Config, strat strategy.Strategy) *Agent {
 	symbol := cfg.Agent.Symbol
 	return &Agent{
@@ -89,6 +96,21 @@ func New(cfg config.Config, strat strategy.Strategy) *Agent {
 		Broker:   broker.New(cfg.Execution),
 		Book:     portfolio.New(cfg.Risk.InitialCash),
 		Risk:     risk.New(cfg.Risk),
+	}
+}
+
+// NewWithBroker builds an agent around a caller-supplied broker (e.g. the
+// live Binance broker) but reuses the given portfolio and risk manager. Used
+// by the trade loop so a real broker and a paper one run the identical
+// decision path.
+func NewWithBroker(cfg config.Config, strat strategy.Strategy, bk broker.Broker, book *portfolio.Portfolio, rm *risk.Manager) *Agent {
+	return &Agent{
+		Config:   cfg,
+		Strategy: strat,
+		Symbol:   cfg.Agent.Symbol,
+		Broker:   bk,
+		Book:     book,
+		Risk:     rm,
 	}
 }
 
@@ -110,8 +132,10 @@ func (a *Agent) RunBacktest(series model.Series) (Result, error) {
 	takeProfits := shift(signals.TakeProfit, 1)
 
 	warmup := a.Config.Backtest.WarmupBars
-	peakEquity := a.Book.InitialCash
 	last := series.Len() - 1
+	if a.PeakEquity <= 0 {
+		a.PeakEquity = a.Book.InitialCash
+	}
 
 	for i, bar := range series.Bars {
 		// 1) Intrabar protective exits. Stops are checked first: the
@@ -128,10 +152,10 @@ func (a *Agent) RunBacktest(series model.Series) (Result, error) {
 		// 3) Mark to market and update the risk limits.
 		prices := map[string]float64{a.Symbol: bar.Close}
 		point := a.Book.Record(bar.Time, prices)
-		if point.Equity > peakEquity {
-			peakEquity = point.Equity
+		if point.Equity > a.PeakEquity {
+			a.PeakEquity = point.Equity
 		}
-		a.Risk.Update(bar.Time, point.Equity, peakEquity)
+		a.Risk.Update(bar.Time, point.Equity, a.PeakEquity)
 
 		if a.Risk.Halted {
 			a.closePosition(bar.Time, bar.Close, "risk halt: "+a.Risk.HaltReason)
@@ -161,7 +185,7 @@ func (a *Agent) RunBacktest(series model.Series) (Result, error) {
 		Bars:       series.Len(),
 		Equity:     a.Book.Curve,
 		Trades:     a.trades,
-		Orders:     a.Broker.Trades,
+		Orders:     a.Broker.Fills(),
 		RiskEvents: a.Risk.Events,
 	}
 	result.Metrics = metrics.Compute(
@@ -260,9 +284,9 @@ func (a *Agent) rebalance(bar model.Bar, target, strategyStop, strategyTarget fl
 	updated.StopPrice = stop
 	updated.TakeProfitPrice = targetPrice
 	updated.OpenedAt = bar.Time
-	a.open = &openTrade{
-		entryTime: bar.Time, entryPrice: fill.Price,
-		quantity: fill.Quantity, side: fill.Side, entryFee: fill.Commission,
+	a.open = &OpenTrade{
+		EntryTime: bar.Time, EntryPrice: fill.Price,
+		Quantity: fill.Quantity, Side: fill.Side, EntryFee: fill.Commission,
 	}
 	return nil
 }
@@ -289,22 +313,22 @@ func (a *Agent) recordClose(ts time.Time, fill broker.Fill, reason string) {
 		return
 	}
 	direction := 1.0
-	if a.open.side == broker.Sell {
+	if a.open.Side == broker.Sell {
 		direction = -1.0
 	}
-	gross := (fill.Price - a.open.entryPrice) * a.open.quantity * direction
-	fees := a.open.entryFee + fill.Commission
-	notional := a.open.entryPrice * a.open.quantity
+	gross := (fill.Price - a.open.EntryPrice) * a.open.Quantity * direction
+	fees := a.open.EntryFee + fill.Commission
+	notional := a.open.EntryPrice * a.open.Quantity
 	returnPct := 0.0
 	if notional != 0 {
 		returnPct = (gross - fees) / notional * 100
 	}
 	a.trades = append(a.trades, Trade{
-		EntryTime:  a.open.entryTime,
+		EntryTime:  a.open.EntryTime,
 		ExitTime:   ts,
-		Side:       a.open.side,
-		Quantity:   a.open.quantity,
-		EntryPrice: a.open.entryPrice,
+		Side:       a.open.Side,
+		Quantity:   a.open.Quantity,
+		EntryPrice: a.open.EntryPrice,
 		ExitPrice:  fill.Price,
 		GrossPnL:   gross,
 		Commission: fees,
@@ -313,6 +337,48 @@ func (a *Agent) recordClose(ts time.Time, fill broker.Fill, reason string) {
 		Reason:     reason,
 	})
 	a.open = nil
+}
+
+// OpenTrade returns a copy of the currently open position, or nil when flat.
+// It is the persistence seam: the CLI saves it to disk so a restart can
+// resume round-trip PnL accounting.
+func (a *Agent) OpenTrade() *OpenTrade {
+	if a.open == nil {
+		return nil
+	}
+	c := *a.open
+	return &c
+}
+
+// RestoreState rebuilds the agent's mutable state from a persisted session:
+// cash, the equity high-water mark, the open position with its protective
+// levels, and the risk manager's halt/daily-pause state. Called on startup
+// so a restarted trade loop does not reopen a position it already holds or
+// re-trigger a risk limit it already tripped.
+func (a *Agent) RestoreState(cash, peak float64, open *OpenTrade, stop, target float64, riskState risk.RiskState) {
+	a.Book.Cash = cash
+	a.PeakEquity = peak
+	if open != nil {
+		// Rebuild the portfolio position from the persisted round trip. A
+		// short leg comes back signed negative, so the book matches the
+		// exchange's signed position on a futures venue.
+		quantity := open.Quantity
+		if open.Side == broker.Sell {
+			quantity = -open.Quantity
+		}
+		pos := a.Book.Position(a.Symbol)
+		pos.Quantity = quantity
+		pos.AvgPrice = open.EntryPrice
+		pos.OpenedAt = open.EntryTime
+		pos.StopPrice = stop
+		pos.TakeProfitPrice = target
+		// Cash already reflects the entry fill (it was persisted after the
+		// fill was applied), so the position's cost is not re-debited.
+		a.open = open
+	} else {
+		a.open = nil
+	}
+	a.Risk.Restore(riskState)
 }
 
 // shift moves values forward by n bars, leaving NaN at the front.

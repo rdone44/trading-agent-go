@@ -49,6 +49,11 @@ type Risk struct {
 	MaxDailyLossPct    *float64 `yaml:"max_daily_loss_pct"`
 	AllowShort         bool     `yaml:"allow_short"`
 	MaxOpenPositions   int      `yaml:"max_open_positions"`
+	// Leverage is the margin multiplier for a position. 1 is spot-like (full
+	// notional, cash-constrained sizing, no shorting). >1 switches the sizing
+	// to the futures margin model: notional = margin * Leverage, so the same
+	// risk budget controls more notional. Only meaningful on a futures venue.
+	Leverage int `yaml:"leverage"`
 }
 
 type Execution struct {
@@ -65,22 +70,29 @@ type Backtest struct {
 }
 
 type Live struct {
-	PollSeconds  int  `yaml:"poll_seconds"`
-	LookbackDays int  `yaml:"lookback_days"`
-	PaperTrading bool `yaml:"paper_trading"`
+	PollSeconds  int    `yaml:"poll_seconds"`
+	LookbackDays int    `yaml:"lookback_days"`
+	PaperTrading bool   `yaml:"paper_trading"`
+	StateFile    string `yaml:"state_file"`
+	// Futures selects the USDT-margined perpetual venue. When false the
+	// runner uses the spot broker and spot K-lines; when true it wires the
+	// futures broker and futures K-lines/mark prices. A live loop that shorts
+	// or runs a leverage > 1 must be on a futures venue.
+	Futures    bool   `yaml:"futures"`
+	MarginMode string `yaml:"margin_mode"` // "ISOLATED" (default) or "CROSS"
 }
 
 // Default returns the built-in settings used when no config file is present.
 func Default() Config {
 	return Config{
-		Agent: Agent{Name: "trading-agent", Symbol: "BTCUSDT", Timeframe: "1d", HistoryDays: 730},
-		Data: Data{Provider: "binance"},
+		Agent:    Agent{Name: "trading-agent", Symbol: "BTCUSDT", Timeframe: "1d", HistoryDays: 730},
+		Data:     Data{Provider: "binance"},
 		Strategy: Strategy{Name: "ma_cross", Params: map[string]float64{}},
 		Risk: Risk{
 			InitialCash: 100_000, MaxPositionPct: 0.95, MaxRiskPerTradePct: 0.02,
 			StopLossPct: f(0.06), TakeProfitPct: f(0.18),
 			MaxDrawdownPct: f(0.25), MaxDailyLossPct: f(0.05),
-			AllowShort: false, MaxOpenPositions: 1,
+			AllowShort: false, MaxOpenPositions: 1, Leverage: 1,
 		},
 		Execution: Execution{
 			CommissionBps: 1, SlippageBps: 5, MinTradeNotional: 100,
@@ -113,6 +125,13 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Data.Provider == "" {
 		cfg.Data.Provider = "binance"
+	}
+	// A Leverage below 1 is nonsensical (that would be a discount), clamp to 1.
+	// The venue choice (Live.Futures) does NOT force AllowShort: long-only
+	// futures is a valid, safer default. To use the short side the user sets
+	// Risk.AllowShort explicitly.
+	if cfg.Risk.Leverage < 1 {
+		cfg.Risk.Leverage = 1
 	}
 	return cfg, nil
 }

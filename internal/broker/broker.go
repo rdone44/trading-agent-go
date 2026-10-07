@@ -29,6 +29,18 @@ type Fill struct {
 	Notional   float64
 	Reason     string
 	Rejected   bool
+	// OrderID is the exchange order identifier; empty for paper fills.
+	OrderID string
+}
+
+// Broker is anything that can place market orders: the paper broker used by
+// backtests, and the live Binance broker used by the trade loop.
+type Broker interface {
+	// MarketOrder places a market order at the given reference price and
+	// returns the (possibly rejected) fill.
+	MarketOrder(ts time.Time, symbol string, side Side, quantity, price float64, reason string) Fill
+	// Fills lists every fill so far, including rejections.
+	Fills() []Fill
 }
 
 // PaperBroker fills market orders with commission and slippage. Cash
@@ -43,6 +55,9 @@ type PaperBroker struct {
 func New(settings config.Execution) *PaperBroker {
 	return &PaperBroker{Settings: settings}
 }
+
+// Fills implements Broker; paper fills accumulate in Trades.
+func (b *PaperBroker) Fills() []Fill { return b.Trades }
 
 // MarketOrder submits a market order at the given reference price.
 func (b *PaperBroker) MarketOrder(ts time.Time, symbol string, side Side, quantity, price float64, reason string) Fill {

@@ -97,6 +97,52 @@ func Binance(symbol string, days int, end time.Time) (model.Series, error) {
 	return model.Series{Symbol: ticker, Bars: bars, Source: "binance"}, nil
 }
 
+// LastPrice fetches the most recent price for a ticker from the public
+// Binance REST API. The trade loop calls this each cycle to mark open
+// positions and to evaluate protective stops without waiting for a candle to
+// close.
+func LastPrice(symbol string) (float64, time.Time, error) {
+	ticker := BinanceSymbol(symbol)
+	if ticker == "" {
+		return 0, time.Time{}, fmt.Errorf("Binance 数据源需要交易对代码，例如 BTCUSDT")
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	query := url.Values{}
+	query.Set("symbol", ticker)
+	query.Set("interval", "1d")
+	query.Set("limit", "2")
+	request, err := http.NewRequest(http.MethodGet, binanceEndpoint+"/api/v3/klines?"+query.Encode(), nil)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("构造 Binance 请求失败: %w", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("请求 Binance 最新价失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return 0, time.Time{}, fmt.Errorf("Binance 返回 HTTP 状态码 %d（%s）",
+			response.StatusCode, binanceErrorDetail(response))
+	}
+	var rows [][]json.RawMessage
+	if err := json.NewDecoder(response.Body).Decode(&rows); err != nil {
+		return 0, time.Time{}, fmt.Errorf("解析 Binance 最新价失败: %w", err)
+	}
+	if len(rows) == 0 || len(rows[len(rows)-1]) < 5 {
+		return 0, time.Time{}, fmt.Errorf("Binance 没有返回 %s 的K线", ticker)
+	}
+	last := rows[len(rows)-1]
+	openTime, err := rawInt64(last[0])
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("Binance 最新K线的时间: %w", err)
+	}
+	price, err := rawFloat(last[4])
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("Binance 最新K线的价格: %w", err)
+	}
+	return price, time.UnixMilli(openTime).UTC(), nil
+}
+
 // binanceKlines fetches one page of daily candles in [start, end].
 func binanceKlines(client *http.Client, ticker string, start, end time.Time) ([]binanceKline, error) {
 	query := url.Values{}

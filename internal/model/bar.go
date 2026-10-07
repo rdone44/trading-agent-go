@@ -21,6 +21,11 @@ type Series struct {
 	Symbol string
 	Bars   []Bar
 	Source string
+	// GapDays is how many daily candles the source skipped between the bars.
+	// 0 means contiguous; a non-zero value tells the caller the history is not
+	// one-candle-per-day, so bar-count based assumptions should be treated as
+	// approximate. Set by the loaders via model.CountGapDays.
+	GapDays int
 }
 
 func (s Series) Len() int { return len(s.Bars) }
@@ -31,6 +36,30 @@ func (s Series) Open() []float64  { return column(s.Bars, func(b Bar) float64 { 
 func (s Series) High() []float64  { return column(s.Bars, func(b Bar) float64 { return b.High }) }
 func (s Series) Low() []float64   { return column(s.Bars, func(b Bar) float64 { return b.Low }) }
 func (s Series) Close() []float64 { return column(s.Bars, func(b Bar) float64 { return b.Close }) }
+
+// CountGapDays reports how many daily candles are missing between the bars,
+// which are assumed to be ascending daily candles (one per 24h). A separation
+// of exactly k·24h between two bars means k-1 days were skipped. It is 0 for a
+// perfectly contiguous series and 0 for a one-bar series; a caller uses it to
+// learn that a source skipped days rather than trusting the bar count at face
+// value. It is a pure function so it is trivially testable and reusable.
+func CountGapDays(bars []Bar) int {
+	const step = 24 * time.Hour
+	if len(bars) < 2 {
+		return 0
+	}
+	total := 0
+	for i := 1; i < len(bars); i++ {
+		delta := bars[i].Time.Sub(bars[i-1].Time)
+		if delta <= step {
+			continue
+		}
+		if missing := int(delta/step) - 1; missing > 0 {
+			total += missing
+		}
+	}
+	return total
+}
 
 func column(bars []Bar, pick func(Bar) float64) []float64 {
 	out := make([]float64, len(bars))

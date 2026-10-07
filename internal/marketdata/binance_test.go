@@ -41,6 +41,18 @@ func withBinanceServer(t *testing.T, handler http.HandlerFunc) *httptest.Server 
 	return server
 }
 
+// fastRetry makes the exponential backoff a no-op for a test, so retry paths
+// run in microseconds instead of the real 1s/2s/4s. Use it on any test that
+// exercises a retrying endpoint.
+func fastRetry(t *testing.T) {
+	t.Helper()
+	previous := binanceSleep
+	binanceSleep = func(time.Duration) {}
+	t.Cleanup(func() {
+		binanceSleep = previous
+	})
+}
+
 func TestBinanceSymbolNormalization(t *testing.T) {
 	cases := map[string]string{
 		"BTCUSDT":   "BTCUSDT",
@@ -230,6 +242,7 @@ func TestBinanceNeedsASymbol(t *testing.T) {
 // The public endpoint occasionally drops a TLS handshake or answers 5xx; one
 // flaky connection must not fail the whole backtest.
 func TestBinanceRetriesTransientFailures(t *testing.T) {
+	fastRetry(t)
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	attempts := 0
 

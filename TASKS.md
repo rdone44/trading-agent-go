@@ -71,7 +71,13 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 可做：请求失败重试、限频处理、K 线缺口检测
 - 约束：单测继续走 `internal/testfx`，不在测试里打真网
 - 认领：coding（单人重构，含原 muse 地盘）
-- 状态：open（P 级到达时做）
+- 状态：done（P 级全部完成，coding 直接承接；as 的 A2A 派发三次未落到 git，由 coding 补完）
+- 落地：
+  1. 退避改为可注入：`binanceBackoffs`（1s/2s/4s 指数）+ `binanceSleep`（测试可置 no-op），`binanceRequest` 与 `doGetWithRetry` 共用。
+  2. 价格端点补重试：`LastPrice`/`FuturesLastPrice`/`FuturesMarkPrice` 改走 `doGetWithRetry`（原先零重试）；4xx 不重试、5xx/网络 3 次。
+  3. K 线缺口检测：`model.CountGapDays`（纯函数）+ `Series.GapDays` 字段，Binance/futures loader 返回前填充。
+  4. 测试：`gap_test.go`（CountGapDays 纯函数 3 例、loader 填 GapDays 回归、价格端点重试/4xx 不重试）+ `binance_test.go` 加 `fastRetry` 注入、既有重试测试改为 no-op sleep（不拖慢 CI）。
+  - 全绿：gofmt clean、`go build ./...`、`go vet`、`go test ./... -count=1` 18 包通过。
 
 ### T5. 经纪商与实盘安全
 
@@ -133,7 +139,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T1 | coding（单人） | 2026-10-08 | open |
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
-| T4 | coding（单人） | 2026-10-08 | open |
+| T4 | coding（单人） | 2026-10-08 | done |
 | T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 done) |
 | T6 | coding（单人） | 2026-10-08 | open |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | claimed |

@@ -77,7 +77,9 @@ func klinesFor(baseURL, source, symbol string, days int, end time.Time) (model.S
 	if len(bars) > days {
 		bars = bars[len(bars)-days:]
 	}
-	return model.Series{Symbol: ticker, Bars: bars, Source: source}, nil
+	series := model.Series{Symbol: ticker, Bars: bars, Source: source}
+	series.GapDays = model.CountGapDays(series.Bars)
+	return series, nil
 }
 
 // fetchKlinesPage fetches one page of daily candles from a K-line endpoint.
@@ -175,7 +177,7 @@ func FuturesLastPrice(symbol string) (float64, time.Time, error) {
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("构造 Binance futures 请求失败: %w", err)
 	}
-	response, err := client.Do(request)
+	response, err := doGetWithRetry(client, request, ticker)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("请求 Binance futures 最新价失败: %w", err)
 	}
@@ -217,7 +219,7 @@ func FuturesMarkPrice(symbol string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	response, err := client.Do(request)
+	response, err := doGetWithRetry(client, request, ticker)
 	if err != nil {
 		return 0, fmt.Errorf("请求 Binance futures 标记价格失败: %w", err)
 	}

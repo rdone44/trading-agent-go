@@ -25,6 +25,48 @@ const binanceMaxLimit = 1000
 // connection should not fail a whole backtest.
 const binanceAttempts = 3
 
+// binanceBackoffs is the wait before retries 2 and 3: exponential 1s/2s/4s.
+// Index attempt-2 in it. It is a variable so a test can shrink it.
+var binanceBackoffs = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
+// binanceSleep is the one wait binanceRequest performs between attempts. It
+// is a variable so a test can replace it with a no-op and keep the suite fast.
+var binanceSleep = func(d time.Duration) { time.Sleep(d) }
+
+// binanceBackoff returns the wait before the attempt-numbered retry.
+func binanceBackoff(attempt int) time.Duration {
+	if attempt-1 >= len(binanceBackoffs) {
+		return binanceBackoffs[len(binanceBackoffs)-1]
+	}
+	return binanceBackoffs[attempt-1]
+}
+
+// doGetWithRetry performs one GET, retrying transient failures (5xx, network
+// errors) with the same exponential backoff binanceRequest uses. A 4xx is a
+// definitive exchange answer and is returned immediately. The winning response
+// is left open for the caller to read and close.
+func doGetWithRetry(client *http.Client, request *http.Request, ticker string) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= binanceAttempts; attempt++ {
+		if attempt > 1 {
+			binanceSleep(binanceBackoff(attempt))
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			lastErr = fmt.Errorf("请求 Binance %s 失败: %w", ticker, err)
+			continue
+		}
+		if response.StatusCode >= 500 {
+			lastErr = fmt.Errorf("Binance 返回 %s 的 HTTP 状态码 %d%s",
+				ticker, response.StatusCode, binanceErrorDetail(response))
+			response.Body.Close()
+			continue
+		}
+		return response, nil
+	}
+	return nil, fmt.Errorf("%w（已重试 %d 次）", lastErr, binanceAttempts)
+}
+
 // BinanceSymbol normalizes a ticker into Binance's compact form, so "BTCUSDT",
 // "btc-usdt" and "BTC/USDT" all resolve to the same market.
 func BinanceSymbol(symbol string) string {
@@ -94,7 +136,9 @@ func Binance(symbol string, days int, end time.Time) (model.Series, error) {
 	if len(bars) > days {
 		bars = bars[len(bars)-days:]
 	}
-	return model.Series{Symbol: ticker, Bars: bars, Source: "binance"}, nil
+	series := model.Series{Symbol: ticker, Bars: bars, Source: "binance"}
+	series.GapDays = model.CountGapDays(series.Bars)
+	return series, nil
 }
 
 // LastPrice fetches the most recent price for a ticker from the public
@@ -115,7 +159,7 @@ func LastPrice(symbol string) (float64, time.Time, error) {
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("构造 Binance 请求失败: %w", err)
 	}
-	response, err := client.Do(request)
+	response, err := doGetWithRetry(client, request, ticker)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("请求 Binance 最新价失败: %w", err)
 	}
@@ -211,14 +255,15 @@ func binanceKlines(client *http.Client, ticker string, start, end time.Time) ([]
 	return out, nil
 }
 
-// binanceRequest performs one page request, retrying transient failures with a
-// short backoff. A 4xx is a real answer from the exchange (unknown symbol, bad
-// range) and is returned immediately; 5xx and network errors are retried.
+// binanceRequest performs one page request, retrying transient failures with
+// an exponential backoff (1s/2s/4s before attempts 2/3). A 4xx is a real
+// answer from the exchange (unknown symbol, bad range) and is returned
+// immediately; 5xx, network errors and undecodable bodies are retried.
 func binanceRequest(client *http.Client, request *http.Request, ticker string) ([][]json.RawMessage, error) {
 	var lastErr error
 	for attempt := 1; attempt <= binanceAttempts; attempt++ {
 		if attempt > 1 {
-			time.Sleep(time.Duration(attempt-1) * 400 * time.Millisecond)
+			binanceSleep(binanceBackoff(attempt))
 		}
 
 		response, err := client.Do(request)

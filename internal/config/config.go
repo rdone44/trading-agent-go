@@ -97,6 +97,11 @@ type LLM struct {
 	// VetoEnabled gates new live entries with an LLM second opinion.
 	// Fail-open: a model error or a missing key lets the entry through.
 	VetoEnabled bool `yaml:"veto_enabled"`
+	// VetoCacheSec memoizes a veto verdict for this many seconds, so repeated
+	// proposals for the same position do not bill the model again. The hard
+	// risk limits (stop distance, size, kill switch) are still re-checked every
+	// cycle; only the soft model opinion is cached. 0 disables caching.
+	VetoCacheSec int `yaml:"veto_cache_sec"`
 }
 
 // Default returns the built-in settings used when no config file is present.
@@ -118,10 +123,11 @@ func Default() Config {
 		Backtest: Backtest{WarmupBars: 60, OutputDir: "reports"},
 		Live:     Live{PollSeconds: 60, LookbackDays: 400, PaperTrading: true},
 		LLM: LLM{
-			BaseURL:    "https://api.openai.com/v1",
-			Model:      "gpt-4o-mini",
-			TimeoutSec: 30,
-			MaxTokens:  1024,
+			BaseURL:      "https://api.openai.com/v1",
+			Model:        "gpt-4o-mini",
+			TimeoutSec:   30,
+			MaxTokens:    1024,
+			VetoCacheSec: 900,
 		},
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +58,9 @@ Examples:
   trading-agent trade --execute   # real orders: needs BINANCE_API_KEY /
                                   # BINANCE_SECRET_KEY and a typed "yes"
   trading-agent tune --strategy rsi_reversion --objective sharpe --rounds 6
+                                  # proposals are clamped to the strategy's legal
+                                  # ranges; --stall N stops after N rounds without
+                                  # improvement, --no-clamp disables the clamp
   trading-agent web --addr :8080
 
 Run "trading-agent backtest -h" for the full flag list.
@@ -622,6 +624,8 @@ func runTune(args []string) int {
 	rounds := fs.Int("rounds", 4, "number of LLM proposal rounds after the baseline")
 	objective := fs.String("objective", "sharpe", "metric to maximize: sharpe, sortino, total_return, profit_factor, win_rate")
 	saveBest := fs.String("save-best", "", "write the best parameters into this YAML config path")
+	stall := fs.Int("stall", 3, "stop early after N consecutive rounds that do not improve the best metric (0 disables early stop)")
+	noClamp := fs.Bool("no-clamp", false, "skip clamping model proposals into the strategy's legal parameter ranges")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -641,15 +645,26 @@ func runTune(args []string) int {
 
 	// Seed the parameter map with the strategy's documented defaults, then
 	// layer any user-supplied params on top so the baseline respects them.
-	spec, ok := strategy.SpecFor(cfg.Strategy.Name)
+	spec, hasSpec := strategy.SpecFor(cfg.Strategy.Name)
 	params := map[string]float64{}
-	for _, p := range spec.Params {
-		params[p.Key] = p.Default
+	if hasSpec {
+		params = spec.Defaults(cfg.Strategy.Params)
+	} else {
+		// No spec: start from whatever the user configured.
+		params = map[string]float64{}
+		for k, v := range cfg.Strategy.Params {
+			params[k] = v
+		}
 	}
-	for k, v := range cfg.Strategy.Params {
-		params[k] = v
+	// Clamp the starting point too, so a hand-edited config that sits
+	// outside the strategy's legal range cannot poison the baseline.
+	clamp := func(p map[string]float64) map[string]float64 {
+		if hasSpec && !*noClamp {
+			return spec.ClampParams(p)
+		}
+		return p
 	}
-	_ = ok // a strategy with no spec just starts from the current params
+	params = clamp(params)
 
 	// runOnce backtests the given params against the shared series.
 	runOnce := func(p map[string]float64) (engine.Result, float64, bool) {
@@ -680,6 +695,8 @@ func runTune(args []string) int {
 	fmt.Printf("baseline  %-24s = %.4f   params=%s\n", *objective, baseVal, formatParams(params))
 
 	client := llm.New(cfg.LLM)
+	maxStall := *stall
+	stallCount := 0
 	for i := 1; i <= *rounds; i++ {
 		if !client.Enabled() {
 			fmt.Printf("round %d: 跳过（未设置 LLM_API_KEY，无法生成新参数）\n", i)
@@ -690,24 +707,34 @@ func runTune(args []string) int {
 			fmt.Printf("round %d: 提议失败，沿用当前参数 — %v\n", i, err)
 			continue
 		}
-		proposed := proposal.Params
+		// Keep the proposal inside the strategy's legal parameter ranges so a
+		// wild suggestion can never produce a degenerate strategy.
+		proposed := clamp(proposal.Params)
 		res, val, valid := runOnce(proposed)
 		if !valid {
-			// No trades under the proposal: keep the current params and the
-			// last valid result so the next round reasons from a baseline.
+			// No trades under the proposal: revert to the best-known params;
+			// the last valid result is what the next round reasons from.
 			params = bestParams
+			stallCount++
 			fmt.Printf("round %d: 该参数组合无交易，已还原 — %s\n", i, formatParams(params))
-			continue
+		} else {
+			// Adopt the proposal as the new current state, whatever its score.
+			params, latest = proposed, res
+			if val > bestVal {
+				bestParams, bestVal = params, val
+				stallCount = 0
+				fmt.Printf("★ round %d  %-24s = %.4f   %s\n        rationale: %s\n",
+					i, *objective, val, formatParams(params), proposal.Rationale)
+			} else {
+				stallCount++
+				fmt.Printf("  round %d  %-24s = %.4f   %s\n        rationale: %s\n",
+					i, *objective, val, formatParams(params), proposal.Rationale)
+			}
 		}
-		// Adopt the proposal as the new current state.
-		params, latest = proposed, res
-		marker := "  "
-		if val > bestVal {
-			bestParams, bestVal = params, val
-			marker = "★"
+		if maxStall > 0 && stallCount >= maxStall {
+			fmt.Printf("早停: 连续 %d 轮没有改进 best，停止（--stall 0 可关闭）\n", maxStall)
+			break
 		}
-		fmt.Printf("%s round %d  %-24s = %.4f   %s\n        rationale: %s\n",
-			marker, i, *objective, val, formatParams(params), proposal.Rationale)
 	}
 
 	fmt.Printf("\nbest %s = %.4f\n  params=%s\n", *objective, bestVal, formatParams(bestParams))
@@ -770,13 +797,8 @@ func plainMetricLocal(v *float64, digits int) string {
 
 // formatParams renders a parameter map deterministically (sorted by key).
 func formatParams(params map[string]float64) string {
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
+	parts := make([]string, 0, len(params))
+	for _, k := range strategy.SortKeys(params) {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
 	}
 	return strings.Join(parts, " ")

@@ -12,6 +12,7 @@ import (
 
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/model"
+	"github.com/huijun/trading-agent-go/internal/strategy"
 	"github.com/huijun/trading-agent-go/internal/testfx"
 	"github.com/huijun/trading-agent-go/internal/webui"
 )
@@ -94,8 +95,8 @@ func TestConfigEndpointDescribesStrategies(t *testing.T) {
 	if payload.OutputDir != dir {
 		t.Errorf("output_dir = %q, want %q", payload.OutputDir, dir)
 	}
-	if len(payload.Strategies) != 3 {
-		t.Fatalf("strategies = %d, want 3", len(payload.Strategies))
+	if len(payload.Strategies) != len(strategy.Specs()) {
+		t.Fatalf("strategies = %d, want %d (len of strategy.Specs)", len(payload.Strategies), len(strategy.Specs()))
 	}
 	for _, spec := range payload.Strategies {
 		if spec.Name == "" || spec.Title == "" || len(spec.Params) == 0 {

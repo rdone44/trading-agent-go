@@ -31,6 +31,10 @@ func newTestServer(t *testing.T) (*webui.Server, string) {
 	cfg.Agent.HistoryDays = 300
 	cfg.Backtest.WarmupBars = 30
 	cfg.Backtest.OutputDir = dir
+	// Keep the session's state file inside the test's temp dir. Without this a
+	// lifecycle test drops trade-state.json into the package directory, where
+	// it leaks into `git status` and can be picked up by the next test run.
+	cfg.Live.StateFile = filepath.Join(dir, "trade-state.json")
 	server := webui.New(cfg)
 	server.SeriesLoader = fxLoader
 	return server, dir

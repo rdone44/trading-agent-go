@@ -58,7 +58,7 @@ matches where it runs; `build.ps1` produces both.
 | Binary | `trading-agent-desktop-windows-amd64.exe` | `trading-agent-server-linux-amd64` (also arm64) |
 | Entry point | `cmd/trading-agent-desktop` | `cmd/trading-agent-server` |
 | Start it by | double-clicking the .exe | `systemctl start trading-agent` |
-| Binds | `127.0.0.1` on a free port | `0.0.0.0:8080` by default |
+| Binds | `127.0.0.1:8765` (falls back to a free port if taken) | `0.0.0.0:8080` by default |
 | Auth | none - loopback only | **token required** |
 | Browser | opens automatically | you open the printed URL |
 | Console | none (`-H=windowsgui`) | stdout / journal |
@@ -68,9 +68,16 @@ matches where it runs; `build.ps1` produces both.
 
 ### Windows desktop
 
-Double-click the exe. It picks a free loopback port, opens the dashboard in the
-default browser, and writes reports next to itself. There is no console window
-and no flag to pass; the 退出 button in the page stops the server and exits.
+Double-click the exe. It binds `127.0.0.1:8765` - a stable port, so the console
+URL and any bookmark survive a restart - opens the dashboard in the default
+browser, and writes reports and `trade-state.json` next to itself. There is no
+console window and no flag to pass; the 退出 button in the page stops the server
+and exits.
+
+If the port is already taken by something else, it falls back to an
+OS-assigned one. If *this app* is already running on it, a second double-click
+just reopens the live console instead of starting a rival server that would
+trade the same account behind the first one's back.
 
 If it fails to start, a dialog box appears with the reason - the same text is
 appended to `%APPDATA%\trading-agent\desktop.log`.

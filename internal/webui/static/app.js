@@ -48,10 +48,22 @@ function translateReason(reason) {
 const signClass = (v) => (v == null || Number.isNaN(v) ? "" : v >= 0 ? "pos" : "neg");
 
 async function api(path, options) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (error) {
+    // A bare "Failed to fetch" is what the browser says when the server is
+    // gone, and it reads like a bug in the page. Say what actually happened
+    // and what to do about it.
+    throw new Error(offlineMessage());
+  }
   const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload;
+}
+
+function offlineMessage() {
+  return "连接不上本地服务：程序可能已经退出，或页面还开着上一次运行的地址。请重新打开 trading-agent 桌面程序，并刷新它打开的页面。";
 }
 
 // ------------------------------------------------------------------- state
@@ -302,6 +314,9 @@ function renderSession(s) {
   const started = s.cycles > 0 || s.running;
   $("#empty-state").hidden = started;
   $("#session").hidden = !started;
+  // Reaching this point means the server answered, so a previous "cannot
+  // reach the server" banner is stale and must not linger.
+  setServerDown(false);
   if (!started) return;
 
   // Keep one equity point per recorded cycle so the sparkline is a real
@@ -354,9 +369,22 @@ async function refreshSession() {
     // hammer the server for a session that is not running.
     schedulePoll(status.running ? 3000 : 15000);
   } catch (error) {
-    setStatus(`无法读取会话状态：${error.message}`, "error");
-    schedulePoll(15000);
+    setServerDown(true);
+    setStatus(error.message, "error");
+    // Back off while the server is unreachable: retrying every 15s forever
+    // just fills the console with network errors.
+    schedulePoll(30000);
   }
+}
+
+// serverDown remembers the last connection state so the banner is only written
+// when it actually changes, instead of being re-rendered on every poll.
+let serverDown = false;
+function setServerDown(down) {
+  if (down === serverDown) return;
+  serverDown = down;
+  if (down) setStatus(offlineMessage(), "error");
+  else setStatus("");
 }
 
 function schedulePoll(delay) {

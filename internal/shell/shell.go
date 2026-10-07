@@ -9,9 +9,18 @@ package shell
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"time"
 )
+
+// DefaultDesktopPort is the loopback port the desktop edition prefers. A
+// stable port matters more than a guaranteed-free one: it keeps the console's
+// URL identical across restarts, so a restored browser tab or a bookmark keeps
+// working instead of failing to connect to last run's port.
+const DefaultDesktopPort = 8765
 
 // OpenBrowser launches the default browser at url. Failure is not fatal and
 // is returned so the caller can log it: a headless machine simply has nothing
@@ -47,6 +56,58 @@ func FreePort(host string) (int, error) {
 		return 0, fmt.Errorf("unexpected listener address %T", listener.Addr())
 	}
 	return addr.Port, nil
+}
+
+// DesktopAddr returns the address the desktop edition should bind. It prefers
+// the stable default port so the URL survives a restart, and falls back to an
+// OS-assigned port only when that one is already in use by something else.
+func DesktopAddr(host string, preferred int) (string, error) {
+	if preferred > 0 {
+		addr := net.JoinHostPort(host, strconv.Itoa(preferred))
+		if listener, err := net.Listen("tcp", addr); err == nil {
+			listener.Close()
+			return addr, nil
+		}
+	}
+	port, err := FreePort(host)
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+// DesktopTarget decides what a desktop launch should do. It returns the
+// address to serve on, or alreadyRunning=true when this app is already
+// answering on the preferred port, in which case the caller should just
+// surface the running console instead of starting a second server.
+//
+// The order matters: the "am I already up?" probe has to run against the
+// preferred port, before the fallback. Probing after the fallback would test
+// the fresh port - which is by definition free - and miss the running
+// instance entirely, letting a second server start and trade the same account.
+func DesktopTarget(host string, preferred int) (addr string, alreadyRunning bool, err error) {
+	if preferred > 0 {
+		preferredAddr := net.JoinHostPort(host, strconv.Itoa(preferred))
+		if IsServing(preferredAddr) {
+			return preferredAddr, true, nil
+		}
+	}
+	addr, err = DesktopAddr(host, preferred)
+	return addr, false, err
+}
+
+// IsServing reports whether this app already answers on addr. Double-clicking
+// the exe a second time should surface the running console rather than start a
+// rival server on another port, which would leave two books trading the same
+// account.
+func IsServing(addr string) bool {
+	client := &http.Client{Timeout: 900 * time.Millisecond}
+	response, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	return response.StatusCode == http.StatusOK
 }
 
 // ErrorDialog shows a modal error box on Windows. A desktop build compiled

@@ -50,13 +50,27 @@ func run() error {
 	// easy to find; fall back to the working directory if it is not writable
 	// (e.g. the exe sits in Program Files).
 	cfg.Backtest.OutputDir = reportDir(logFile)
+	// Pin the session state next to the executable for the same reason as the
+	// reports directory: a double-clicked exe should keep its book in one
+	// predictable place, not wherever the shell happened to set the CWD.
+	cfg.Live.StateFile = filepath.Join(filepath.Dir(cfg.Backtest.OutputDir), "trade-state.json")
 
-	port, err := shell.FreePort("127.0.0.1")
+	addr, alreadyRunning, err := shell.DesktopTarget("127.0.0.1", shell.DefaultDesktopPort)
 	if err != nil {
 		return fmt.Errorf("找不到可用端口: %w", err)
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	url := "http://" + addr
+
+	// Double-clicking the exe while it is already running should surface the
+	// live console, not start a second server on another port that would trade
+	// the same account behind the first one's back.
+	if alreadyRunning {
+		fmt.Fprintf(logFile, "already serving on %s, opening it\n", addr)
+		if err := shell.OpenBrowser(url); err != nil {
+			fmt.Fprintf(logFile, "open browser: %v\n", err)
+		}
+		return nil
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

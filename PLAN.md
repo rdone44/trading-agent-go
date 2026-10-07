@@ -28,6 +28,7 @@
 - **验证**：futures_test 用 httptest stub 断言开仓后紧跟保护单（OCO/LIMIT_STOP 或 STOP_MARKET）；平仓路径先撤单；断网后 reconcile 补挂且**幂等去重**（openOrders 已有同类单则不重挂）。全离线。
 
 ### P0-2 execute 的进程级环境开关（纵深防御）
+- **状态：done** — `live.New` 与 Web 会话均要求精确 `TA_ALLOW_LIVE=1`；未设置/错误值拒绝，paper 不变；确认短语、密钥及状态文件护栏继续保留。离线 constructor/API 回归测试覆盖 spot/futures 与仅显式值放行。
 - **问题**：拿到访问 token + 在 UI 输入短语即可开实盘。缺进程级第二道门。
 - **改法**：新增 `TA_ALLOW_LIVE=1` 环境变量；`execute=true` 时必须它为 1，否则拒绝启动并打印说明。默认 0。
 - **验证**：不设变量时 `POST /api/session/start {execute:true}` 返回 400；设了才放行。

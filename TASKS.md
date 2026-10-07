@@ -80,7 +80,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 可做：补失败路径测试（超时、部分成交、拒单）、合约单向持仓校验
 - 约束：不削弱现有护栏。Hedge Mode 目前显式拒绝，不要静默放开
 - 认领：coding（钱路径：broker/live）
-- 状态：partial — P0-1 交易所侧保护性止损已落地（commit cbf151f，18 包全绿）：开仓后挂 closePosition 的 STOP_MARKET/TAKE_PROFIT_MARKET（MARK_PRICE、价格与本地 risk 同源），平仓前先撤单，reconcile 幂等补挂/清裸单，撤单失败 fail-safe、挂单失败 fail-open。P0-2 execute env 开关（TA_ALLOW_LIVE）尚未做。
+- 状态：partial — P0-1 交易所侧保护性止损已落地（commit cbf151f，18 包全绿）：开仓后挂 closePosition 的 STOP_MARKET/TAKE_PROFIT_MARKET（MARK_PRICE、价格与本地 risk 同源），平仓前先撤单，reconcile 幂等补挂/清裸单，撤单失败 fail-safe、挂单失败 fail-open。P0-2 execute env 开关（TA_ALLOW_LIVE）done：runner 构造和 Web 会话双层精确校验，仅值 1 放行；paper 不受影响；新增离线 spot/futures、API 400、密钥及状态护栏回归测试。验证：gofmt -l .（空）、go build ./...、go vet ./...、go test ./...。
 
 ### T6. 风控与组合记账
 
@@ -116,6 +116,10 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 约束：不把任何密钥示例写成可直接用的真值
 - 认领：coding（单人重构，含原 muse 地盘）
 - 状态：open（P 级到达时做）
+
+## 本轮协作记录
+
+- as 本轮无回复（T4 未执行）：A2A 服务返回 provider HTTP 426：`Your Grok CLI version (0.2.99) is outdated. Please update to version 1.0.13 or later via grok update or the installation documentation.`；as worktree 干净，fork/as/main 不存在，无提交可合并。不修改其他 profile 配置。
 
 ## 认领记录
 

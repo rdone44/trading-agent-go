@@ -188,6 +188,9 @@ func (s *Session) Start(opts StartOptions) error {
 		if opts.Confirm != liveConfirmPhrase {
 			return fmt.Errorf("实盘交易需要在确认框输入「%s」", liveConfirmPhrase)
 		}
+		if err := live.CheckExecutionAllowed(true); err != nil {
+			return err
+		}
 		if !hasExchangeKeys() {
 			return fmt.Errorf("实盘交易需要环境变量 BINANCE_API_KEY 与 BINANCE_SECRET_KEY")
 		}

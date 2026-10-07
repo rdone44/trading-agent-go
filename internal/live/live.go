@@ -64,6 +64,9 @@ func (p *futuresProtective) Has() (bool, error) { return p.b.HasProtective() }
 // (spot vs USDT-margined perpetual) and the leverage multiplier come from the
 // config; either way the same agent and risk logic run.
 func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath string) (*Runner, error) {
+	if err := CheckExecutionAllowed(execute); err != nil {
+		return nil, err
+	}
 	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
 	if execute && statePath == "" {
 		return nil, fmt.Errorf("实盘必须指定持久化状态文件")

@@ -101,6 +101,7 @@ func TestSessionStartRefusesLiveWithoutConfirmPhrase(t *testing.T) {
 // Even with the phrase, live trading needs exchange credentials in the
 // environment; the test process has none, so this must still refuse.
 func TestSessionStartLiveNeedsExchangeKeys(t *testing.T) {
+	t.Setenv("TA_ALLOW_LIVE", "1")
 	server, _ := newTestServer(t)
 	t.Setenv("BINANCE_API_KEY", "")
 	t.Setenv("BINANCE_SECRET_KEY", "")

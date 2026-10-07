@@ -46,7 +46,14 @@ type Runner struct {
 // (spot vs USDT-margined perpetual) and the leverage multiplier come from the
 // config; either way the same agent and risk logic run.
 func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath string) (*Runner, error) {
+	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
+	if execute && statePath == "" {
+		return nil, fmt.Errorf("实盘必须指定持久化状态文件")
+	}
 	book := portfolio.New(cfg.Risk.InitialCash)
+	if cfg.Live.Futures {
+		book = portfolio.NewFutures(cfg.Risk.InitialCash, cfg.Risk.Leverage)
+	}
 	rm := risk.New(cfg.Risk)
 
 	futures := cfg.Live.Futures
@@ -61,22 +68,25 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	case futures:
 		// Perpetual venue: one broker for both paper (DryRun) and execute.
 		fc := broker.FuturesConfig{
-			Symbol:     cfg.Agent.Symbol,
-			Leverage:   leverage,
-			MarginMode: marginMode,
-			DryRun:     !execute,
+			Symbol:        cfg.Agent.Symbol,
+			Leverage:      leverage,
+			MarginMode:    marginMode,
+			DryRun:        !execute,
+			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps,
 		}
 		if execute {
 			// Keys are read from the environment only — never from config files.
 			fc.APIKey = os.Getenv("BINANCE_API_KEY")
 			fc.SecretKey = os.Getenv("BINANCE_SECRET_KEY")
+			fc.JournalPath = statePath + ".order-pending.json"
 		}
 		bk = broker.NewFutures(fc)
 	case execute:
 		bk = broker.NewBinance(broker.BinanceConfig{
-			Symbol:    cfg.Agent.Symbol,
-			APIKey:    os.Getenv("BINANCE_API_KEY"),
-			SecretKey: os.Getenv("BINANCE_SECRET_KEY"),
+			Symbol:      cfg.Agent.Symbol,
+			APIKey:      os.Getenv("BINANCE_API_KEY"),
+			SecretKey:   os.Getenv("BINANCE_SECRET_KEY"),
+			JournalPath: statePath + ".order-pending.json",
 		})
 	default:
 		bk = broker.New(cfg.Execution)
@@ -147,6 +157,13 @@ func (r *Runner) Agent() *engine.Agent { return r.agent }
 // persisted state, and reconcile the local book against the exchange.
 func (r *Runner) Init() error {
 	if r.executed {
+		if _, err := os.Stat(r.statePath + ".order-pending.json"); err == nil {
+			return fmt.Errorf("存在未核对订单日志 %s.order-pending.json，请先在交易所确认成交状态", r.statePath)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if r.executed {
 		if r.futures {
 			b, ok := r.broker.(*broker.FuturesBroker)
 			if !ok {
@@ -173,14 +190,62 @@ func (r *Runner) Init() error {
 			return err
 		}
 		if ok {
+			if marketdata.BinanceSymbol(saved.Symbol) != marketdata.BinanceSymbol(r.cfg.Agent.Symbol) {
+				return fmt.Errorf("状态文件属于 %s，不能用于 %s；请使用独立状态文件", saved.Symbol, r.cfg.Agent.Symbol)
+			}
+			if saved.Executed != r.executed {
+				return fmt.Errorf("纸面与实盘状态不能共用，请使用独立状态文件")
+			}
+			venue := "spot"
+			if r.futures {
+				venue = "futures"
+			}
+			savedVenue := saved.Venue
+			if savedVenue == "" {
+				savedVenue = "spot"
+			}
+			if savedVenue != venue {
+				return fmt.Errorf("状态文件交易场所为 %s，当前为 %s", savedVenue, venue)
+			}
+			if r.futures && saved.Accounting != "futures-margin-v1" {
+				return fmt.Errorf("旧合约账本需要人工核对，不能自动转换")
+			}
+			if r.futures && saved.Leverage != r.leverage && saved.Open != nil {
+				return fmt.Errorf("持仓恢复时不能改变杠杆")
+			}
 			cash, peak, open, stop, target, riskState := saved.ToEngine()
 			r.agent.RestoreState(cash, peak, open, stop, target, riskState)
+			if saved.Initial > 0 {
+				r.agent.Book.InitialCash = saved.Initial
+			}
 		}
 	}
 
 	// Reconcile against the exchange when placing real orders.
 	if r.executed {
-		return r.reconcile()
+		if err := r.reconcile(); err != nil {
+			return err
+		}
+		if r.futures {
+			balance, err := r.broker.(*broker.FuturesBroker).USDTBalance()
+			if err != nil {
+				return err
+			}
+			r.agent.Book.Cash = balance
+		} else {
+			_, cash, err := r.broker.(*broker.BinanceBroker).AvailableBalances()
+			if err != nil {
+				return err
+			}
+			r.agent.Book.Cash = cash
+		}
+		if r.agent.OpenTrade() == nil && r.agent.Risk.Snapshot().Day.IsZero() {
+			r.agent.Book.InitialCash = r.agent.Book.Cash
+			r.agent.PeakEquity = r.agent.Book.Cash
+		}
+		if r.agent.Risk.OrderUncertain {
+			return fmt.Errorf("上次订单状态未确认：%s；请先在交易所核对状态文件", r.agent.Risk.HaltReason)
+		}
 	}
 	return nil
 }
@@ -248,18 +313,33 @@ func (r *Runner) reconcileFutures() error {
 // active venue, feed them through the agent, and persist the result. It
 // returns what the cycle did.
 func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
-	series, err := r.loadSeries(now)
-	if err != nil {
-		return engine.StepResult{}, err
+	if r.agent.Risk.OrderUncertain {
+		return engine.StepResult{}, fmt.Errorf("订单状态待核对：%s", r.agent.Risk.HaltReason)
 	}
-
 	price, _, err := r.loadPrice()
 	if err != nil {
 		return engine.StepResult{}, err
 	}
-
-	res, err := r.agent.LiveStep(series, price, now)
+	res, protectErr := r.agent.Protect(price, now)
+	if protectErr != nil || res.Exited || r.agent.Risk.Halted {
+		if saveErr := r.Save(); saveErr != nil {
+			return res, saveErr
+		}
+		return res, protectErr
+	}
+	series, err := r.loadSeries(now)
 	if err != nil {
+		if saveErr := r.Save(); saveErr != nil {
+			return res, saveErr
+		}
+		return res, err
+	}
+
+	res, err = r.agent.Decide(series, price, now, res)
+	if err != nil {
+		if saveErr := r.Save(); saveErr != nil {
+			return res, fmt.Errorf("%v；保存失败：%w", err, saveErr)
+		}
 		return res, err
 	}
 	if err := r.Save(); err != nil {
@@ -283,10 +363,27 @@ func (r *Runner) Save() error {
 		r.agent.Book.InitialCash, r.agent.Book.Cash, r.agent.PeakEquity,
 		r.agent.OpenTrade(), stop, target, r.agent.Risk.Snapshot(), r.executed,
 	)
+	s.Venue = "spot"
+	if r.futures {
+		s.Venue = "futures"
+		s.Accounting = "futures-margin-v1"
+	}
+	s.Leverage = r.leverage
 	if dir := filepath.Dir(r.statePath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			r.agent.Risk.RequireReconciliation("持仓目录不可写：" + err.Error())
 			return err
 		}
 	}
-	return state.Save(r.statePath, s)
+	if err := state.Save(r.statePath, s); err != nil {
+		r.agent.Risk.RequireReconciliation("持仓保存失败：" + err.Error())
+		return err
+	}
+	if r.executed && !r.agent.Risk.OrderUncertain {
+		if err := broker.ClearIntent(r.statePath + ".order-pending.json"); err != nil {
+			r.agent.Risk.RequireReconciliation("订单日志清理失败：" + err.Error())
+			return err
+		}
+	}
+	return nil
 }

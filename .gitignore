@@ -8,5 +8,7 @@ dist/
 
 # Local secrets and runtime state
 trade-state.json
+sessions/
+*.order-pending.json
 token
 .env

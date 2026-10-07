@@ -67,7 +67,10 @@ type Server struct {
 	// TuneRunner runs the LLM parameter-tuning loop behind /api/tune. It
 	// defaults to tune.Run; tests inject a stub so the suite never calls a
 	// real model.
-	TuneRunner func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
+	TuneRunner   func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
+	MarketLoader func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
+	marketMu     sync.Mutex
+	marketCache  map[string]marketdata.MarketSnapshot
 }
 
 // New builds a server from the effective configuration.
@@ -110,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/session/start", s.handleSessionStart)
 	mux.HandleFunc("/api/session/stop", s.handleSessionStop)
 	mux.HandleFunc("/api/session/step", s.handleSessionStep)
+	mux.HandleFunc("/api/market", s.handleMarket)
 	// /healthz is what a systemd unit, a container probe or a load balancer
 	// polls; it touches no disk and no network, so it stays cheap.
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -224,22 +228,26 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.applyRequest(req.BacktestRequest)
-	if req.Futures {
-		cfg.Live.Futures = true
+	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
+	cfg.Live.Futures = req.Futures
+	if req.Leverage < 0 || req.Leverage > 125 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("杠杆必须在 1–125 之间"))
+		return
 	}
-	if req.Leverage > 0 {
-		if req.Leverage < 1 {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("杠杆必须 >= 1"))
-			return
-		}
-		cfg.Risk.Leverage = req.Leverage
-		// Leverage only exists on a perpetual venue.
-		if req.Leverage > 1 {
-			cfg.Live.Futures = true
-		}
+	cfg.Risk.Leverage = max(req.Leverage, 1)
+	if !req.Futures && cfg.Risk.Leverage > 1 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("现货不支持杠杆"))
+		return
+	}
+	if !req.Futures && cfg.Risk.AllowShort && req.Execute {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("现货实盘不能做空"))
+		return
 	}
 	// The live loop sizes positions against the same risk limits the form
 	// shows, so the request's overrides apply here too.
+	if req.Days > 0 {
+		cfg.Live.LookbackDays = req.Days
+	}
 	cfg.Agent.HistoryDays = cfg.Live.LookbackDays
 	if cfg.Agent.HistoryDays <= 0 {
 		cfg.Agent.HistoryDays = 400
@@ -247,10 +255,21 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	if cfg.Live.StateFile == "" {
 		cfg.Live.StateFile = "trade-state.json"
 	}
+	if err := validateSessionConfig(cfg, req.IntervalSeconds); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	statePath := req.StatePath
 	if statePath == "" {
-		statePath = cfg.Live.StateFile
+		mode, venue := "paper", "spot"
+		if req.Execute {
+			mode = "live"
+		}
+		if req.Futures {
+			venue = "futures"
+		}
+		statePath = filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", mode+"-"+venue+"-"+cfg.Agent.Symbol+".json")
 	}
 
 	err := s.Session().Start(StartOptions{
@@ -338,6 +357,7 @@ func (s *Server) ServeListener(ctx context.Context, listener net.Listener, ready
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
+		_ = s.Session().Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
@@ -525,6 +545,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"commission_bps":         cfg.Execution.CommissionBps,
 			"slippage_bps":           cfg.Execution.SlippageBps,
 		},
+		"settings":   settingsView(cfg, cfg.Live.PollSeconds, false),
 		"strategies": strategy.Specs(),
 	})
 }

@@ -21,8 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/rdone44/trading-agent-go/internal/marketdata"
 )
 
 // BinanceConfig configures a live broker.
@@ -36,6 +34,7 @@ type BinanceConfig struct {
 	StepSize    float64 // 0 = fetch LOT_SIZE filter on Init
 	MinNotional float64 // 0 = fetch from exchange filters on Init
 	MaxPriceDev float64 // reject fills deviating more than this fraction from the reference price
+	JournalPath string
 }
 
 // BinanceBroker implements Broker against Binance spot.
@@ -98,12 +97,22 @@ func (b *BinanceBroker) Init() error {
 // reconcile local state before resuming. Returns base and quote amounts.
 // It requires Init to have run first so the base/quote asset names are set.
 func (b *BinanceBroker) Balances() (base, quote float64, err error) {
+	base, quote, _, _, err = b.accountBalances()
+	return
+}
+
+func (b *BinanceBroker) AvailableBalances() (base, quote float64, err error) {
+	_, _, base, quote, err = b.accountBalances()
+	return
+}
+
+func (b *BinanceBroker) accountBalances() (base, quote, freeBase, freeQuote float64, err error) {
 	if b.BaseAsset == "" || b.QuoteAsset == "" {
-		return 0, 0, fmt.Errorf("Balances 需要先 Init 获取交易对资产名")
+		return 0, 0, 0, 0, fmt.Errorf("Balances 需要先 Init 获取交易对资产名")
 	}
 	body, err := b.getSigned("/api/v3/account", url.Values{})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	var account struct {
 		Balances []struct {
@@ -113,7 +122,7 @@ func (b *BinanceBroker) Balances() (base, quote float64, err error) {
 		} `json:"balances"`
 	}
 	if err := json.Unmarshal(body, &account); err != nil {
-		return 0, 0, fmt.Errorf("解析账户余额失败: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("解析账户余额失败: %w", err)
 	}
 	for _, bal := range account.Balances {
 		asset := strings.ToUpper(bal.Asset)
@@ -122,11 +131,13 @@ func (b *BinanceBroker) Balances() (base, quote float64, err error) {
 		switch asset {
 		case strings.ToUpper(b.BaseAsset):
 			base = total + locked
+			freeBase = total
 		case strings.ToUpper(b.QuoteAsset):
 			quote = total + locked
+			freeQuote = total
 		}
 	}
-	return base, quote, nil
+	return base, quote, freeBase, freeQuote, nil
 }
 
 // MarketOrder places (or simulates) one market order.
@@ -145,47 +156,85 @@ func (b *BinanceBroker) MarketOrder(ts time.Time, symbol string, side Side, quan
 	}
 
 	clientID := b.nextOrderID(symbol, side)
+	if err := recordIntent(b.cfg.JournalPath, clientID, symbol, side, quantity); err != nil {
+		return b.rejected(ts, symbol, side, price, "下单前日志写入失败: "+err.Error(), reason)
+	}
 	query := url.Values{}
 	query.Set("symbol", strings.ToUpper(symbol))
 	query.Set("side", strings.ToUpper(string(side)))
 	query.Set("type", "MARKET")
 	query.Set("quantity", formatQty(quantity))
 	query.Set("newClientOrderId", clientID)
+	query.Set("newOrderRespType", "FULL")
 	body, err := b.postSigned("/api/v3/order", query)
 	if err != nil {
-		return b.rejected(ts, symbol, side, price, "下单失败: "+err.Error(), reason)
+		// A timeout is not a rejection. Query the same ID before giving control
+		// back to the engine, which will halt if the result remains unknown.
+		body, err = b.getSigned("/api/v3/order", orderQuery(symbol, clientID))
+		if err != nil {
+			f := orderUnknown(ts, symbol, side, price, clientID, err.Error())
+			b.Trades = append(b.Trades, f)
+			return f
+		}
 	}
-	var order struct {
-		OrderID    int64       `json:"orderId"`
-		Executed   json.Number `json:"executedQty"`
-		AvgPrice   json.Number `json:"avgPrice"`
-		Commission json.Number `json:"commission"`
-		Status     string      `json:"status"`
-	}
+	var order exchangeOrder
 	if err := json.Unmarshal(body, &order); err != nil {
-		return b.rejected(ts, symbol, side, price, "解析订单失败: "+err.Error(), reason)
+		f := orderUnknown(ts, symbol, side, price, clientID, "订单响应无法解析")
+		b.Trades = append(b.Trades, f)
+		return f
 	}
-	execs, _ := order.Executed.Float64()
-	avg, _ := order.AvgPrice.Float64()
-	commission, _ := order.Commission.Float64()
+	detail := order.detail()
+	execs, avg := detail.executed, detail.avgPrice
 	if (execs <= 0 || avg <= 0) && order.OrderID > 0 {
 		// The ack can report zeros before the fill lands: poll once.
 		if got, err := b.order(order.OrderID); err == nil {
-			execs, avg, commission = got.executed, got.avgPrice, got.commission
+			execs, avg, order.Status = got.executed, got.avgPrice, got.status
 		}
 	}
 	if execs <= 0 || avg <= 0 {
-		return b.rejected(ts, symbol, side, price, "订单未成交 (status="+order.Status+")", reason)
+		if terminalOrder(order.Status) && execs == 0 {
+			return b.rejected(ts, symbol, side, price, "订单未成交 (status="+order.Status+")", reason)
+		}
+		f := orderUnknown(ts, symbol, side, price, clientID, "status="+order.Status)
+		b.Trades = append(b.Trades, f)
+		return f
 	}
-	if b.cfg.MaxPriceDev > 0 && price > 0 {
-		if dev := math.Abs(avg/price - 1); dev > b.cfg.MaxPriceDev {
-			return b.rejected(ts, symbol, side, avg, fmt.Sprintf("成交价偏离参考价 %.1f%%，超过上限 %.1f%%", dev*100, b.cfg.MaxPriceDev*100), reason)
+	commission, baseFee, feeAssets := order.fees(b.BaseAsset, b.QuoteAsset)
+	feesKnown := len(order.Fills) > 0
+	if !feesKnown && order.OrderID > 0 {
+		if fills, err := b.tradeFills(order.OrderID); err == nil && len(fills) > 0 {
+			order.Fills = fills
+			commission, baseFee, feeAssets = order.fees(b.BaseAsset, b.QuoteAsset)
+			feesKnown = true
 		}
 	}
 	fill := Fill{
 		Time: ts, Symbol: symbol, Side: side, Quantity: execs,
 		Price: avg, Commission: commission, Notional: execs * avg,
 		Reason: reason, OrderID: strconv.FormatInt(order.OrderID, 10),
+		ClientOrderID: clientID, Status: "filled", BaseCommission: baseFee, CommissionAssets: feeAssets,
+	}
+	if execs < quantity-1e-10 {
+		fill.Status = "partial"
+	}
+	if !terminalOrder(order.Status) {
+		fill.Uncertain = true
+	}
+	if !feesKnown {
+		fill.Uncertain = true
+		fill.Reason += "；手续费明细尚未确认"
+	}
+	for asset, fee := range feeAssets {
+		if fee > 0 && asset != b.BaseAsset && asset != b.QuoteAsset {
+			fill.Uncertain = true
+			fill.Reason += "；" + asset + " 手续费需要核对"
+		}
+	}
+	// An adverse fill already happened: book it rather than pretending it was
+	// rejected. The engine stops new orders until the operator reconciles it.
+	if b.cfg.MaxPriceDev > 0 && price > 0 && math.Abs(avg/price-1) > b.cfg.MaxPriceDev {
+		fill.Uncertain = true
+		fill.Reason += "；成交偏离参考价，暂停并核对"
 	}
 	b.Trades = append(b.Trades, fill)
 	return fill
@@ -216,6 +265,7 @@ type orderDetail struct {
 	executed   float64
 	avgPrice   float64
 	commission float64
+	status     string
 }
 
 func (b *BinanceBroker) order(id int64) (orderDetail, error) {
@@ -226,19 +276,23 @@ func (b *BinanceBroker) order(id int64) (orderDetail, error) {
 	if err != nil {
 		return orderDetail{}, err
 	}
-	var o struct {
-		Executed   json.Number `json:"executedQty"`
-		AvgPrice   json.Number `json:"avgPrice"`
-		Commission json.Number `json:"commission"`
-	}
+	var o exchangeOrder
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return orderDetail{}, err
 	}
-	out := orderDetail{}
-	out.executed, _ = o.Executed.Float64()
-	out.avgPrice, _ = o.AvgPrice.Float64()
-	out.commission, _ = o.Commission.Float64()
-	return out, nil
+	return o.detail(), nil
+}
+
+func (b *BinanceBroker) tradeFills(id int64) ([]exchangeExecution, error) {
+	raw, err := b.getSigned("/api/v3/myTrades", url.Values{"symbol": {b.cfg.Symbol}, "orderId": {strconv.FormatInt(id, 10)}})
+	if err != nil {
+		return nil, err
+	}
+	var trades []exchangeExecution
+	if err := json.Unmarshal(raw, &trades); err != nil {
+		return nil, err
+	}
+	return trades, nil
 }
 
 // roundQuantity floors to the exchange step size.
@@ -252,16 +306,7 @@ func (b *BinanceBroker) roundQuantity(qty float64) float64 {
 
 // nextOrderID builds an idempotent client order id and remembers it.
 func (b *BinanceBroker) nextOrderID(symbol string, side Side) string {
-	n := 1
-	for {
-		id := fmt.Sprintf("ta-%s-%s-%d-%d",
-			strings.ToLower(string(side)), marketdata.BinanceSymbol(symbol), time.Now().Unix(), n)
-		if !b.usedIDs[id] {
-			b.usedIDs[id] = true
-			return id
-		}
-		n++
-	}
+	return newClientID("ta-" + string(side))
 }
 
 func (b *BinanceBroker) rejected(ts time.Time, symbol string, side Side, price float64, message, reason string) Fill {
@@ -272,7 +317,7 @@ func (b *BinanceBroker) rejected(ts time.Time, symbol string, side Side, price f
 	if math.IsNaN(price) || math.IsInf(price, 0) {
 		price = 0
 	}
-	f := Fill{Time: ts, Symbol: symbol, Side: side, Price: price, Reason: full, Rejected: true}
+	f := Fill{Time: ts, Symbol: symbol, Side: side, Price: price, Reason: full, Rejected: true, Status: "rejected"}
 	b.Trades = append(b.Trades, f)
 	return f
 }

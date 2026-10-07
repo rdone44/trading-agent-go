@@ -18,16 +18,19 @@ import (
 
 // State is the on-disk representation of one live session.
 type State struct {
-	Version  int            `json:"version"`
-	Symbol   string         `json:"symbol"`
-	Strategy string         `json:"strategy"`
-	SavedAt  time.Time      `json:"saved_at"`
-	Initial  float64        `json:"initial_cash"`
-	Cash     float64        `json:"cash"`
-	Peak     float64        `json:"peak_equity"`
-	Open     *Open          `json:"open,omitempty"`
-	Risk     risk.RiskState `json:"risk"`
-	Executed bool           `json:"executed"` // true when real orders are used
+	Version    int            `json:"version"`
+	Symbol     string         `json:"symbol"`
+	Strategy   string         `json:"strategy"`
+	SavedAt    time.Time      `json:"saved_at"`
+	Initial    float64        `json:"initial_cash"`
+	Cash       float64        `json:"cash"`
+	Peak       float64        `json:"peak_equity"`
+	Open       *Open          `json:"open,omitempty"`
+	Risk       risk.RiskState `json:"risk"`
+	Executed   bool           `json:"executed"` // true when real orders are used
+	Venue      string         `json:"venue,omitempty"`
+	Leverage   int            `json:"leverage,omitempty"`
+	Accounting string         `json:"accounting,omitempty"`
 }
 
 // Open is the persisted open position.

@@ -41,6 +41,34 @@ type Portfolio struct {
 	Positions   map[string]*Position
 	RealizedPnL float64
 	Curve       []EquityPoint
+	Futures     bool
+	Leverage    int
+}
+
+func NewFutures(initialCash float64, leverage int) *Portfolio {
+	p := New(initialCash)
+	p.Futures, p.Leverage = true, max(leverage, 1)
+	return p
+}
+
+// Cash is the wallet for futures, not sale proceeds. Entry margin is reserved
+// separately and released as the signed position shrinks.
+func (p *Portfolio) AvailableCash() float64 {
+	if !p.Futures {
+		return math.Max(p.Cash, 0)
+	}
+	margin := 0.0
+	for _, pos := range p.OpenPositions() {
+		margin += math.Abs(pos.Quantity) * pos.AvgPrice / float64(max(p.Leverage, 1))
+	}
+	return math.Max(p.Cash-margin, 0)
+}
+
+func (p *Portfolio) MarginUsed() float64 {
+	if !p.Futures {
+		return 0
+	}
+	return p.Cash - p.AvailableCash()
 }
 
 func New(initialCash float64) *Portfolio {
@@ -82,7 +110,11 @@ func (p *Portfolio) MarketValue(prices map[string]float64) float64 {
 		if !ok {
 			price = pos.AvgPrice
 		}
-		total += pos.Quantity * price
+		if p.Futures {
+			total += pos.Unrealized(price)
+		} else {
+			total += pos.Quantity * price
+		}
 	}
 	return total
 }
@@ -123,8 +155,18 @@ func (p *Portfolio) ApplyFill(fill broker.Fill) {
 	if fill.Side == broker.Sell {
 		signed = -fill.Quantity
 	}
-	p.Cash -= signed * fill.Price
-	p.Cash -= fill.Commission
+	if p.Futures {
+		if !sameSign(pos.Quantity, signed) && pos.IsOpen() {
+			closed := math.Min(math.Abs(signed), math.Abs(pos.Quantity))
+			p.Cash += closed * (fill.Price - pos.AvgPrice) * math.Copysign(1, pos.Quantity)
+		}
+		p.Cash -= fill.Commission
+	} else {
+		p.Cash -= signed * fill.Price
+		// Base-asset fees reduce received inventory instead of charging USDT twice.
+		p.Cash -= math.Max(fill.Commission-fill.BaseCommission*fill.Price, 0)
+		signed -= fill.BaseCommission
+	}
 
 	oldQty := pos.Quantity
 	newQty := oldQty + signed

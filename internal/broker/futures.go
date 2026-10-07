@@ -25,16 +25,19 @@ import (
 
 // FuturesConfig configures a live futures broker.
 type FuturesConfig struct {
-	BaseURL     string // default https://fapi.binance.com
-	APIKey      string // from the environment, never from config files
-	SecretKey   string
-	Symbol      string // e.g. BTCUSDT perpetual
-	DryRun      bool   // no network; fills simulated locally
-	Timeout     time.Duration
-	Leverage    int    // 1 = isolated spot-like, up to the exchange max
-	MarginMode  string // "ISOLATED" (default) or "CROSS"
-	StepSize    float64
-	MaxPriceDev float64 // reject fills deviating more than this fraction
+	BaseURL       string // default https://fapi.binance.com
+	APIKey        string // from the environment, never from config files
+	SecretKey     string
+	Symbol        string // e.g. BTCUSDT perpetual
+	DryRun        bool   // no network; fills simulated locally
+	Timeout       time.Duration
+	Leverage      int    // 1 = isolated spot-like, up to the exchange max
+	MarginMode    string // "ISOLATED" (default) or "CROSS"
+	StepSize      float64
+	MaxPriceDev   float64 // reject fills deviating more than this fraction
+	CommissionBps *float64
+	SlippageBps   *float64
+	JournalPath   string
 }
 
 // FuturesBroker implements Broker against Binance USDT-margined perpetuals.
@@ -121,8 +124,7 @@ func (b *FuturesBroker) setMarginType() error {
 	if err == nil {
 		return nil
 	}
-	// -4045 means the margin type is already what we asked for.
-	if strings.Contains(err.Error(), "-4045") {
+	if strings.Contains(err.Error(), "-4046") {
 		return nil
 	}
 	return fmt.Errorf("设置保证金模式失败: %w", err)
@@ -137,9 +139,10 @@ func (b *FuturesBroker) OpenPosition() (side Side, quantity, entry float64, err 
 		return "", 0, 0, err
 	}
 	var rows []struct {
-		Symbol      string      `json:"symbol"`
-		PositionAmt json.Number `json:"positionAmt"`
-		EntryPrice  json.Number `json:"entryPrice"`
+		Symbol       string      `json:"symbol"`
+		PositionAmt  json.Number `json:"positionAmt"`
+		EntryPrice   json.Number `json:"entryPrice"`
+		PositionSide string      `json:"positionSide"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return "", 0, 0, fmt.Errorf("解析持仓失败: %w", err)
@@ -150,6 +153,9 @@ func (b *FuturesBroker) OpenPosition() (side Side, quantity, entry float64, err 
 			continue
 		}
 		amt, _ := row.PositionAmt.Float64()
+		if row.PositionSide != "" && row.PositionSide != "BOTH" {
+			return "", 0, 0, fmt.Errorf("当前仅支持单向持仓模式，不支持 Hedge Mode")
+		}
 		entr, _ := row.EntryPrice.Float64()
 		switch {
 		case amt > 0:
@@ -169,15 +175,15 @@ func (b *FuturesBroker) USDTBalance() (float64, error) {
 		return 0, err
 	}
 	var rows []struct {
-		Asset            string      `json:"asset"`
-		AvailableBalance json.Number `json:"availableBalance"`
+		Asset         string      `json:"asset"`
+		WalletBalance json.Number `json:"balance"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return 0, fmt.Errorf("解析余额失败: %w", err)
 	}
 	for _, row := range rows {
 		if strings.ToUpper(row.Asset) == "USDT" {
-			v, _ := row.AvailableBalance.Float64()
+			v, _ := row.WalletBalance.Float64()
 			return v, nil
 		}
 	}
@@ -197,54 +203,75 @@ func (b *FuturesBroker) MarketOrder(ts time.Time, symbol string, side Side, quan
 	}
 
 	clientID := b.nextOrderID(symbol, side)
+	if err := recordIntent(b.cfg.JournalPath, clientID, symbol, side, quantity); err != nil {
+		return b.rejected(ts, symbol, side, price, "下单前日志写入失败: "+err.Error(), reason)
+	}
 	query := url.Values{}
 	query.Set("symbol", strings.ToUpper(symbol))
 	query.Set("side", strings.ToUpper(string(side)))
 	query.Set("type", "MARKET")
 	query.Set("quantity", formatQtyPrec(quantity, b.QuantityPrecision))
 	query.Set("newClientOrderId", clientID)
+	query.Set("newOrderRespType", "RESULT")
+	if reason != "entry_long" && reason != "entry_short" {
+		query.Set("reduceOnly", "true")
+	}
 	body, err := b.postSigned("/fapi/v1/order", query)
 	if err != nil {
-		return b.rejected(ts, symbol, side, price, "下单失败: "+err.Error(), reason)
+		body, err = b.getSigned("/fapi/v1/order", orderQuery(symbol, clientID))
+		if err != nil {
+			f := orderUnknown(ts, symbol, side, price, clientID, err.Error())
+			b.Trades = append(b.Trades, f)
+			return f
+		}
 	}
-	var order struct {
-		OrderID    int64       `json:"orderId"`
-		Executed   json.Number `json:"executedQty"`
-		AvgPrice   json.Number `json:"avgPrice"`
-		Commission json.Number `json:"commission"`
-		Status     string      `json:"status"`
-	}
+	var order exchangeOrder
 	if err := json.Unmarshal(body, &order); err != nil {
-		return b.rejected(ts, symbol, side, price, "解析订单失败: "+err.Error(), reason)
+		f := orderUnknown(ts, symbol, side, price, clientID, "订单响应无法解析")
+		b.Trades = append(b.Trades, f)
+		return f
 	}
-	execs, _ := order.Executed.Float64()
-	avg, _ := order.AvgPrice.Float64()
-	commission, _ := order.Commission.Float64()
+	detail := order.detail()
+	execs, avg := detail.executed, detail.avgPrice
 	if (execs <= 0 || avg <= 0) && order.OrderID > 0 {
 		if got, err := b.order(order.OrderID); err == nil {
-			execs, avg, commission = got.executed, got.avgPrice, got.commission
+			execs, avg, order.Status = got.executed, got.avgPrice, got.status
 		}
 	}
 	if execs <= 0 || avg <= 0 {
-		return b.rejected(ts, symbol, side, price, "订单未成交 (status="+order.Status+")", reason)
-	}
-	if b.cfg.MaxPriceDev > 0 && price > 0 {
-		if dev := math.Abs(avg/price - 1); dev > b.cfg.MaxPriceDev {
-			return b.rejected(ts, symbol, side, avg,
-				fmt.Sprintf("成交价偏离参考价 %.1f%%，超过上限 %.1f%%", dev*100, b.cfg.MaxPriceDev*100), reason)
+		if terminalOrder(order.Status) && execs == 0 {
+			return b.rejected(ts, symbol, side, price, "订单未成交 (status="+order.Status+")", reason)
 		}
+		f := orderUnknown(ts, symbol, side, price, clientID, "status="+order.Status)
+		b.Trades = append(b.Trades, f)
+		return f
 	}
+	commission, feeErr := b.tradeFees(order.OrderID)
 	fill := Fill{
 		Time: ts, Symbol: symbol, Side: side, Quantity: execs,
 		Price: avg, Commission: commission, Notional: execs * avg,
 		Reason: reason, OrderID: strconv.FormatInt(order.OrderID, 10),
+		ClientOrderID: clientID, Status: "filled", Uncertain: feeErr != nil || !terminalOrder(order.Status),
+	}
+	if execs < quantity-1e-10 {
+		fill.Status = "partial"
+	}
+	if feeErr != nil {
+		fill.Reason += "；手续费待核对"
+	}
+	if b.cfg.MaxPriceDev > 0 && price > 0 && math.Abs(avg/price-1) > b.cfg.MaxPriceDev {
+		fill.Uncertain = true
+		fill.Reason += "；成交价偏离，暂停并核对"
 	}
 	b.Trades = append(b.Trades, fill)
 	return fill
 }
 
 func (b *FuturesBroker) dryFill(ts time.Time, symbol string, side Side, quantity, price float64) Fill {
-	const slip = 5 / 10_000.0
+	slip := 5 / 10_000.0
+	if b.cfg.SlippageBps != nil {
+		slip = *b.cfg.SlippageBps / 10000
+	}
 	fillPrice := price * (1 + slip)
 	if side == Sell {
 		fillPrice = price * (1 - slip)
@@ -253,10 +280,14 @@ func (b *FuturesBroker) dryFill(ts time.Time, symbol string, side Side, quantity
 	f := Fill{
 		Time: ts, Symbol: symbol, Side: side, Quantity: quantity,
 		Price: fillPrice, Notional: notional,
-		Commission: notional * 0.0004, // futures taker fee, ~0.04%
+		Commission: notional * 0.0004,
 		Reason:     "dry-run",
 		OrderID:    "fdry-" + strconv.FormatInt(ts.UnixNano(), 10),
 	}
+	if b.cfg.CommissionBps != nil {
+		f.Commission = notional * *b.cfg.CommissionBps / 10000
+	}
+	f.Status = "filled"
 	b.Trades = append(b.Trades, f)
 	return f
 }
@@ -269,19 +300,36 @@ func (b *FuturesBroker) order(id int64) (orderDetail, error) {
 	if err != nil {
 		return orderDetail{}, err
 	}
-	var o struct {
-		Executed   json.Number `json:"executedQty"`
-		AvgPrice   json.Number `json:"avgPrice"`
-		Commission json.Number `json:"commission"`
-	}
+	var o exchangeOrder
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return orderDetail{}, err
 	}
-	out := orderDetail{}
-	out.executed, _ = o.Executed.Float64()
-	out.avgPrice, _ = o.AvgPrice.Float64()
-	out.commission, _ = o.Commission.Float64()
-	return out, nil
+	return o.detail(), nil
+}
+
+func (b *FuturesBroker) tradeFees(id int64) (float64, error) {
+	raw, err := b.getSigned("/fapi/v1/userTrades", url.Values{"symbol": {b.cfg.Symbol}, "orderId": {strconv.FormatInt(id, 10)}})
+	if err != nil {
+		return 0, err
+	}
+	var trades []struct {
+		Commission json.Number `json:"commission"`
+		Asset      string      `json:"commissionAsset"`
+	}
+	if err := json.Unmarshal(raw, &trades); err != nil {
+		return 0, err
+	}
+	if len(trades) == 0 {
+		return 0, fmt.Errorf("没有成交明细")
+	}
+	var fee float64
+	for _, t := range trades {
+		if t.Asset != "USDT" && positive(t.Commission) > 0 {
+			return fee, fmt.Errorf("非 USDT 手续费需要核对")
+		}
+		fee += positive(t.Commission)
+	}
+	return fee, nil
 }
 
 func (b *FuturesBroker) roundQuantity(qty float64) float64 {
@@ -295,8 +343,7 @@ func (b *FuturesBroker) roundQuantity(qty float64) float64 {
 func (b *FuturesBroker) nextOrderID(symbol string, side Side) string {
 	n := 1
 	for {
-		id := fmt.Sprintf("taf-%s-%s-%d-%d",
-			strings.ToLower(string(side)), marketdata.BinanceSymbol(symbol), time.Now().Unix(), n)
+		id := newClientID("taf-" + strings.ToLower(string(side)) + "-" + marketdata.BinanceSymbol(symbol))
 		if !b.usedIDs[id] {
 			b.usedIDs[id] = true
 			return id
@@ -313,7 +360,7 @@ func (b *FuturesBroker) rejected(ts time.Time, symbol string, side Side, price f
 	if math.IsNaN(price) || math.IsInf(price, 0) {
 		price = 0
 	}
-	f := Fill{Time: ts, Symbol: symbol, Side: side, Price: price, Reason: full, Rejected: true}
+	f := Fill{Time: ts, Symbol: symbol, Side: side, Price: price, Reason: full, Rejected: true, Status: "rejected"}
 	b.Trades = append(b.Trades, f)
 	return f
 }
@@ -333,7 +380,15 @@ func (b *FuturesBroker) contractInfo() (json.RawMessage, error) {
 	if len(info.Symbols) == 0 {
 		return nil, fmt.Errorf("exchangeInfo 没有 %s 的合约信息", b.cfg.Symbol)
 	}
-	return info.Symbols[0], nil
+	for _, raw := range info.Symbols {
+		var symbol struct {
+			Symbol string `json:"symbol"`
+		}
+		if json.Unmarshal(raw, &symbol) == nil && symbol.Symbol == strings.ToUpper(b.cfg.Symbol) {
+			return raw, nil
+		}
+	}
+	return nil, fmt.Errorf("没有找到 %s 的合约过滤器", b.cfg.Symbol)
 }
 
 // applyContract pulls the LOT_SIZE step size and the quantity precision from

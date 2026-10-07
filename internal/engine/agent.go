@@ -326,6 +326,9 @@ func (a *Agent) closePosition(ts time.Time, price float64, reason string) {
 		side = broker.Buy
 	}
 	fill := a.Broker.MarketOrder(ts, a.Symbol, side, math.Abs(pos.Quantity), price, reason)
+	if fill.Uncertain {
+		a.Risk.RequireReconciliation(fill.Reason)
+	}
 	if fill.Rejected {
 		return
 	}
@@ -341,9 +344,11 @@ func (a *Agent) recordClose(ts time.Time, fill broker.Fill, reason string) {
 	if a.open.Side == broker.Sell {
 		direction = -1.0
 	}
-	gross := (fill.Price - a.open.EntryPrice) * a.open.Quantity * direction
-	fees := a.open.EntryFee + fill.Commission
-	notional := a.open.EntryPrice * a.open.Quantity
+	closed := math.Min(fill.Quantity, a.open.Quantity)
+	entryFee := a.open.EntryFee * closed / a.open.Quantity
+	gross := (fill.Price - a.open.EntryPrice) * closed * direction
+	fees := entryFee + fill.Commission
+	notional := a.open.EntryPrice * closed
 	returnPct := 0.0
 	if notional != 0 {
 		returnPct = (gross - fees) / notional * 100
@@ -352,7 +357,7 @@ func (a *Agent) recordClose(ts time.Time, fill broker.Fill, reason string) {
 		EntryTime:  a.open.EntryTime,
 		ExitTime:   ts,
 		Side:       a.open.Side,
-		Quantity:   a.open.Quantity,
+		Quantity:   closed,
 		EntryPrice: a.open.EntryPrice,
 		ExitPrice:  fill.Price,
 		GrossPnL:   gross,
@@ -361,7 +366,12 @@ func (a *Agent) recordClose(ts time.Time, fill broker.Fill, reason string) {
 		ReturnPct:  returnPct,
 		Reason:     reason,
 	})
-	a.open = nil
+	if a.Book.Position(a.Symbol).IsOpen() {
+		a.open.Quantity = math.Abs(a.Book.Position(a.Symbol).Quantity)
+		a.open.EntryFee -= entryFee
+	} else {
+		a.open = nil
+	}
 }
 
 // OpenTrade returns a copy of the currently open position, or nil when flat.

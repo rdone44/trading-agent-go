@@ -11,6 +11,7 @@ import (
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/engine"
 	"github.com/rdone44/trading-agent-go/internal/live"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
 	"github.com/rdone44/trading-agent-go/internal/model"
 	"github.com/rdone44/trading-agent-go/internal/strategy"
 )
@@ -46,6 +47,33 @@ type PositionView struct {
 	MarkPrice   float64 `json:"mark_price"`
 	Unrealized  float64 `json:"unrealized"`
 	ReturnPct   float64 `json:"return_pct"`
+	// StopDistancePct and TargetDistancePct are how far the mark has to move to
+	// reach each level. A live position's most useful number is "how much room
+	// is left before the stop", which none of the absolute prices answer.
+	StopDistancePct   float64 `json:"stop_distance_pct"`
+	TargetDistancePct float64 `json:"target_distance_pct"`
+	// Notional is quantity * mark, so the exposure is readable without mental
+	// arithmetic against the cash figure.
+	Notional float64 `json:"notional"`
+}
+
+// RiskView is the risk manager's live state: whether trading is still allowed
+// and how much of each budget is spent. The engine enforces these every cycle
+// but the console had no way to show them, so a halted session looked
+// identical to a quiet one.
+type RiskView struct {
+	Halted            bool    `json:"halted"`
+	HaltReason        string  `json:"halt_reason,omitempty"`
+	EntriesBlockedDay bool    `json:"entries_blocked_day"`
+	DayStartEquity    float64 `json:"day_start_equity"`
+	DayPnL            float64 `json:"day_pnl"`
+	DayReturnPct      float64 `json:"day_return_pct"`
+	MaxDailyLossPct   float64 `json:"max_daily_loss_pct"`
+	MaxDrawdownPct    float64 `json:"max_drawdown_pct"`
+	DrawdownPct       float64 `json:"drawdown_pct"`
+	StopLossPct       float64 `json:"stop_loss_pct"`
+	TakeProfitPct     float64 `json:"take_profit_pct"`
+	OrderUncertain    bool    `json:"order_uncertain"`
 }
 
 // SessionStatus is the JSON the console polls.
@@ -72,9 +100,29 @@ type SessionStatus struct {
 	TotalReturnPct float64 `json:"total_return_pct"`
 	PeakEquity     float64 `json:"peak_equity"`
 
-	Position PositionView  `json:"position"`
-	Log      []CycleRecord `json:"log"`
-	Trades   []TradeView   `json:"trades"`
+	Position         PositionView         `json:"position"`
+	Risk             RiskView             `json:"risk"`
+	Log              []CycleRecord        `json:"log"`
+	Trades           []TradeView          `json:"trades"`
+	Orders           []ExecutionView      `json:"orders"`
+	Settings         *StartSessionRequest `json:"settings,omitempty"`
+	ProtectionActive bool                 `json:"protection_active"`
+	Wallet           float64              `json:"wallet"`
+	MarginUsed       float64              `json:"margin_used"`
+	StatePath        string               `json:"state_path,omitempty"`
+}
+
+type ExecutionView struct {
+	Time          string  `json:"time"`
+	Side          string  `json:"side"`
+	Quantity      float64 `json:"quantity"`
+	Price         float64 `json:"price"`
+	Fee           float64 `json:"fee"`
+	Status        string  `json:"status"`
+	Reason        string  `json:"reason"`
+	OrderID       string  `json:"order_id"`
+	ClientOrderID string  `json:"client_order_id"`
+	Uncertain     bool    `json:"uncertain"`
 }
 
 // Session owns the one live trading loop the dashboard can run. The agent
@@ -93,6 +141,9 @@ type Session struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	running   bool
+	stopping  bool
+	stopDone  chan struct{}
+	stopErr   error
 	startedAt time.Time
 	stoppedAt time.Time
 
@@ -131,6 +182,7 @@ func (s *Session) Start(opts StartOptions) error {
 	if s.running {
 		return fmt.Errorf("已有交易会话在运行，请先停止")
 	}
+	opts.Config.Agent.Symbol = marketdata.BinanceSymbol(opts.Config.Agent.Symbol)
 
 	if opts.Execute {
 		if opts.Confirm != liveConfirmPhrase {
@@ -172,6 +224,7 @@ func (s *Session) Start(opts StartOptions) error {
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	s.running = true
+	s.stopping = false
 	s.startedAt = time.Now()
 	s.stoppedAt = time.Time{}
 	s.cycles = 0
@@ -221,22 +274,20 @@ func (s *Session) cycleLocked() {
 	s.lastTick = now
 
 	agent := s.runner.Agent()
-	pos := agent.Book.Position(agent.Symbol)
-	prices := map[string]float64{agent.Symbol: s.lastPrice}
-	if pos.IsOpen() && pos.AvgPrice > 0 {
-		// The book marks against the last traded price it saw; reuse it when
-		// this cycle failed before producing a new one.
-		prices[agent.Symbol] = s.lastPrice
+	if result.MarkPrice > 0 {
+		s.lastPrice = result.MarkPrice
 	}
 
 	if err != nil {
 		s.lastError = err.Error()
 		s.appendLocked(CycleRecord{
-			Time:   now.Format("15:04:05"),
-			Action: "错误",
-			Error:  err.Error(),
-			Equity: agent.Book.Equity(prices),
-			Cash:   agent.Book.Cash,
+			Time:     now.Format("15:04:05"),
+			Action:   "错误",
+			Error:    err.Error(),
+			Equity:   s.currentEquityLocked(),
+			Cash:     agent.Book.AvailableCash(),
+			Price:    s.lastPrice,
+			Position: positionSummary(agent.OpenTrade()),
 		})
 		return
 	}
@@ -245,9 +296,6 @@ func (s *Session) cycleLocked() {
 	s.lastAction = result.Action
 	// A successful cycle always fetched a live price; the mark-to-market
 	// equity the engine returned is the authoritative number for this tick.
-	if result.Equity > 0 {
-		s.lastPrice = livePrice(agent, result)
-	}
 
 	s.appendLocked(CycleRecord{
 		Time:     now.Format("15:04:05"),
@@ -259,27 +307,11 @@ func (s *Session) cycleLocked() {
 	})
 }
 
-// livePrice recovers the mark used this cycle. The engine records it on the
-// equity curve, which is the only place a failed fetch would not have written.
-func livePrice(agent *engine.Agent, result engine.StepResult) float64 {
-	if curve := agent.Book.Curve; len(curve) > 0 {
-		point := curve[len(curve)-1]
-		pos := agent.Book.Position(agent.Symbol)
-		if pos.IsOpen() && math.Abs(pos.Quantity) > 1e-12 {
-			// marketValue = quantity * price, so price = marketValue / quantity.
-			if price := point.MarketValue / pos.Quantity; price > 0 {
-				return price
-			}
-		}
-	}
-	return result.Equity
-}
-
 // Step runs one cycle on demand, which is what the 立即执行 button uses.
 func (s *Session) Step() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.running || s.runner == nil {
+	if !s.running || s.stopping || s.runner == nil {
 		return fmt.Errorf("没有正在运行的交易会话")
 	}
 	s.cycleLocked()
@@ -290,6 +322,14 @@ func (s *Session) Step() error {
 // idle session.
 func (s *Session) Stop() error {
 	s.mu.Lock()
+	if s.stopping {
+		done := s.stopDone
+		s.mu.Unlock()
+		<-done
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stopErr
+	}
 	if !s.running {
 		s.mu.Unlock()
 		return nil
@@ -297,6 +337,8 @@ func (s *Session) Stop() error {
 	cancel := s.cancel
 	done := s.done
 	runner := s.runner
+	s.stopping = true
+	s.stopDone = make(chan struct{})
 	s.mu.Unlock()
 
 	cancel()
@@ -304,12 +346,13 @@ func (s *Session) Stop() error {
 
 	// Persist the final state so a restart resumes this session exactly.
 	var saveErr error
+	s.mu.Lock()
 	if runner != nil {
 		saveErr = runner.Save()
 	}
 
-	s.mu.Lock()
 	s.running = false
+	s.stopping = false
 	s.stoppedAt = time.Now()
 	s.cancel = nil
 	// Stopping does not liquidate: carry the cash and open position through so
@@ -322,10 +365,12 @@ func (s *Session) Stop() error {
 	}
 	if s.runner != nil {
 		agent := s.runner.Agent()
-		record.Cash = agent.Book.Cash
+		record.Cash = agent.Book.AvailableCash()
 		record.Position = positionSummary(agent.OpenTrade())
 	}
 	s.appendLocked(record)
+	s.stopErr = saveErr
+	close(s.stopDone)
 	s.mu.Unlock()
 
 	if saveErr != nil {
@@ -360,6 +405,7 @@ func (s *Session) Status() SessionStatus {
 		InitialCash: s.cfg.Risk.InitialCash,
 		Leverage:    s.cfg.Risk.Leverage,
 		Log:         append([]CycleRecord(nil), s.log...),
+		StatePath:   s.statePath,
 	}
 	if status.Interval == 0 {
 		status.Interval = 60
@@ -386,15 +432,69 @@ func (s *Session) Status() SessionStatus {
 	if s.runner != nil {
 		agent := s.runner.Agent()
 		status.Equity = s.currentEquityLocked()
-		status.Cash = agent.Book.Cash
+		status.Cash = agent.Book.AvailableCash()
+		status.Wallet = agent.Book.Cash
+		status.MarginUsed = agent.Book.MarginUsed()
+		status.InitialCash = agent.Book.InitialCash
 		status.PeakEquity = agent.PeakEquity
 		status.Position = s.positionLocked()
+		status.Risk = s.riskLocked(status.Equity)
 		status.Trades = tradeViews(agent.Trades())
-		if s.cfg.Risk.InitialCash > 0 {
-			status.TotalReturnPct = (status.Equity/s.cfg.Risk.InitialCash - 1) * 100
+		if status.InitialCash > 0 {
+			status.TotalReturnPct = (status.Equity/status.InitialCash - 1) * 100
+		}
+		status.ProtectionActive = s.running && !s.stopping && !status.Risk.OrderUncertain
+		status.Settings = settingsView(s.cfg, status.Interval, s.execute)
+		fills := agent.Broker.Fills()
+		if len(fills) > 200 {
+			fills = fills[len(fills)-200:]
+		}
+		for _, f := range fills {
+			status.Orders = append(status.Orders, ExecutionView{Time: f.Time.Format(time.RFC3339), Side: string(f.Side), Quantity: f.Quantity, Price: f.Price, Fee: f.Commission, Status: f.Status, Reason: f.Reason, OrderID: f.OrderID, ClientOrderID: f.ClientOrderID, Uncertain: f.Uncertain})
 		}
 	}
 	return status
+}
+
+// riskLocked reports how much of each risk budget is spent. Equity is passed
+// in because the caller has already marked the book to the last price.
+func (s *Session) riskLocked(equity float64) RiskView {
+	if s.runner == nil {
+		return RiskView{}
+	}
+	agent := s.runner.Agent()
+	snapshot := agent.Risk.Snapshot()
+
+	view := RiskView{
+		Halted:            snapshot.Halted,
+		HaltReason:        snapshot.HaltReason,
+		EntriesBlockedDay: snapshot.EntriesBlockedDay,
+		DayStartEquity:    snapshot.DayStartEquity,
+		OrderUncertain:    snapshot.OrderUncertain,
+	}
+	// A percentage limit the user left blank is "no limit"; report 0 so the
+	// UI can tell the difference between "0% allowed" and "unset".
+	if pct := s.cfg.Risk.MaxDailyLossPct; pct != nil {
+		view.MaxDailyLossPct = *pct * 100
+	}
+	if pct := s.cfg.Risk.MaxDrawdownPct; pct != nil {
+		view.MaxDrawdownPct = *pct * 100
+	}
+	if pct := s.cfg.Risk.StopLossPct; pct != nil {
+		view.StopLossPct = *pct * 100
+	}
+	if pct := s.cfg.Risk.TakeProfitPct; pct != nil {
+		view.TakeProfitPct = *pct * 100
+	}
+
+	if snapshot.DayStartEquity > 0 {
+		view.DayPnL = equity - snapshot.DayStartEquity
+		view.DayReturnPct = (equity/snapshot.DayStartEquity - 1) * 100
+	}
+	if agent.PeakEquity > 0 {
+		view.DrawdownPct = (equity/agent.PeakEquity - 1) * 100
+	}
+	return view
 }
 
 // currentEquityLocked marks the book against the last known price.
@@ -444,6 +544,15 @@ func (s *Session) positionLocked() PositionView {
 			direction = -1.0
 		}
 		view.ReturnPct = direction * (s.lastPrice/pos.AvgPrice - 1) * 100
+		view.Notional = math.Abs(pos.Quantity) * s.lastPrice
+		// Distances are signed the same way as the position: a long whose stop
+		// sits below the mark shows a positive percentage of room left.
+		if !math.IsNaN(pos.StopPrice) && pos.StopPrice > 0 {
+			view.StopDistancePct = direction * (1 - pos.StopPrice/s.lastPrice) * 100
+		}
+		if !math.IsNaN(pos.TakeProfitPrice) && pos.TakeProfitPrice > 0 {
+			view.TargetDistancePct = direction * (pos.TakeProfitPrice/s.lastPrice - 1) * 100
+		}
 	}
 	return view
 }

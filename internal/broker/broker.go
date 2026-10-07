@@ -30,7 +30,13 @@ type Fill struct {
 	Reason     string
 	Rejected   bool
 	// OrderID is the exchange order identifier; empty for paper fills.
-	OrderID string
+	OrderID       string
+	ClientOrderID string
+	Status        string
+	// Uncertain means an order may exist at the exchange; never retry it blindly.
+	Uncertain        bool
+	BaseCommission   float64
+	CommissionAssets map[string]float64
 }
 
 // Broker is anything that can place market orders: the paper broker used by
@@ -81,6 +87,7 @@ func (b *PaperBroker) MarketOrder(ts time.Time, symbol string, side Side, quanti
 	fill := Fill{
 		Time: ts, Symbol: symbol, Side: side, Quantity: quantity,
 		Price: fillPrice, Commission: commission, Notional: notional, Reason: reason,
+		Status: "filled",
 	}
 	b.CommissionPaid += commission
 	b.Trades = append(b.Trades, fill)
@@ -106,7 +113,7 @@ func (b *PaperBroker) reject(ts time.Time, symbol string, side Side, price float
 	}
 	fill := Fill{
 		Time: ts, Symbol: symbol, Side: side, Price: price,
-		Reason: full, Rejected: true,
+		Reason: full, Rejected: true, Status: "rejected",
 	}
 	b.Trades = append(b.Trades, fill)
 	return fill

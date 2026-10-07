@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,84 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 			t.Errorf("%s is empty", path)
 		}
 	}
+}
+
+// TestUIPageAndScriptAgree guards the seam between index.html and app.js. The
+// page and the script are edited independently, and a selector that no longer
+// matches the markup fails silently in the browser — the page renders, then a
+// lookup returns null and the whole render throws. Asserting every id and
+// field name the script reaches for actually exists in the served page turns
+// that runtime failure into a test failure.
+func TestUIPageAndScriptAgree(t *testing.T) {
+	server, _ := newTestServer(t)
+	page := fetchBody(t, server, "/")
+	script := fetchBody(t, server, "/app.js")
+
+	ids := matchSet(page, `id="([^"]+)"`)
+	names := matchSet(page, `name="([^"]+)"`)
+	if len(ids) == 0 || len(names) == 0 {
+		t.Fatal("index.html exposed no ids or field names; the extraction is broken")
+	}
+
+	// Selector strings passed to $() and $$() are the script's handles on the
+	// markup; every #id inside one must resolve.
+	for selector := range matchSet(script, `\$\$?\(\s*["']([^"']+)["']`) {
+		for _, id := range matchAll(selector, `#([A-Za-z][A-Za-z0-9_-]*)`) {
+			if !ids[id] {
+				t.Errorf("app.js selects #%s but index.html has no such id", id)
+			}
+		}
+	}
+
+	// The form is read by field name, so a renamed input breaks the request
+	// the same silent way. Skip interpolated selectors like [name="${x}"].
+	for name := range matchSet(script, `\[name="([^"$]+)"\]`) {
+		if !names[name] {
+			t.Errorf("app.js reads field %q but index.html has no such input", name)
+		}
+	}
+
+	// The two log tabs are addressed by data-tab, which is neither an id nor a
+	// name, so check them explicitly.
+	tabs := matchSet(page, `data-tab="([^"]+)"`)
+	for _, tab := range []string{"cycles", "trades", "orders"} {
+		if !tabs[tab] {
+			t.Errorf("index.html is missing the %q log tab", tab)
+		}
+		if !strings.Contains(script, `"`+tab+`"`) {
+			t.Errorf("app.js never handles the %q log tab", tab)
+		}
+	}
+}
+
+func fetchBody(t *testing.T, server *webui.Server, path string) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", path, recorder.Code)
+	}
+	return recorder.Body.String()
+}
+
+// matchSet returns the first capture group of every match, as a set.
+func matchSet(text, pattern string) map[string]bool {
+	out := map[string]bool{}
+	for _, group := range matchAll(text, pattern) {
+		out[group] = true
+	}
+	return out
+}
+
+func matchAll(text, pattern string) []string {
+	re := regexp.MustCompile(pattern)
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 {
+			out = append(out, m[1])
+		}
+	}
+	return out
 }
 
 func TestConfigEndpointDescribesStrategies(t *testing.T) {

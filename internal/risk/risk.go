@@ -28,6 +28,7 @@ type Manager struct {
 	Settings          config.Risk
 	Halted            bool
 	HaltReason        string
+	OrderUncertain    bool
 	Events            []Event
 	day               time.Time
 	dayStartEquity    float64
@@ -95,6 +96,7 @@ type RiskState struct {
 	Day               time.Time
 	DayStartEquity    float64
 	EntriesBlockedDay bool
+	OrderUncertain    bool
 }
 
 // Snapshot captures the manager's mutable state.
@@ -105,6 +107,7 @@ func (m *Manager) Snapshot() RiskState {
 		Day:               m.day,
 		DayStartEquity:    m.dayStartEquity,
 		EntriesBlockedDay: m.entriesBlockedDay,
+		OrderUncertain:    m.OrderUncertain,
 	}
 }
 
@@ -116,6 +119,11 @@ func (m *Manager) Restore(s RiskState) {
 	m.day = s.Day
 	m.dayStartEquity = s.DayStartEquity
 	m.entriesBlockedDay = s.EntriesBlockedDay
+	m.OrderUncertain = s.OrderUncertain
+}
+
+func (m *Manager) RequireReconciliation(reason string) {
+	m.OrderUncertain, m.Halted, m.HaltReason = true, true, reason
 }
 
 // PositionSize implements the fixed-fractional rule, leverage-aware.

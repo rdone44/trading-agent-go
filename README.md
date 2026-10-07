@@ -123,41 +123,63 @@ Deployment files live in `deploy/`:
 .\bin\trading-agent.exe web --no-open          # do not launch a browser
 ```
 
-The console is a single embedded page (Chinese UI) - no CDN, no JavaScript
-framework, no build step - so it works offline and ships inside the binary. It
-drives the **live trading loop**, not a backtest. The layout is a market
-terminal: a slim top bar carries the session state and the start/stop controls,
-the workspace is given over to the live readout, and the configuration lives in
-a slide-in drawer because it is fixed once a session starts.
+The console is a Chinese trading workbench embedded in the Go binary. It has
+no framework, CDN or Node/Python runtime dependency.
 
-- **Config drawer** for instrument, poll interval, venue (spot or USDT-perp), strategy parameters, risk limits and costs
-- **Hero readout** with marked equity, total return against initial cash, and an inline equity sparkline
-- **Stat strip** for cash, peak equity, last price, cycle count and the latest action
-- **Open position panel** with direction, size, average entry, stop and take-profit levels, and unrealized PnL
-- **Tabs** for the per-cycle run log and the closed-trade ledger
-- **Start / stop / step** controls, with a pulsing indicator that answers "is it alive?" at a glance
+- Binance candlesticks are the primary view, with 15m / 1h / 4h / 1d chart
+  intervals and labelled 24-hour price changes. Chart intervals do not change
+  the agent's daily-bar decision timeframe.
+- Account, open position, stop distance and risk budgets stay beside the chart
+  on desktop. Mobile prioritizes price, position and risk before the ledger.
+- Configuration is an on-demand drawer. A refreshed page loads the running
+  session's effective parameters, not the server defaults.
+- Order/fill, decision log and closed-trade tabs distinguish actual fills,
+  partial fills, rejections and orders whose exchange state is uncertain.
+- Market data works without starting a trading session or configuring keys.
+  It refreshes every 15 seconds, with a short server-side cache. This is REST
+  polling, not a websocket or tick-by-tick terminal.
 
-The palette is deliberately narrow: a deep neutral ground, amber for anything
-the eye must catch, green/red strictly for profit and loss, and one saturated
-red surface reserved for the live-money badge. Numbers use tabular figures so
-columns do not jitter as they tick.
+Paper mode is the default. Live orders require the explicit checkbox, the
+phrase `确认实盘`, and both `BINANCE_API_KEY` / `BINANCE_SECRET_KEY`. Real
+capital is read from the exchange during startup; the initial-cash input is
+for paper sessions. Use a dedicated account/strategy balance: the local
+ledger is not an exchange-wide account reconciliation service.
 
-The session is **paper by default**: fills are simulated locally and no order
-leaves the machine. Real orders need the 实盘下单 checkbox *and* the confirmation
-phrase `确认实盘` typed in the box that appears, *and* `BINANCE_API_KEY` /
-`BINANCE_SECRET_KEY` in the environment. Missing any of the three fails the
-start with a message instead of trading.
+**Stopping is not liquidation.** Stops and targets are evaluated locally at
+each poll, not submitted as exchange-native protective orders. Stopping,
+quitting or losing connectivity leaves positions exposed. The interface
+asks for confirmation when stopping with a position and displays a persistent
+warning afterwards. Exchange-native protection, automatic account-wide
+reconciliation and funding/liquidation simulation are not implemented.
 
-Session state is written to disk, so stopping and restarting resumes the same
-position, peak equity and risk-manager state rather than re-entering. The UI
-polls the session endpoint every few seconds while a session runs.
+The trade path checks protective exits before loading history or asking a
+strategy. A failed strategy cannot skip an existing stop. A protective close
+does not reopen in the same cycle. Futures use a separate margin ledger:
+wallet plus unrealized PnL, with entry margin reserved rather than debiting
+full notional. The live futures broker currently supports one-way positions
+only; Hedge Mode is rejected.
+
+Session files are partitioned by paper/live, spot/futures and symbol:
+`sessions/paper-spot-BTCUSDT.json`, for example. Legacy `trade-state.json`
+files are not silently imported or overwritten. Back them up and reconcile
+positions before migrating. An explicit `state_path` must match the saved
+symbol and mode. Old futures accounting files require manual reconciliation.
+
+Live orders write a durable `*.order-pending.json` intent before submission.
+A timeout looks up the same client ID rather than blindly submitting another
+order. Uncertain exchange results or failed ledger persistence halt automated
+orders. The pending intent remains until a successfully saved, confirmed
+ledger clears it; after a crash, startup refuses to trade until an operator
+has checked the exchange and repaired the ledger. Do not simply delete a
+pending intent to get past this guard.
 
 The HTTP API behind it is small enough to script against:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/config` | effective config plus strategy metadata |
-| `GET` | `/api/session` | current session status: equity, position, cycle log, trades |
+| `GET` | `/api/session` | effective session settings, equity, position, risk, fills and logs |
+| `GET` | `/api/market?symbol=BTCUSDT&venue=spot&interval=1h` | public Binance quote and candles, independent of trading |
 | `POST` | `/api/session/start` | start the trading loop (`interval_seconds`, `execute`, `confirm`, `futures`, `leverage`, `state_path`) |
 | `POST` | `/api/session/stop` | stop the loop and persist state |
 | `POST` | `/api/session/step` | run exactly one cycle now |

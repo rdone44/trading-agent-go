@@ -23,6 +23,7 @@ import (
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/report"
 	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/huijun/trading-agent-go/internal/tune"
 	"github.com/huijun/trading-agent-go/internal/webui"
 	"gopkg.in/yaml.v3"
 )
@@ -643,105 +644,42 @@ func runTune(args []string) int {
 	fmt.Printf("tune: %s %s over %d bars, objective=%s, %d rounds\n",
 		cfg.Agent.Symbol, cfg.Strategy.Name, len(series.Close()), *objective, *rounds)
 
-	// Seed the parameter map with the strategy's documented defaults, then
-	// layer any user-supplied params on top so the baseline respects them.
-	spec, hasSpec := strategy.SpecFor(cfg.Strategy.Name)
-	params := map[string]float64{}
-	if hasSpec {
-		params = spec.Defaults(cfg.Strategy.Params)
-	} else {
-		// No spec: start from whatever the user configured.
-		params = map[string]float64{}
-		for k, v := range cfg.Strategy.Params {
-			params[k] = v
-		}
-	}
-	// Clamp the starting point too, so a hand-edited config that sits
-	// outside the strategy's legal range cannot poison the baseline.
-	clamp := func(p map[string]float64) map[string]float64 {
-		if hasSpec && !*noClamp {
-			return spec.ClampParams(p)
-		}
-		return p
-	}
-	params = clamp(params)
-
-	// runOnce backtests the given params against the shared series.
-	runOnce := func(p map[string]float64) (engine.Result, float64, bool) {
-		clone := cfg
-		clone.Strategy.Params = map[string]float64{}
-		for k, v := range p {
-			clone.Strategy.Params[k] = v
-		}
-		strat, err := strategy.New(cfg.Strategy.Name, clone)
-		if err != nil {
-			return engine.Result{}, 0, false
-		}
-		agent := engine.New(clone, strat)
-		res, err := agent.RunBacktest(series)
-		if err != nil {
-			return engine.Result{}, 0, false
-		}
-		v, valid := objectiveValue(res.Metrics, *objective)
-		return res, v, valid
+	report, err := tune.Run(cfg, series, tune.Options{
+		Objective: *objective,
+		Rounds:    *rounds,
+		Stall:     *stall,
+		NoClamp:   *noClamp,
+		Seed:      cfg.Strategy.Params,
+	})
+	if err != nil {
+		return fail(err)
 	}
 
-	// Baseline round.
-	latest, baseVal, baseValid := runOnce(params)
-	if !baseValid {
-		return fail(fmt.Errorf("objective %q 在当前结果里不可用（无交易或指标为 null）", *objective))
-	}
-	bestParams, bestVal := params, baseVal
-	fmt.Printf("baseline  %-24s = %.4f   params=%s\n", *objective, baseVal, formatParams(params))
-
-	client := llm.New(cfg.LLM)
-	maxStall := *stall
-	stallCount := 0
-	for i := 1; i <= *rounds; i++ {
-		if !client.Enabled() {
-			fmt.Printf("round %d: 跳过（未设置 LLM_API_KEY，无法生成新参数）\n", i)
-			break
-		}
-		proposal, err := llm.Propose(cfg.LLM, *objective, cfg.Strategy.Name, params, metricsSummary(latest.Metrics))
-		if err != nil {
-			fmt.Printf("round %d: 提议失败，沿用当前参数 — %v\n", i, err)
-			continue
-		}
-		// Keep the proposal inside the strategy's legal parameter ranges so a
-		// wild suggestion can never produce a degenerate strategy.
-		proposed := clamp(proposal.Params)
-		res, val, valid := runOnce(proposed)
-		if !valid {
-			// No trades under the proposal: revert to the best-known params;
-			// the last valid result is what the next round reasons from.
-			params = bestParams
-			stallCount++
-			fmt.Printf("round %d: 该参数组合无交易，已还原 — %s\n", i, formatParams(params))
-		} else {
-			// Adopt the proposal as the new current state, whatever its score.
-			params, latest = proposed, res
-			if val > bestVal {
-				bestParams, bestVal = params, val
-				stallCount = 0
-				fmt.Printf("★ round %d  %-24s = %.4f   %s\n        rationale: %s\n",
-					i, *objective, val, formatParams(params), proposal.Rationale)
-			} else {
-				stallCount++
-				fmt.Printf("  round %d  %-24s = %.4f   %s\n        rationale: %s\n",
-					i, *objective, val, formatParams(params), proposal.Rationale)
+	for _, r := range report.Rounds {
+		switch {
+		case r.Note != "" && r.Index == -1:
+			// The stall-guard stop marker.
+			fmt.Printf("%s\n", r.Note)
+		case r.Note != "":
+			// A skipped / reverted / proposal-failed round.
+			fmt.Printf("round %d: %s\n", r.Index, r.Note)
+		case r.Index == 0:
+			fmt.Printf("baseline  %-24s = %.4f   params=%s\n", *objective, r.ObjectiveValue, tune.FormatParams(r.Params))
+		default:
+			star := " "
+			if r.Improved {
+				star = "★"
 			}
-		}
-		if maxStall > 0 && stallCount >= maxStall {
-			fmt.Printf("早停: 连续 %d 轮没有改进 best，停止（--stall 0 可关闭）\n", maxStall)
-			break
+			fmt.Printf("%s round %d  %-24s = %.4f   %s\n        rationale: %s\n",
+				star, r.Index, *objective, r.ObjectiveValue, tune.FormatParams(r.Params), r.Rationale)
 		}
 	}
 
-	fmt.Printf("\nbest %s = %.4f\n  params=%s\n", *objective, bestVal, formatParams(bestParams))
+	fmt.Printf("\nbest %s = %.4f\n  params=%s\n", *objective, report.BestValue, tune.FormatParams(report.BestParams))
 	if set(saveBest) && *saveBest != "" {
 		best := cfg
 		best.Strategy.Params = map[string]float64{}
-		for k, v := range bestParams {
+		for k, v := range report.BestParams {
 			best.Strategy.Params[k] = v
 		}
 		if err := saveConfig(best, *saveBest); err != nil {

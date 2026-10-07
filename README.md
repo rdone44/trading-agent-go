@@ -67,10 +67,17 @@ The HTTP API behind it is small enough to script against:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/config` | effective config plus strategy metadata |
-| `POST` | `/api/backtest` | run a backtest, persist it, return metrics and curves |
+| `POST` | `/api/backtest` | run a backtest, persist it, return metrics and curves (add `"review": true` for an LLM post-mortem) |
+| `POST` | `/api/tune` | run the LLM parameter-tuning loop, return the round-by-round report |
 | `GET` | `/api/runs` | list saved runs, newest first |
 | `GET` | `/api/run?name=...` | reopen a saved run's curves, trades and orders |
 | `GET` | `/runs/<name>/report.html` | the static report of a saved run |
+
+The two LLM features are wired into the UI: a **LLM 调参** button runs the
+`tune` loop on the current form values and renders the round log (baseline vs.
+best, and each proposal), and a **LLM 复盘** checkbox asks for a post-mortem on
+the backtest result. Both are no-ops when no model is configured, exactly like
+the CLI.
 
 ```powershell
 curl.exe -X POST http://localhost:8080/api/backtest `
@@ -173,6 +180,7 @@ internal/
   live/                the live session runner: broker wiring, reconciliation
   report/              CSV / JSON / Markdown / HTML writers
   webui/               HTTP server, JSON API and the embedded dashboard
+  tune/                the LLM parameter-tuning loop (shared by CLI and web)
   cli/                 command line interface
   llm/                 OpenAI-compatible client: strategy, veto, review, tune
   testfx/              deterministic offline bars for the unit tests only
@@ -267,12 +275,18 @@ environment only (`LLM_API_KEY`, falling back to `OPENAI_API_KEY`); it is never
 stored in the config file, so a config can never leak a secret. Any
 OpenAI-compatible endpoint works: set `llm.base_url` and `llm.model`.
 
-| Feature | Where | Flag / config | Without a key |
-| --- | --- | --- | --- |
-| LLM strategy | `--strategy llm` | `llm.*` | backtest still runs; the strategy emits an all-flat (hold) curve |
-| LLM entry veto | `trade --veto` | `live.veto_enabled` | fail-open: entries pass, protective stops are never blocked |
-| LLM post-mortem | `backtest --review`, `trade --review` | `llm.*` | the report notes "LLM review unavailable" |
-| LLM tuning loop | `tune` | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
+| Feature | CLI | Web dashboard | Flag / config | Without a key |
+| --- | --- | --- | --- | --- |
+| LLM strategy | `--strategy llm` | strategy picker | `llm.*` | backtest still runs; the strategy emits an all-flat (hold) curve |
+| LLM entry veto | `trade --veto` | — (live only) | `live.veto_enabled` | fail-open: entries pass, protective stops are never blocked |
+| LLM post-mortem | `backtest --review`, `trade --review` | **LLM 复盘** checkbox on `/api/backtest` | `llm.*` | the report/UI notes "LLM review unavailable" |
+| LLM tuning loop | `tune` | **LLM 调参** button → `/api/tune` | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
+
+The tuning loop and the post-mortem are single reusable implementations
+(`internal/tune` and `llm.Review`): the CLI command and the web endpoint run
+the exact same code, so both surfaces clamp proposals into the strategy's
+legal parameter ranges, early-stop on the stall guard, and degrade
+identically when the model is absent.
 
 In the live loop the LLM strategy takes a single-decision path
 (`LastDecision`): one model call per poll on the most recent bar, not a full

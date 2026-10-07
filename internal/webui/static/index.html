@@ -93,6 +93,13 @@
       </fieldset>
 
       <button type="submit" id="run-button">开始回测</button>
+      <div class="inline-actions">
+        <button type="button" id="tune-button" class="ghost">LLM 调参</button>
+        <label class="check inline">
+          <input name="review" type="checkbox">
+          <span>LLM 复盘</span>
+        </label>
+      </div>
       <p class="status" id="status" hidden></p>
     </form>
   </aside>
@@ -152,6 +159,23 @@
         <button class="tab" data-tab="metrics">全部指标</button>
       </div>
       <div id="tab-body"></div>
+
+      <section id="review-panel" class="review-panel" hidden>
+        <h2>LLM 复盘</h2>
+        <p id="review-text" class="review-text"></p>
+      </section>
+    </section>
+
+    <section class="panel" id="tune-results" hidden>
+      <header class="results-head">
+        <div>
+          <h1>LLM 调参</h1>
+          <p class="sub" id="tune-sub"></p>
+        </div>
+      </header>
+      <div class="cards" id="tune-cards"></div>
+      <div id="tune-rounds" class="tune-rounds"></div>
+      <p class="muted" id="tune-note" hidden></p>
     </section>
 
     <section class="panel">

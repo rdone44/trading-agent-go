@@ -187,6 +187,7 @@ function collectRequest() {
     days: Number($('[name="days"]').value) || 0,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
     warmup_bars: 60,
+    review: $('[name="review"]').checked,
     risk: {
       max_position_pct: pct("max_position_pct"),
       max_risk_per_trade_pct: pct("max_risk_per_trade_pct"),
@@ -337,7 +338,28 @@ function renderResult(payload) {
     label: (v) => `${v.toFixed(0)}%`,
   });
 
+  renderReview(payload);
   renderTab();
+}
+
+// renderReview surfaces the LLM post-mortem if the run asked for one. A
+// backtest that requested a review but could not reach a model shows the
+// unavailability note instead of pretending nothing happened.
+function renderReview(payload) {
+  const panel = $("#review-panel");
+  const text = $("#review-text");
+  if (payload.review) {
+    text.textContent = payload.review;
+    text.classList.remove("unavailable");
+    panel.hidden = false;
+  } else if (payload.review_unavailable) {
+    text.textContent = `复盘不可用：${payload.review_unavailable}`;
+    text.classList.add("unavailable");
+    panel.hidden = false;
+  } else {
+    panel.hidden = true;
+    text.classList.remove("unavailable");
+  }
 }
 
 async function loadRuns() {
@@ -443,5 +465,75 @@ $("#run-form").addEventListener("submit", async (event) => {
     button.textContent = "开始回测";
   }
 });
+
+$("#tune-button").addEventListener("click", async () => {
+  const button = $("#tune-button");
+  button.disabled = true;
+  button.textContent = "调参中…";
+  setStatus("LLM 正在提出并回测新的参数组合…", "running");
+  try {
+    const report = await api("/api/tune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...collectRequest(), rounds: 4, objective: "sharpe", stall: 3 }),
+    });
+    renderTune(report);
+    setStatus("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "LLM 调参";
+  }
+});
+
+// renderTune shows the tuning outcome: the best round vs. baseline up top,
+// then the round-by-round log. When the model is not configured the loop
+// reports the baseline and a "skipped" note, which we surface plainly.
+function renderTune(report) {
+  $("#results").hidden = true;
+  $("#empty-state").hidden = true;
+  $("#tune-results").hidden = false;
+
+  $("#tune-sub").textContent =
+    `${report.symbol} · ${report.strategy} · 目标 ${report.objective} · ` +
+    `${report.rounds.length} 轮${report.early_stopped ? "（早停）" : ""}`;
+
+  const improved = report.best_value > report.baseline;
+  const cards = [
+    { k: "基线 " + report.objective, v: fmt.num(report.baseline), c: signClass(report.baseline), d: "调参起点" },
+    { k: "最佳 " + report.objective, v: fmt.num(report.best_value), c: signClass(report.best_value - report.baseline), d: improved ? `优于基线 ${fmt.num(report.best_value - report.baseline, 4)}` : "未超过基线" },
+  ];
+  $("#tune-cards").innerHTML = cards
+    .map((c) => `<div class="card"><div class="k">${c.k}</div><div class="v ${c.c || ""}">${c.v}</div><div class="d">${c.d}</div></div>`)
+    .join("");
+
+  const rounds = report.rounds
+    .map((r) => {
+      const star = r.improved ? "★ " : "";
+      const params = Object.entries(r.params || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ");
+      const note = r.note ? ` <span class="muted">· ${r.note}</span>` : "";
+      const rationale = r.rationale ? `<div class="meta">${r.rationale}</div>` : "";
+      return `<div class="tune-round ${r.improved ? "win" : ""}">
+        <div class="top"><span class="sym">${r.index === 0 ? "基线" : "第 " + r.index + " 轮"}</span>
+          <span class="ret ${signClass(r.objective_value)}">${fmt.num(r.objective_value)}</span></div>
+        <div class="meta">${star}${params || "（默认参数）"}</div>${rationale}${note}
+      </div>`;
+    })
+    .join("");
+  $("#tune-rounds").innerHTML = rounds;
+
+  const note = $("#tune-note");
+  if (!report.llm_enabled) {
+    note.textContent = "未配置 LLM：本轮只跑了基线，没有生成新参数。设置 LLM_API_KEY 后重新调参。";
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
 
 bootstrap().catch((error) => setStatus(`无法加载配置：${error.message}`, "error"));

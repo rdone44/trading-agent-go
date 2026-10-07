@@ -18,11 +18,13 @@ import (
 
 	"github.com/huijun/trading-agent-go/internal/config"
 	"github.com/huijun/trading-agent-go/internal/engine"
+	"github.com/huijun/trading-agent-go/internal/llm"
 	"github.com/huijun/trading-agent-go/internal/marketdata"
 	"github.com/huijun/trading-agent-go/internal/metrics"
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/report"
 	"github.com/huijun/trading-agent-go/internal/strategy"
+	"github.com/huijun/trading-agent-go/internal/tune"
 )
 
 //go:embed static/*
@@ -36,6 +38,10 @@ type Server struct {
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
 	// suite never touches the network.
 	SeriesLoader func(symbol string, days int, end time.Time) (model.Series, error)
+	// TuneRunner runs the LLM parameter-tuning loop behind /api/tune. It
+	// defaults to tune.Run; tests inject a stub so the suite never calls a
+	// real model.
+	TuneRunner func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
 }
 
 // New builds a server from the effective configuration.
@@ -50,6 +56,7 @@ func New(cfg config.Config) *Server {
 		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
 			return marketdata.Binance(symbol, days, end)
 		},
+		TuneRunner: tune.Run,
 	}
 }
 
@@ -68,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/strategies", s.handleStrategies)
 	mux.HandleFunc("/api/backtest", s.handleBacktest)
+	mux.HandleFunc("/api/tune", s.handleTune)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/run", s.handleRunDetail)
 	return logRequests(mux)
@@ -122,6 +130,9 @@ type BacktestRequest struct {
 	InitialCash float64            `json:"initial_cash"`
 	WarmupBars  int                `json:"warmup_bars"`
 	Risk        *RiskOverrides     `json:"risk"`
+	// Review asks for an LLM post-mortem of the finished run. Degrades
+	// silently (empty Review field) when no model is configured.
+	Review bool `json:"review"`
 }
 
 // RiskOverrides lets the UI override the config defaults per run.
@@ -154,6 +165,21 @@ type BacktestResponse struct {
 	RunName    string          `json:"run_name"`
 	ReportURL  string          `json:"report_url"`
 	Config     map[string]any  `json:"config"`
+	// Review is the LLM post-mortem, present only when the request asked for
+	// it and a model was available. ReviewUnavailable carries a short note
+	// when the request asked for a review but the model could not be reached.
+	Review            string `json:"review,omitempty"`
+	ReviewUnavailable string `json:"review_unavailable,omitempty"`
+}
+
+// TuneRequest is the JSON body accepted by /api/tune: the same run description
+// as BacktestRequest, plus the tuning options.
+type TuneRequest struct {
+	BacktestRequest `json:",inline"`
+	Objective       string `json:"objective"`
+	Rounds          int    `json:"rounds"`
+	Stall           int    `json:"stall"`
+	NoClamp         bool   `json:"no_clamp"`
 }
 
 // EquityPoint is one sampled point of the equity and drawdown curves.
@@ -328,12 +354,23 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 		RunName:    runName,
 		ReportURL:  "/runs/" + runName + "/report.html",
 	}
+	// Optionally ask the model for a post-mortem. A missing key or a model
+	// error is not fatal to the backtest: we surface it in a note instead.
+	if req.Review {
+		text, err := llm.Review(s.Config.LLM, engine.ReviewFacts(result, 5))
+		if err != nil {
+			response.ReviewUnavailable = err.Error()
+		} else {
+			response.Review = text
+		}
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-// Run executes a backtest described by a request and persists its report.
-// It is shared by the HTTP handler and any future caller (e.g. a scheduler).
-func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
+// applyRequest overlays the request's overrides onto a copy of the server's
+// base config. It is shared by Run (a single backtest) and handleTune (which
+// needs the same effective config to run the baseline).
+func (s *Server) applyRequest(req BacktestRequest) config.Config {
 	cfg := s.Config
 	if req.Symbol != "" {
 		cfg.Agent.Symbol = strings.ToUpper(strings.TrimSpace(req.Symbol))
@@ -356,6 +393,58 @@ func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
 	if req.Risk != nil {
 		applyRiskOverrides(&cfg, *req.Risk)
 	}
+	return cfg
+}
+
+// handleTune runs the LLM parameter-tuning loop against the same effective
+// config as /api/backtest and returns the round-by-round outcome. It shares
+// tune.Run with the CLI, so the two surfaces behave identically. The loop is
+// bounded (Rounds + the stall guard), so a slow model cannot hang the request.
+func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	var req TuneRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
+		return
+	}
+	if req.Objective == "" {
+		req.Objective = "sharpe"
+	}
+	if req.Rounds < 0 {
+		req.Rounds = 0
+	}
+	if req.Stall < 0 {
+		req.Stall = 0
+	}
+
+	cfg := s.applyRequest(req.BacktestRequest)
+	series, err := s.SeriesLoader(cfg.Agent.Symbol, cfg.Agent.HistoryDays, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	report, err := s.TuneRunner(cfg, series, tune.Options{
+		Objective: req.Objective,
+		Rounds:    req.Rounds,
+		Stall:     req.Stall,
+		NoClamp:   req.NoClamp,
+		Seed:      cfg.Strategy.Params,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+// Run executes a backtest described by a request and persists its report.
+// It is shared by the HTTP handler and any future caller (e.g. a scheduler).
+func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
+	cfg := s.applyRequest(req)
 
 	series, err := s.SeriesLoader(cfg.Agent.Symbol, cfg.Agent.HistoryDays, time.Now().UTC())
 	if err != nil {

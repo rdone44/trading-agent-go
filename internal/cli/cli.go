@@ -6,9 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +20,7 @@ import (
 	"github.com/huijun/trading-agent-go/internal/metrics"
 	"github.com/huijun/trading-agent-go/internal/model"
 	"github.com/huijun/trading-agent-go/internal/report"
+	"github.com/huijun/trading-agent-go/internal/shell"
 	"github.com/huijun/trading-agent-go/internal/strategy"
 	"github.com/huijun/trading-agent-go/internal/tune"
 	"github.com/huijun/trading-agent-go/internal/webui"
@@ -363,17 +362,7 @@ func displayAddr(addr string) string {
 // openBrowser launches the default browser. Failure is not fatal: the URL is
 // printed anyway, and a headless machine simply has nothing to open.
 func openBrowser(url string) {
-	var command string
-	var args []string
-	switch runtime.GOOS {
-	case "windows":
-		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
-	case "darwin":
-		command, args = "open", []string{url}
-	default:
-		command, args = "xdg-open", []string{url}
-	}
-	_ = exec.Command(command, args...).Start()
+	_ = shell.OpenBrowser(url)
 }
 
 func runLive(args []string) int {

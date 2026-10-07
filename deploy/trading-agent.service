@@ -1,0 +1,70 @@
+# systemd unit for the Linux server edition.
+#
+# Install:
+#   sudo useradd --system --home /var/lib/trading-agent --create-home trading-agent
+#   sudo install -m 0755 trading-agent-server-linux-amd64 /usr/local/bin/trading-agent-server
+#   sudo install -m 0644 config.yaml /etc/trading-agent/config.yaml
+#   sudo install -m 0644 trading-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now trading-agent
+#   journalctl -u trading-agent -f        # watch it
+#
+# The access token is generated on first start and kept in
+# /var/lib/trading-agent/token (mode 0600). Read it with:
+#   sudo cat /var/lib/trading-agent/token
+
+[Unit]
+Description=trading-agent dashboard
+Documentation=https://github.com/rdone44/trading-agent-go
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading-agent
+Group=trading-agent
+WorkingDirectory=/var/lib/trading-agent
+ExecStart=/usr/local/bin/trading-agent-server \
+    --addr 0.0.0.0:8080 \
+    --config /etc/trading-agent/config.yaml \
+    --output /var/lib/trading-agent/reports \
+    --token-file /var/lib/trading-agent/token
+
+# systemd sends SIGTERM on stop/restart; the server shuts down gracefully, so
+# in-flight backtests finish instead of being cut off.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+
+# Secrets such as BINANCE_API_KEY / LLM_API_KEY belong here, not in the config
+# file. Uncomment and fill in to enable live trading or the AI features.
+# EnvironmentFile=/etc/trading-agent/env
+
+# --- hardening -------------------------------------------------------------
+# The service only needs to write its own state and reports, so everything
+# else is locked down. Note NoNewPrivileges plus the empty capability set:
+# a compromised dashboard cannot escalate on the host.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/trading-agent
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Logs go to the journal; the server already writes structured progress lines.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-agent
+
+[Install]
+WantedBy=multi-user.target

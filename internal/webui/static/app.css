@@ -42,6 +42,7 @@ body {
 }
 
 .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; }
+.brand > div { flex: 1; min-width: 0; }
 .brand .mark {
   width: 34px; height: 34px; border-radius: 9px;
   background: var(--ink); color: #fff;
@@ -50,6 +51,16 @@ body {
 }
 .brand strong { display: block; font-size: 15px; }
 .brand small { color: var(--muted); font-size: 12px; }
+
+/* Shown only by the desktop build: stops the local server and exits. */
+.quit {
+  flex: none; padding: 6px 11px;
+  border: 1px solid var(--line-strong); border-radius: 7px;
+  background: #fff; color: var(--ink-soft);
+  font: 500 12px/1 inherit; cursor: pointer;
+}
+.quit:hover { border-color: var(--down); color: var(--down); }
+.quit:disabled { background: var(--line-strong); color: var(--muted); cursor: progress; }
 
 fieldset {
   border: none; border-top: 1px solid var(--line-strong);
@@ -223,6 +234,11 @@ th, td.nowrap { white-space: nowrap; }
 .tune-round .ret { font: 600 14px/1.3 var(--mono); }
 .tune-round .meta { font: 400 11px/1.5 var(--mono); color: var(--muted); margin-top: 6px; word-break: break-word; }
 .tune-round .rationale { font-size: 11.5px; color: var(--ink-soft); margin-top: 6px; }
+
+/* Shown in the page after the desktop build has been asked to quit. */
+.bye { display: grid; place-content: center; gap: 6px; min-height: 100vh; text-align: center; }
+.bye h1 { margin: 0; }
+.bye p { margin: 0; color: var(--muted); }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }

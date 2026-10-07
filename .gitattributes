@@ -1,0 +1,13 @@
+# Normalize line endings in the repository to LF. Without this, a Windows
+# checkout with core.autocrlf=true converts Go sources to CRLF, and gofmt then
+# reports every file as unformatted.
+* text=auto eol=lf
+
+# Shell scripts and Go sources must stay LF so they run on Linux unchanged.
+*.go text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# Binary artifacts are never touched.
+*.exe binary
+*.png binary

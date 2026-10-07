@@ -6,10 +6,15 @@
 package webui
 
 import (
+	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +39,22 @@ var staticFiles embed.FS
 type Server struct {
 	Config    config.Config
 	OutputDir string
+	// Desktop marks the embedded desktop build. The UI reads it from
+	// /api/config and shows the "退出" control only when it is true.
+	Desktop bool
+	// Cancel, when non-nil, is invoked by POST /api/shutdown. The desktop
+	// shell wires it to the context Serve runs under. The server build leaves
+	// it nil, so a dashboard reachable over the network can never be stopped
+	// by an HTTP request.
+	Cancel context.CancelFunc
+	// Log receives request and error lines. Defaults to os.Stdout; the
+	// desktop build points it at a log file because a GUI process has no
+	// console to print to.
+	Log io.Writer
+	// Token, when non-empty, is required on every request. The server build
+	// uses it because the dashboard can be reached over a network; the local
+	// desktop build leaves it empty so the window just opens.
+	Token string
 	// SeriesLoader loads market data for a run. It defaults to the public
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
 	// suite never touches the network.
@@ -53,6 +74,7 @@ func New(cfg config.Config) *Server {
 	return &Server{
 		Config:    cfg,
 		OutputDir: output,
+		Log:       os.Stdout,
 		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
 			return marketdata.Binance(symbol, days, end)
 		},
@@ -78,7 +100,89 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tune", s.handleTune)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/run", s.handleRunDetail)
-	return logRequests(mux)
+	// /healthz is what a systemd unit, a container probe or a load balancer
+	// polls; it touches no disk and no network, so it stays cheap.
+	mux.HandleFunc("/healthz", s.handleHealth)
+	if s.Cancel != nil {
+		mux.HandleFunc("/api/shutdown", s.handleShutdown)
+	}
+	return s.logRequests(s.authenticate(mux))
+}
+
+// authCookie is the cookie a browser gets after presenting the token once in
+// the query string, so the token does not have to stay in the address bar.
+const authCookie = "ta_token"
+
+// authenticate enforces the access token when one is configured. Three forms
+// are accepted: an Authorization: Bearer header (scripts and curl), a cookie
+// set by an earlier ?token= visit, or the ?token= query parameter itself,
+// which is exchanged for the cookie and then stripped from the URL.
+//
+// With no token configured the middleware is a pass-through: that is the
+// local desktop build, where the listener is bound to loopback anyway.
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	if s.Token == "" {
+		return next
+	}
+	want := []byte(s.Token)
+	match := func(got string) bool {
+		// Constant time so a wrong token cannot be recovered byte by byte.
+		return subtle.ConstantTimeCompare([]byte(got), want) == 1
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+			if match(strings.TrimPrefix(header, "Bearer ")) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		if cookie, err := r.Cookie(authCookie); err == nil && match(cookie.Value) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if query := r.URL.Query().Get("token"); query != "" && match(query) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     authCookie,
+				Value:    query,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
+			// Drop the token from the visible URL so it is not bookmarked or
+			// left in the browser history as plain text.
+			clean := *r.URL
+			params := clean.Query()
+			params.Del("token")
+			clean.RawQuery = params.Encode()
+			http.Redirect(w, r, clean.String(), http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="trading-agent"`)
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("需要访问令牌：在地址后加 ?token=… 或使用 Authorization: Bearer"))
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// handleShutdown stops the process. It is registered only when the desktop
+// shell set Cancel, so the control is unreachable from a networked server.
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "shutting down"})
+	cancel := s.Cancel
+	// Let the response reach the browser before the listener goes away.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
 }
 
 // noCache forces revalidation of the embedded assets. They have no
@@ -91,15 +195,53 @@ func noCache(next http.Handler) http.Handler {
 	})
 }
 
-// Listen starts the dashboard and blocks.
-func (s *Server) Listen(addr string) error {
+// ServeListener serves on an already-bound listener and blocks until the
+// context is cancelled or the listener fails. ready, when non-nil, is called
+// with the actual address once the socket is open — which is how the desktop
+// build learns the port it was given after asking for port 0.
+func (s *Server) ServeListener(ctx context.Context, listener net.Listener, ready func(addr string)) error {
+	if ready != nil {
+		ready(listener.Addr().String())
+	}
 	server := &http.Server{
-		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	fmt.Printf("dashboard: http://%s\n", displayAddr(addr))
-	return server.ListenAndServe()
+	// Shut down cleanly on cancellation (Ctrl+C, SIGTERM from systemd, or the
+	// desktop window closing) so in-flight requests finish instead of being cut.
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+		}
+	}()
+
+	err := server.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		<-stopped
+		return nil
+	}
+	return err
+}
+
+// Serve binds addr and blocks until the context is cancelled.
+func (s *Server) Serve(ctx context.Context, addr string, ready func(addr string)) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.ServeListener(ctx, listener, ready)
+}
+
+// Listen starts the dashboard on addr and blocks until the process is
+// interrupted. It is the CLI entry point; the desktop shell uses Serve.
+func (s *Server) Listen(addr string) error {
+	fmt.Fprintf(s.logWriter(), "dashboard: http://%s\n", displayAddr(addr))
+	return s.Serve(context.Background(), addr, nil)
 }
 
 func displayAddr(addr string) string {
@@ -109,14 +251,21 @@ func displayAddr(addr string) string {
 	return addr
 }
 
-func logRequests(next http.Handler) http.Handler {
+func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		next.ServeHTTP(w, r)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			fmt.Printf("  %-6s %-22s %s\n", r.Method, r.URL.Path, time.Since(started).Round(time.Millisecond))
+			fmt.Fprintf(s.logWriter(), "  %-6s %-22s %s\n", r.Method, r.URL.Path, time.Since(started).Round(time.Millisecond))
 		}
 	})
+}
+
+func (s *Server) logWriter() io.Writer {
+	if s.Log != nil {
+		return s.Log
+	}
+	return os.Stdout
 }
 
 // ------------------------------------------------------------------ requests
@@ -237,6 +386,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"initial_cash": cfg.Risk.InitialCash,
 		"warmup_bars":  cfg.Backtest.WarmupBars,
 		"output_dir":   s.OutputDir,
+		// desktop tells the page it is running inside the desktop edition, so
+		// it shows the 退出 control and hides nothing else.
+		"desktop": s.Desktop,
 		"risk": map[string]any{
 			"max_position_pct":       cfg.Risk.MaxPositionPct,
 			"max_risk_per_trade_pct": cfg.Risk.MaxRiskPerTradePct,

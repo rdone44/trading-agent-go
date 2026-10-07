@@ -1,5 +1,12 @@
 bin/
 reports/
+dist/
 *.exe
 *.test
 *.out
+*.log
+
+# Local secrets and runtime state
+trade-state.json
+token
+.env

@@ -42,6 +42,72 @@ go build -o bin/trading-agent.exe ./cmd/trading-agent
 .\bin\trading-agent.exe backtest --symbol BTCUSDT --days 730   # Binance data
 ```
 
+## Two editions
+
+The dashboard ships in two builds from the same source. Pick the one that
+matches where it runs; `build.ps1` produces both.
+
+```powershell
+.\build.ps1                 # both editions into dist\
+.\build.ps1 -Only desktop   # Windows only
+.\build.ps1 -Only server    # Linux only
+```
+
+| | Windows desktop | Linux server |
+| --- | --- | --- |
+| Binary | `trading-agent-desktop-windows-amd64.exe` | `trading-agent-server-linux-amd64` (also arm64) |
+| Entry point | `cmd/trading-agent-desktop` | `cmd/trading-agent-server` |
+| Start it by | double-clicking the .exe | `systemctl start trading-agent` |
+| Binds | `127.0.0.1` on a free port | `0.0.0.0:8080` by default |
+| Auth | none - loopback only | **token required** |
+| Browser | opens automatically | you open the printed URL |
+| Console | none (`-H=windowsgui`) | stdout / journal |
+| Stops via | 退出 button in the UI, or the taskbar | `SIGTERM` from systemd |
+| Logs | `%APPDATA%\trading-agent\desktop.log` | `journalctl -u trading-agent` |
+| Reports | `dist\reports\` next to the exe | `/var/lib/trading-agent/reports` |
+
+### Windows desktop
+
+Double-click the exe. It picks a free loopback port, opens the dashboard in the
+default browser, and writes reports next to itself. There is no console window
+and no flag to pass; the 退出 button in the page stops the server and exits.
+
+If it fails to start, a dialog box appears with the reason - the same text is
+appended to `%APPDATA%\trading-agent\desktop.log`.
+
+### Linux server
+
+The server edition binds a network interface, so it **refuses to start without
+an access token**. The token can come from `TA_TOKEN`, from a file
+(`--token-file`, generated and saved on first run), or you can generate one
+yourself with `--print-token`. Serving without auth needs the explicit
+`--allow-anonymous` opt-in.
+
+```bash
+./trading-agent-server --addr 0.0.0.0:8080 --token-file /var/lib/trading-agent/token
+
+# prints the token and the URL to open, e.g.
+#   ready  http://0.0.0.0:8080
+#   open   http://localhost:8080/?token=4e55d4d5…
+```
+
+Opening the `?token=` link once sets an HttpOnly cookie and redirects to a
+clean URL, so the token does not stay in the address bar. Scripts can use the
+header instead:
+
+```bash
+curl -H "Authorization: Bearer $TA_TOKEN" http://host:8080/api/config
+```
+
+`GET /healthz` answers `{"status":"ok"}` for a systemd watchdog, a container
+probe or a load balancer. It is behind the same token as everything else.
+
+Deployment files live in `deploy/`:
+
+- `trading-agent.service` - hardened systemd unit (no privileges, read-only
+  root filesystem, writes only its own state directory)
+- `Dockerfile` - multi-stage build onto a small Alpine runtime
+
 ## Dashboard
 
 ```powershell
@@ -72,6 +138,12 @@ The HTTP API behind it is small enough to script against:
 | `GET` | `/api/runs` | list saved runs, newest first |
 | `GET` | `/api/run?name=...` | reopen a saved run's curves, trades and orders |
 | `GET` | `/runs/<name>/report.html` | the static report of a saved run |
+| `GET` | `/healthz` | liveness probe, `{"status":"ok"}` |
+| `POST` | `/api/shutdown` | stop the process - **desktop build only** |
+
+`/api/shutdown` is registered only when the desktop shell supplies a cancel
+function, so a dashboard reachable over a network can never be stopped by an
+HTTP request.
 
 The two LLM features are wired into the UI: a **LLM 调参** button runs the
 `tune` loop on the current form values and renders the round log (baseline vs.
@@ -165,7 +237,10 @@ not grow with leverage — only the notional does.
 ## Project layout
 
 ```
-cmd/trading-agent/     main entry point
+cmd/trading-agent/           CLI entry point
+cmd/trading-agent-desktop/   Windows desktop entry point (GUI, no console)
+cmd/trading-agent-server/    Linux server entry point (headless, token auth)
+deploy/                      systemd unit and Dockerfile
 internal/
   model/               Bar and Series types
   indicators/          SMA, EMA, RSI, ATR, rolling max/min, shift
@@ -179,10 +254,11 @@ internal/
   state/               JSON session persistence (atomic write)
   live/                the live session runner: broker wiring, reconciliation
   report/              CSV / JSON / Markdown / HTML writers
-  webui/               HTTP server, JSON API and the embedded dashboard
+  webui/               HTTP server, JSON API, token auth and the embedded dashboard
   tune/                the LLM parameter-tuning loop (shared by CLI and web)
   cli/                 command line interface
   llm/                 OpenAI-compatible client: strategy, veto, review, tune
+  shell/               OS helpers: open a browser, pick a free port, error dialog
   testfx/              deterministic offline bars for the unit tests only
 ```
 

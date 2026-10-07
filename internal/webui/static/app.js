@@ -420,6 +420,24 @@ async function bootstrap() {
   $("#strategy-select").value = config.strategy;
   $("#config-source").textContent = config.output_dir ? `报告目录 → ${config.output_dir}` : "本地配置";
 
+  // The desktop edition can stop itself; the server edition must not expose
+  // that control, so the button only appears when the backend says so.
+  if (config.desktop) {
+    const quit = $("#quit-button");
+    quit.hidden = false;
+    quit.addEventListener("click", async () => {
+      quit.disabled = true;
+      quit.textContent = "退出中…";
+      try {
+        await api("/api/shutdown", { method: "POST" });
+      } catch (error) {
+        // The connection usually drops as the server exits, which is expected.
+      }
+      document.body.innerHTML =
+        '<div class="bye"><h1>已退出</h1><p>服务已停止，可以关闭此页面。</p></div>';
+    });
+  }
+
   const risk = config.risk || {};
   const toPct = (v) => (v == null ? "" : (v * 100).toFixed(2).replace(/\.?0+$/, ""));
   if (risk.max_position_pct != null) $('[name="max_position_pct"]').value = toPct(risk.max_position_pct);

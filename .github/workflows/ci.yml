@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TA_ALLOW_LIVE: '0'
+  BINANCE_API_KEY: ''
+  BINANCE_SECRET_KEY: ''
+  LLM_API_KEY: ''
+  OPENAI_API_KEY: ''
+
+jobs:
+  checks:
+    name: Go ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: format
+            command: test -z "$(gofmt -l .)"
+          - check: build
+            command: go build ./...
+          - check: vet
+            command: go vet ./...
+          - check: test
+            command: go test -count=1 ./...
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.23.4'
+          cache: true
+      - name: ${{ matrix.check }}
+        run: ${{ matrix.command }}
+
+  editions:
+    name: Build ${{ matrix.edition }} (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: desktop
+            goos: windows
+            goarch: amd64
+            ldflags: '-s -w -H=windowsgui'
+          - edition: server
+            goos: linux
+            goarch: amd64
+            ldflags: '-s -w'
+          - edition: server
+            goos: linux
+            goarch: arm64
+            ldflags: '-s -w'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.23.4'
+          cache: true
+      - name: Build edition
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags '${{ matrix.ldflags }}' -o '${{ runner.temp }}/trading-agent-${{ matrix.edition }}-${{ matrix.goos }}-${{ matrix.goarch }}' './cmd/trading-agent-${{ matrix.edition }}'

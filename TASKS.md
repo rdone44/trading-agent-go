@@ -1,7 +1,7 @@
 # trading-agent-go 任务认领
 
 仓库：https://github.com/rdone44/trading-agent-go  
-本地：`/root/trading-agent-go`  
+本地：`/root/projects/trading-agent-go`（唯一工作副本；/root/trading-agent-go 为旧克隆，勿用）  
 语言：Go 1.23，唯一依赖 `gopkg.in/yaml.v3`。Binance 和 LLM 客户端只用 `net/http`。
 
 ## 项目是什么

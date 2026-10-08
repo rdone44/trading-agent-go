@@ -43,7 +43,7 @@ type PromptOptions struct {
 
 // PromptRoundResult is one round of the loop (round 0 is the baseline).
 type PromptRoundResult struct {
-	Index          int    `json:"index"`
+	Index          int     `json:"index"`
 	ObjectiveValue float64 `json:"objective_value"`
 	// Persona is the full text evaluated in this round.
 	Persona   string `json:"persona,omitempty"`
@@ -54,17 +54,17 @@ type PromptRoundResult struct {
 
 // PromptReport is the full outcome of a prompt-tuning run.
 type PromptReport struct {
-	Objective    string `json:"objective"`
-	Symbol       string `json:"symbol"`
-	LLMEnabled   bool   `json:"llm_enabled"`
-	EarlyStopped bool   `json:"early_stopped"`
+	Objective    string              `json:"objective"`
+	Symbol       string              `json:"symbol"`
+	LLMEnabled   bool                `json:"llm_enabled"`
+	EarlyStopped bool                `json:"early_stopped"`
 	Rounds       []PromptRoundResult `json:"rounds"`
-	Baseline     float64            `json:"baseline"`
-	BestValue    float64            `json:"best_value"`
+	Baseline     float64             `json:"baseline"`
+	BestValue    float64             `json:"best_value"`
 	// BestPrompt is the persona that won; callers persist it into
 	// cfg.LLM.Prompt (or the per-user vault) to adopt the result.
-	BestPrompt   string               `json:"best_prompt"`
-	Validation   *PromptValidationReport `json:"validation,omitempty"`
+	BestPrompt string                  `json:"best_prompt"`
+	Validation *PromptValidationReport `json:"validation,omitempty"`
 }
 
 // PromptValidationReport reuses the window layout of parameter validation.

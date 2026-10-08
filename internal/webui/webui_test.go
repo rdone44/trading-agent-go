@@ -430,10 +430,10 @@ func TestTunePromptEndpointReturnsReport(t *testing.T) {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Objective  string  `json:"objective"`
-		Symbol     string  `json:"symbol"`
-		LLMEnabled bool    `json:"llm_enabled"`
-		BestPrompt string  `json:"best_prompt"`
+		Objective  string `json:"objective"`
+		Symbol     string `json:"symbol"`
+		LLMEnabled bool   `json:"llm_enabled"`
+		BestPrompt string `json:"best_prompt"`
 		Rounds     []struct {
 			Index    int     `json:"index"`
 			Improved bool    `json:"improved"`
@@ -480,6 +480,7 @@ func TestTunePromptEndpointRejectsWrongMethod(t *testing.T) {
 		t.Fatalf("status = %d, want 405", recorder.Code)
 	}
 }
+
 // TestBacktestReviewUnavailableWhenNoKey verifies the degraded path: asking for
 // a review with no LLM key must not fail the backtest, and must surface the
 // unavailability note instead of a review.

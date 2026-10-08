@@ -63,8 +63,8 @@ type Server struct {
 	// account can never start/stop/step or read another account's position.
 	// In desktop / no-vault builds every request has an empty username, so
 	// there is exactly one session — the historical behaviour.
-	sessions    map[string]*livesession.Session
-	sessionsMu  sync.Mutex
+	sessions   map[string]*livesession.Session
+	sessionsMu sync.Mutex
 	// SeriesLoader loads market data for a run. It defaults to the public
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
 	// suite never touches the network.
@@ -72,12 +72,12 @@ type Server struct {
 	// TuneRunner runs the LLM parameter-tuning loop behind /api/tune. It
 	// defaults to tune.Run; tests inject a stub so the suite never calls a
 	// real model.
-	TuneRunner   func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
+	TuneRunner func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
 	// PromptTuneRunner runs the L2 loop behind /api/tune-prompt: the model
 	// rewrites the llm strategy's persona and the backtest judges it. It
 	// defaults to tune.RunPrompt.
 	PromptTuneRunner func(cfg config.Config, series model.Series, opts tune.PromptOptions) (tune.PromptReport, error)
-	MarketLoader func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
+	MarketLoader     func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
 	// SymbolList loads the venue's tradable pairs, liquidity-ranked. It
 	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
 	// the /api/symbols handler stays offline.
@@ -111,9 +111,9 @@ func New(cfg config.Config) *Server {
 		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
 			return marketdata.Binance(symbol, days, end)
 		},
-		TuneRunner: tune.Run,
+		TuneRunner:       tune.Run,
 		PromptTuneRunner: tune.RunPrompt,
-		SymbolList: marketdata.AllSymbols,
+		SymbolList:       marketdata.AllSymbols,
 	}
 }
 

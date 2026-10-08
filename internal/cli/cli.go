@@ -84,9 +84,9 @@ func Run(args []string) int {
 	case "trade":
 		return runTrade(args[1:])
 	case "tune":
-	return runTune(args[1:])
+		return runTune(args[1:])
 	case "tune-prompt":
-	return runTunePrompt(args[1:])
+		return runTunePrompt(args[1:])
 	case "web":
 		return runWeb(args[1:])
 	case "strategies":

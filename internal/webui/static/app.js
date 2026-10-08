@@ -985,6 +985,7 @@ async function bootstrap() {
   if (config.settings) applySettings(config.settings);
   liveGate = Boolean(config.live_gate);
   applyAuthUi(config);
+  renderPage();
   await refreshSession();
   refreshMarket();
 }
@@ -1019,7 +1020,7 @@ $('[name="execute"]').addEventListener("change", (event) => {
 });
 
 $("#rail-toggle").addEventListener("click", () => setRail(!railOpen()));
-$("#setup-shortcut").addEventListener("click", () => $("#trade-config").scrollIntoView({ block: "start" }));
+$("#setup-shortcut").addEventListener("click", () => { window.location.hash = "/strategies"; });
 $("#rail-close").addEventListener("click", () => setRail(false));
 $("#rail-backdrop").addEventListener("click", () => setRail(false));
 document.addEventListener("keydown", (event) => {
@@ -1118,9 +1119,27 @@ $("#settings-login").addEventListener("click", () => {
   $("#auth-card").scrollIntoView({ block: "start" });
   $("#auth-username").focus();
 });
-$("#run-form").addEventListener("invalid", event => {
+document.addEventListener("invalid", event => {
+  if (event.target.form !== $("#run-form")) return;
+  window.location.hash = event.target.closest(".market-trade") ? "/market" : "/strategies";
+  renderPage();
   let node = event.target.parentElement;
   while (node) { if (node.tagName === "DETAILS") node.open = true; node = node.parentElement; }
 }, true);
+
+// Hash routes keep one form instance: navigation never discards a draft.
+function renderPage() {
+  const strategiesPage = window.location.hash === "#/strategies";
+  $(".board").classList.toggle("strategy-page", strategiesPage);
+  $("#trade-config").hidden = !strategiesPage;
+  $$(".board > .market, .board > .account, .board > .position, .board > .log, .board > .risk").forEach(el => { el.hidden = strategiesPage; });
+  $("#run-button").hidden = !strategiesPage;
+  $("#nav-market").setAttribute("aria-current", strategiesPage ? "false" : "page");
+  $("#nav-strategies").setAttribute("aria-current", strategiesPage ? "page" : "false");
+  $("#strategy-target").textContent = `${$('[name="symbol"]').value} · ${$('[name="futures"]').checked ? "USDT 永续" : "现货"}`;
+  document.title = strategiesPage ? "策略 · trading-agent" : "行情 · trading-agent";
+}
+window.addEventListener("hashchange", () => { renderPage(); window.scrollTo(0, 0); });
+renderPage();
 
 bootstrap().catch((error) => setStatus(`无法加载配置：${error.message}`, "error"));

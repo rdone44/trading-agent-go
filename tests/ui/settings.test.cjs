@@ -35,6 +35,24 @@ test('settings and trading have separate forms; market inputs retain ownership',
   }
   assert.match(script, /Array\.from\(\$\("#run-form"\)\.elements\)/);
 });
+test('strategy route is distinct and navigation retains form values', () => {
+  const {ctx,get}=harness();
+  const panels=[{hidden:false},{hidden:false}];
+  ctx.window={location:{hash:'#/strategies'}};
+  ctx.document={title:''};
+  ctx.$$=()=>panels;
+  get('.board').classList={toggle(){}};
+  for(const id of ['#nav-market','#nav-strategies']) get(id).setAttribute=()=>{};
+  get('[name="initial_cash"]').value='12345';
+  vm.runInContext(functionSource('renderPage'),ctx);
+  ctx.renderPage();
+  assert.equal(get('#trade-config').hidden,false);
+  assert.equal(panels[0].hidden,true);
+  ctx.window.location.hash='#/market'; ctx.renderPage();
+  assert.equal(get('#trade-config').hidden,true);
+  assert.equal(panels[0].hidden,false);
+  assert.equal(get('[name="initial_cash"]').value,'12345');
+});
 test('disabled authentication does not display a login form', () => {
   const {ctx,get}=harness();
   ctx.applyAuthUi({auth:{enabled:false}});

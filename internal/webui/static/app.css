@@ -59,7 +59,6 @@ is never stretched to fill leftover space.
   grid-template-areas:
     "auth    auth"
     "market  market"
-    "trade trade"
     "account position"
     "log     risk";
   gap: 12px;
@@ -231,7 +230,7 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
      then the position, then risk, then the log at the bottom. */
   .board {
     grid-template-columns: 1fr;
-    grid-template-areas: "auth" "market" "trade" "account" "position" "risk" "log";
+    grid-template-areas: "auth" "market" "account" "position" "risk" "log";
   }
   .risk-rows { display: grid; grid-template-columns: 1fr 1fr; }
   .flags, .alert { grid-column: 1 / -1; }
@@ -249,7 +248,7 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
   .safety-strip { padding: 8px 12px; align-items: flex-start; font-size: 10px; }
   .safety-dot { flex: none; margin-top: 5px; }
   .safety-strip button { display: none; }
-  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "trade" "account" "position" "risk" "log"; }
+  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "account" "position" "risk" "log"; }
   .market-head { padding: 14px 14px 5px; }
   .market-head h1 { font-size: 19px; }
   .market-toolbar { padding: 8px 14px; }
@@ -275,3 +274,9 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
 #credentials-form .adv-block { padding: 12px 0; }
 .rail-body { min-height: 0; }
 @media(max-width: 560px) { .trade-body { grid-template-columns: 1fr; padding: 14px; } }
+
+.page-nav { display: flex; gap: 24px; padding: 12px 24px; border-bottom: 1px solid var(--line); }
+.page-nav a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; }
+.page-nav a[aria-current="page"] { color: var(--accent); background: var(--accent-dim); border-radius: 4px; }
+.board.strategy-page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "auth" "trade"; max-width: 1100px; }
+.trade-note a { color: var(--accent); }

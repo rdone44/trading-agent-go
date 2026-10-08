@@ -45,6 +45,8 @@
     </div>
   </header>
 
+  <nav class="page-nav" aria-label="主导航"><a href="#/market" id="nav-market">行情</a><a href="#/strategies" id="nav-strategies">策略</a></nav>
+
   <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">查看交易配置 →</button></div>
 
   <div class="rail-backdrop" id="rail-backdrop" hidden></div>
@@ -137,9 +139,9 @@
       <footer class="market-footer"><span>公开行情 · 不需要 API Key</span><span id="market-update">等待行情</span></footer>
     </section>
 
-    <section class="panel trade-config" id="trade-config">
-      <header class="panel-head"><h2>交易配置</h2><span id="rail-lock" class="rail-lock" hidden>运行中只读</span></header>
-      <p class="hint trade-note">参数用于下一次启动，不会自动保存为账号设置。</p>
+    <section class="panel trade-config" id="trade-config" hidden>
+      <header class="panel-head"><h2 tabindex="-1" id="strategy-page-title">策略</h2><span id="rail-lock" class="rail-lock" hidden>运行中只读</span></header>
+      <p class="hint trade-note"><span id="strategy-target"></span> · 参数用于下一次启动，切页保留草稿，刷新不保留。<a href="#/market">返回行情选择交易对</a></p>
     <form id="run-form" autocomplete="off" class="trade-body">
 
       <fieldset>

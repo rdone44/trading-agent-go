@@ -215,12 +215,12 @@ func (s *Server) authView(username string) map[string]any {
 		view = auth.Status{}
 	}
 	return map[string]any{
-		"username":     username,
-		"binance_api":  view.BinAPIKey,
+		"username":       username,
+		"binance_api":    view.BinAPIKey,
 		"binance_secret": view.BinSecretKey,
-		"llm_key":      view.LLMAPIKey,
-		"llm_base_url": view.LLMBaseURL,
-		"llm_model":    view.LLMModel,
+		"llm_key":        view.LLMAPIKey,
+		"llm_base_url":   view.LLMBaseURL,
+		"llm_model":      view.LLMModel,
 	}
 }
 

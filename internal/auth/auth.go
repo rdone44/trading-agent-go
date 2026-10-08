@@ -267,8 +267,8 @@ func (s *Service) Status(username string) (Status, error) {
 	}
 	ur := s.users[id]
 	return Status{
-		BinAPIKey:    ur.BinAPIKey != "", BinSecretKey: ur.BinSecretKey != "",
-		LLMAPIKey:    ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel,
+		BinAPIKey: ur.BinAPIKey != "", BinSecretKey: ur.BinSecretKey != "",
+		LLMAPIKey: ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel,
 	}, nil
 }
 
@@ -286,8 +286,8 @@ func (s *Service) Get(username string) (*User, bool) {
 func (s *Service) userCopyLocked(ur *userRecord) *User {
 	return &User{
 		ID: ur.ID, Username: ur.Username,
-		BinAPIKey:    ur.BinAPIKey, BinSecretKey: ur.BinSecretKey,
-		LLMBaseURL:   ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMAPIKey: ur.LLMAPIKey,
+		BinAPIKey: ur.BinAPIKey, BinSecretKey: ur.BinSecretKey,
+		LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMAPIKey: ur.LLMAPIKey,
 	}
 }
 

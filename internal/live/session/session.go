@@ -102,7 +102,7 @@ type SessionStatus struct {
 
 	// The AI's face: which model is deciding and its own one-line
 	// explanation of the latest call. Empty for non-LLM strategies.
-	AIModel string `json:"ai_model,omitempty"`
+	AIModel  string `json:"ai_model,omitempty"`
 	AIReason string `json:"ai_reason,omitempty"`
 
 	Equity         float64 `json:"equity"`

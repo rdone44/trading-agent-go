@@ -14,11 +14,11 @@ import (
 
 // StepResult describes what one live cycle did.
 type StepResult struct {
-	Exited    bool
-	Entered   bool
-	Action    string // human-readable outcome, e.g. "hold", "entry_long", "stop_loss"
-	Reason    string // the strategy's own one-line explanation of this call; the
-	                // LLM strategy returns the model's words, others stay empty
+	Exited  bool
+	Entered bool
+	Action  string // human-readable outcome, e.g. "hold", "entry_long", "stop_loss"
+	Reason  string // the strategy's own one-line explanation of this call; the
+	// LLM strategy returns the model's words, others stay empty
 	Equity    float64
 	Cash      float64
 	Open      *OpenTrade

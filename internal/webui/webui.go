@@ -584,6 +584,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"settings":   settingsView(cfg, cfg.Live.PollSeconds, false),
 		"strategies": strategy.Specs(),
 		"auth":       s.authStatusForRequest(r),
+		// live_gate tells the page whether the server was started with the
+		// process-level kill switch (TA_ALLOW_LIVE=1). The gate itself stays
+		// enforced at session start; this field only shows its state so the
+		// user is not surprised by a rejection they could have seen coming.
+		"live_gate": os.Getenv("TA_ALLOW_LIVE") == "1",
 	}
 	writeJSON(w, http.StatusOK, view)
 }

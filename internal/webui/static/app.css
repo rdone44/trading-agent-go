@@ -184,6 +184,14 @@ input:disabled, select:disabled { opacity: .65; }
 .advanced[open] summary::before { content: "▾ "; }
 .advanced .grid2 { padding: 0 12px; }
 .advanced .check { padding: 4px 12px 0; }
+/* Inside the advanced group: blocks are separated by hairlines, headings are
+   quiet uppercase-ish labels that read as sections, not fields. */
+.adv-block { padding: 14px 12px 4px; border-bottom: 1px solid var(--line-soft); }
+.adv-block:last-child { border-bottom: 0; padding-bottom: 12px; }
+.adv-title { margin: 0 0 9px; font-size: 9px; font-weight: 600; color: var(--ink-3); letter-spacing: .1em; }
+details.adv-block { border: 0; padding: 6px 12px 0; margin: 2px 0; }
+details.adv-block summary { padding: 4px 0; }
+fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0; }
 .danger-zone legend, .check.danger, .hint.warn { color: var(--down); }
 /* Key-source hint under the 实盘 switch: neutral by default, green when the
    account's keys are stored, amber when they are missing. */

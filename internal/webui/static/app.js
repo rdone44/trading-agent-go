@@ -104,6 +104,7 @@ let closing = false;
 let authEnabled = false;
 let authMode = "login";
 let lastAuthState = null;
+let liveGate = false;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
 
@@ -779,14 +780,19 @@ function applyAuthUi(config) {
 
   const chip = $("#user-chip");
   const card = $("#auth-card");
-  const cred = $("#credentials-fieldset");
+  // The credentials live inside the advanced group now; only a logged-in
+  // account sees them, and the group auto-opens when keys are missing so
+  // the place to fill them is never hidden behind a closed folder.
+  const cred = $("#creds-adv");
+  const missingKeys = user !== "" && !(config.auth?.binance_api && config.auth?.binance_secret);
+  cred.hidden = !user;
+  // Only auto-open the advanced group when it hides something actionable:
+  // a logged-in account with no stored keys. Otherwise the rail stays short.
+  $("#advanced").open = $("#advanced").open || missingKeys;
 
   chip.hidden = !authEnabled || !user;
   if (user) $("#user-name").textContent = user;
   card.hidden = authEnabled && user !== "";
-  // The credentials belong to an account, so the form is only offered to a
-  // logged-in user; an anonymous visitor gets the login card instead.
-  cred.hidden = !authEnabled || !user;
 
   if (authEnabled && config?.auth && user) renderCredStatus(config.auth);
   renderKeyHint();
@@ -824,10 +830,17 @@ function renderKeyHint() {
     return;
   }
   const ready = auth.binance_api && auth.binance_secret;
-  host.className = `key-hint ${ready ? "ok" : "warn"}`;
-  host.textContent = ready
+  if (!ready) {
+    host.className = "key-hint warn";
+    host.textContent = "本账号尚未保存 Binance 密钥：到「密钥与模型」填写并保存后才能下单。";
+    return;
+  }
+  // Keys are in place, but the process-level kill switch may still be off.
+  // Saying so up front turns a surprising 403 at start into a one-line fix.
+  host.className = "key-hint ok";
+  host.textContent = liveGate
     ? "Binance 密钥已在本账号保存，可直接实盘下单。"
-    : "本账号尚未保存 Binance 密钥：到「密钥与模型」填写并保存后才能下单。";
+    : "密钥已保存，但服务端实盘闸门未开：启动服务时加 TA_ALLOW_LIVE=1 后才允许下单。";
 }
 
 function setAuthTab(mode) {
@@ -876,7 +889,7 @@ async function logout() {
 // hide the user chip and credential form and put the card back on the board.
 function showAuthCard() {
   $("#user-chip").hidden = true;
-  $("#credentials-fieldset").hidden = true;
+  $("#creds-adv").hidden = true;
   $("#auth-card").hidden = false;
   setAuthTab("login");
   lastAuthState = null;
@@ -962,6 +975,7 @@ async function bootstrap() {
 
   renderStrategyParams();
   if (config.settings) applySettings(config.settings);
+  liveGate = Boolean(config.live_gate);
   applyAuthUi(config);
   await refreshSession();
   refreshMarket();

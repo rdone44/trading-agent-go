@@ -83,21 +83,6 @@
       </fieldset>
 
       <fieldset>
-        <legend>数据与节奏</legend>
-        <div class="grid2">
-          <label class="field">
-            <span>回看</span>
-            <div class="inline"><input name="days" type="number" min="30" max="5000" step="1" value="400"><span class="unit">天</span></div>
-          </label>
-          <label class="field">
-            <span>决策轮询</span>
-            <div class="inline"><input name="interval_seconds" type="number" min="5" max="86400" step="5" value="60"><span class="unit">秒</span></div>
-          </label>
-        </div>
-        <p class="hint">回看是 K 线历史深度；轮询是两次策略决策的间隔。</p>
-      </fieldset>
-
-      <fieldset>
         <legend>策略</legend>
         <label class="field">
           <span>模型</span>
@@ -108,7 +93,7 @@
       </fieldset>
 
       <fieldset>
-        <legend>资金与风控</legend>
+        <legend>资金</legend>
         <label class="field">
           <span>纸面初始资金（实盘读取交易所余额）</span>
           <input name="initial_cash" type="number" min="100" step="100" value="100000">
@@ -122,18 +107,38 @@
             <span>止盈</span>
             <div class="inline"><input name="take_profit_pct" type="number" min="0.1" max="500" step="any" value="18"><span class="unit">%</span></div>
           </label>
-          <label class="field">
-            <span>单笔风险</span>
-            <div class="inline"><input name="max_risk_per_trade_pct" type="number" min="0" max="100" step="0.5" value="2"><span class="unit">%</span></div>
-          </label>
-          <label class="field">
-            <span>最大回撤</span>
-            <div class="inline"><input name="max_drawdown_pct" type="number" min="0.1" max="99" step="any" value="25"><span class="unit">%</span></div>
-          </label>
         </div>
-        <details class="advanced">
-          <summary>高级风控</summary>
+      </fieldset>
+
+      <details id="advanced" class="advanced">
+        <summary id="advanced-toggle">高级设置</summary>
+
+        <div class="adv-block">
+          <p class="adv-title">数据与节奏</p>
           <div class="grid2">
+            <label class="field">
+              <span>回看</span>
+              <div class="inline"><input name="days" type="number" min="30" max="5000" step="1" value="400"><span class="unit">天</span></div>
+            </label>
+            <label class="field">
+              <span>决策轮询</span>
+              <div class="inline"><input name="interval_seconds" type="number" min="5" max="86400" step="5" value="60"><span class="unit">秒</span></div>
+            </label>
+          </div>
+          <p class="hint">回看是 K 线历史深度；轮询是两次策略决策的间隔。</p>
+        </div>
+
+        <div class="adv-block">
+          <p class="adv-title">风控额度</p>
+          <div class="grid2">
+            <label class="field">
+              <span>单笔风险</span>
+              <div class="inline"><input name="max_risk_per_trade_pct" type="number" min="0" max="100" step="0.5" value="2"><span class="unit">%</span></div>
+            </label>
+            <label class="field">
+              <span>最大回撤</span>
+              <div class="inline"><input name="max_drawdown_pct" type="number" min="0.1" max="99" step="any" value="25"><span class="unit">%</span></div>
+            </label>
             <label class="field">
               <span>最大仓位</span>
               <div class="inline"><input name="max_position_pct" type="number" min="1" max="100" step="1" value="95"><span class="unit">%</span></div>
@@ -142,42 +147,49 @@
               <span>单日亏损</span>
               <div class="inline"><input name="max_daily_loss_pct" type="number" min="0.1" max="99" step="any" value="5"><span class="unit">%</span></div>
             </label>
-            <label class="field">
-              <span>手续费</span>
-              <div class="inline"><input name="commission_bps" type="number" min="0" max="100" step="0.1" value="1"><span class="unit">bp</span></div>
-            </label>
-            <label class="field">
-              <span>滑点</span>
-              <div class="inline"><input name="slippage_bps" type="number" min="0" max="200" step="0.5" value="5"><span class="unit">bp</span></div>
-            </label>
           </div>
-        </details>
-      </fieldset>
-
-      <fieldset id="credentials-fieldset" hidden>
-        <legend>密钥与模型</legend>
-        <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。密钥只保存在登录账号里，不会显示明文。</p>
-        <div class="grid2">
-          <label class="field">
-            <span>Binance API Key</span>
-            <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_api_key" placeholder="填入后保存">
-          </label>
-          <label class="field">
-            <span>Binance Secret Key</span>
-            <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
-          </label>
-          <label class="field">
-            <span>AI 服务 URL</span>
-            <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
-          </label>
-          <label class="field">
-            <span>AI Token</span>
-            <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">
-          </label>
+          <details class="adv-block">
+            <summary>成本参数（手续费 / 滑点）</summary>
+            <div class="grid2">
+              <label class="field">
+                <span>手续费</span>
+                <div class="inline"><input name="commission_bps" type="number" min="0" max="100" step="0.1" value="1"><span class="unit">bp</span></div>
+              </label>
+              <label class="field">
+                <span>滑点</span>
+                <div class="inline"><input name="slippage_bps" type="number" min="0" max="200" step="0.5" value="5"><span class="unit">bp</span></div>
+              </label>
+            </div>
+          </details>
         </div>
-        <p class="hint" id="cred-status"></p>
-        <button type="button" id="cred-save" class="btn ghost wide">保存密钥</button>
-      </fieldset>
+
+        <div class="adv-block" id="creds-adv" hidden>
+          <p class="adv-title">密钥与模型</p>
+          <fieldset id="credentials-fieldset">
+            <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。密钥只保存在登录账号里，不会显示明文。</p>
+            <div class="grid2">
+              <label class="field">
+                <span>Binance API Key</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_api_key" placeholder="填入后保存">
+              </label>
+              <label class="field">
+                <span>Binance Secret Key</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
+              </label>
+              <label class="field">
+                <span>AI 服务 URL</span>
+                <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
+              </label>
+              <label class="field">
+                <span>AI Token</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">
+              </label>
+            </div>
+            <p class="hint" id="cred-status"></p>
+            <button type="button" id="cred-save" class="btn ghost wide">保存密钥</button>
+          </fieldset>
+        </div>
+      </details>
 
       <fieldset class="danger-zone">
         <legend>实盘开关</legend>
@@ -192,7 +204,7 @@
             <span>输入「确认实盘」解锁</span>
             <input name="confirm" spellcheck="false" placeholder="确认实盘">
           </label>
-          <p class="hint warn">将使用你保存的 Binance 密钥下达真实订单（见「密钥与模型」），成交不可撤销。</p>
+          <p class="hint warn">将使用你保存的 Binance 密钥下达真实订单，成交不可撤销。</p>
         </div>
       </fieldset>
 

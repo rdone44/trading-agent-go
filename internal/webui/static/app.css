@@ -31,7 +31,6 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .dot, .safety-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
 .dot.live { background: var(--up); }
 .dot.error { background: var(--down); }
-.controls { display: flex; gap: 6px; }
 .btn { border: 1px solid var(--line); background: #182633; color: var(--ink); padding: 8px 12px; border-radius: 5px; font-size: 11px; font-weight: 600; }
 .btn:hover:not(:disabled) { border-color: var(--ink-2); }
 .btn.primary { background: var(--accent); color: #1f201d; border-color: var(--accent); }
@@ -41,7 +40,16 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .safety-strip { min-height: 33px; padding: 7px 24px; font-size: 11px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; background: #14242e; border-bottom: 1px solid var(--line); }
 .safety-strip.warn { color: #f0cbb1; background: #302626; }
 .safety-strip.warn .safety-dot { background: var(--down); }
-.safety-strip button { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 11px; white-space: nowrap; }
+#setup-shortcut { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 11px; white-space: nowrap; }
+/* Actions sit on the status strip, next to the safety state they govern:
+   开始交易 submits the strategy form, 立即执行/停止 act on the running
+   session — one row of context instead of a second chrome bar. */
+.strip-actions { display: flex; gap: 6px; flex: none; margin-left: 12px; }
+.strip-actions .btn { padding: 6px 10px; font-size: 10px; }
+.topnav { display: flex; gap: 2px; padding: 10px 24px; border-bottom: 1px solid var(--line); background: #111c27; }
+.topnav a { color: var(--ink-2); text-decoration: none; font-size: 12px; padding: 7px 14px; border-radius: 5px; }
+.topnav a:hover { color: var(--ink); background: #1a2938; }
+.topnav a[aria-current="page"] { color: var(--accent); background: var(--accent-dim); font-weight: 600; }
 /* ---------------------------------------------------------------- board layout
 Primary: market data chart spans the full top row — the terminal's anchor.
 Secondary: account + position side by side in the middle row.
@@ -225,7 +233,6 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
   .topbar { flex-wrap: wrap; gap: 10px; }
   .quote { margin-left: auto; }
   .run-state { margin-left: 0; }
-  .controls { margin-left: auto; }
   /* Everything stacks in one column: chart first (primary), then the money,
      then the position, then risk, then the log at the bottom. */
   .board {
@@ -242,12 +249,14 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
   .quote { flex: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 2px 6px; }
   .quote-price { font-size: 15px; }
   .quote-delta { font-size: 9px; }
-  .controls { width: 100%; margin: 0; order: 4; flex-wrap: wrap; }
-  .controls .btn { flex: 1; padding: 9px 5px; font-size: 10px; }
   .run-state { margin-left: auto; }
   .safety-strip { padding: 8px 12px; align-items: flex-start; font-size: 10px; }
   .safety-dot { flex: none; margin-top: 5px; }
-  .safety-strip button { display: none; }
+  #setup-shortcut { display: none; }
+  .safety-strip { flex-wrap: wrap; }
+  .strip-actions { margin: 6px 0 0; width: 100%; }
+  .strip-actions .btn { flex: 1; padding: 9px 4px; font-size: 10px; }
+  .topnav { padding: 8px 12px; }
   .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "account" "position" "risk" "log"; }
   .market-head { padding: 14px 14px 5px; }
   .market-head h1 { font-size: 19px; }
@@ -275,8 +284,5 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
 .rail-body { min-height: 0; }
 @media(max-width: 560px) { .trade-body { grid-template-columns: 1fr; padding: 14px; } }
 
-.page-nav { display: flex; gap: 24px; padding: 12px 24px; border-bottom: 1px solid var(--line); }
-.page-nav a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; }
-.page-nav a[aria-current="page"] { color: var(--accent); background: var(--accent-dim); border-radius: 4px; }
 .board.strategy-page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "auth" "trade"; max-width: 1100px; }
 .trade-note a { color: var(--accent); }

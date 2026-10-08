@@ -35,19 +35,19 @@
       <span class="user-name" id="user-name"></span>
       <button type="button" id="logout-button" class="btn ghost" title="退出登录">退出</button>
     </div>
-
-    <div class="controls">
-      <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">设置</button>
-      <button type="button" id="step-button" class="btn ghost" disabled title="立即跑一个决策周期">立即执行</button>
-      <button type="button" id="stop-button" class="btn ghost danger" disabled>停止策略</button>
-      <button type="submit" form="run-form" id="run-button" class="btn primary">开始交易</button>
-      <button type="button" id="quit-button" class="btn ghost" title="关闭本地服务并退出" hidden>退出</button>
-    </div>
   </header>
 
-  <nav class="page-nav" aria-label="主导航"><a href="#/market" id="nav-market">行情</a><a href="#/strategies" id="nav-strategies">策略</a></nav>
+  <nav class="topnav" aria-label="主导航"><a href="#/market" id="nav-market">行情</a><a href="#/strategies" id="nav-strategies">策略</a></nav>
 
-  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">查看交易配置 →</button></div>
+  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">查看交易配置 →</button>
+    <div class="strip-actions">
+      <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">设置</button>
+      <button type="submit" form="run-form" id="run-button" class="btn primary" hidden>开始交易</button>
+      <button type="button" id="step-button" class="btn ghost" disabled title="立即跑一个决策周期">立即执行</button>
+      <button type="button" id="stop-button" class="btn ghost danger" disabled>停止策略</button>
+      <button type="button" id="quit-button" class="btn ghost" title="关闭本地服务并退出" hidden>退出</button>
+    </div>
+  </div>
 
   <div class="rail-backdrop" id="rail-backdrop" hidden></div>
 

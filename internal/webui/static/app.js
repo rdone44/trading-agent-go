@@ -1134,6 +1134,7 @@ function renderPage() {
   $("#trade-config").hidden = !strategiesPage;
   $$(".board > .market, .board > .account, .board > .position, .board > .log, .board > .risk").forEach(el => { el.hidden = strategiesPage; });
   $("#run-button").hidden = !strategiesPage;
+  $("#setup-shortcut").hidden = strategiesPage;
   $("#nav-market").setAttribute("aria-current", strategiesPage ? "false" : "page");
   $("#nav-strategies").setAttribute("aria-current", strategiesPage ? "page" : "false");
   $("#strategy-target").textContent = `${$('[name="symbol"]').value} · ${$('[name="futures"]').checked ? "USDT 永续" : "现货"}`;

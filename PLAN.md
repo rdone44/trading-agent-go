@@ -17,6 +17,7 @@
 ## P0 — 安全（会亏钱的洞，必须最先做）
 
 ### P0-1 交易所侧保护性止损（最高优先）
+- 现货 broker 保护原语子项：**done** — 依据官方 Spot Trade 契约新增 `PlaceSpotStop(netQuantity, stop)`：单腿 SELL STOP_LOSS（不是无效的 STOP 类型），写前查 openOrders，严格校验数量/同源触发价/NEW/零成交/独立订单，重复与冲突拒写；响应丢失仅按原 origClientOrderId 查单一次，不盲重发。`CancelSpotStops` 仅逐单撤本程序 tas- 独立止损，保留手工/异币种/非止损订单，撤单返回已有成交则要求对账，防止用旧数量再平仓。离线 TCP 断连、幂等/冲突/查询错误/撤单成交竞态/dry-run 覆盖；gofmt/build/vet/test 全绿，broker race 通过。**总体仍 partial**：本轮只完成 broker 原语，未接入 live；下一子项需净持仓数量适配、重启补挂、撤单释放冻结余额与保护成交对账。未改变 Leverage:1、CVFolds=0 现有路径。
 - 保护单写入响应丢失按 ID 查单子项：**done** — 合约保护腿 POST 返回错误后，仅 GET `/fapi/v1/algoOrder?clientAlgoId=原提交ID` 一次；核验 algoId、身份、币种、类型、方向、BOTH、MARK_PRICE、closePosition、NEW 与同源触发价后才确认成功，不盲重发。离线模拟服务端已挂单但断开响应，覆盖多空与两腿，后续多轮 reconcile 无重复；查询失败/坏 JSON/字段冲突均拒绝确认。验证：gofmt/build/vet/test 全绿，broker/live race 通过。P0-1 仍 partial，剩余 spot 保护单。进程在 POST/查单之间崩溃仍依赖重启 openAlgoOrders 逐腿对账；本子项不声称新增保护单持久化意图日志。
 - 挂单失败后本地退出子项：**done** — 已确认入场后的保护单挂单失败只设置持久化 halt（阻止新入场），不再把已确认成交标成 OrderUncertain；下一轮 Protect 先确认撤掉可能部分写入的保护腿，再通过 risk halt 平仓，不等止损触发。撤单失败/成交不确定仍要求对账，禁止盲目再次平仓。离线覆盖 engine 后续退出、runner 保存/恢复后退出、撤单超时不重试；engine/live race 通过，gofmt/build/vet/test 全绿。此记录替代下文历史 OrderUncertain 阻断待办；总体仍 partial，仅 spot 保护单与保护单超时按 ID 查单待完成。
 - 逐腿幂等补挂子项：**done** — `PlaceProtective` 写入前查询 `openAlgoOrders`，按类型、方向、BOTH、MARK_PRICE、同源 triggerPrice 与有效 algoId 核验已有腿；只补缺失腿，冲突/重复/查询失败拒绝写入。重启有持仓时始终逐腿检查，不再把“任意一腿存在”误判为完整覆盖。离线覆盖多空、双腿/单腿/空列表、多轮幂等、部分写入失败后恢复、冲突拒绝及 runner 重启补止损。验证：gofmt/build/vet/test 全绿；broker/live race 测试通过。P0-1 总体仍 partial；spot、超时按 ID 查单及 OrderUncertain 阻断本地退出仍待完成。

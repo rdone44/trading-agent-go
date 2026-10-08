@@ -100,6 +100,16 @@ func (b *BinanceBroker) PlaceSpotStop(quantity, stop float64) error {
 	return nil
 }
 
+// HasSpotStops reports agent-owned open stops, not validated full coverage.
+// Call PlaceSpotStop to validate quantity and trigger price before reuse.
+func (b *BinanceBroker) HasSpotStops() (bool, error) {
+	if b.cfg.DryRun {
+		return false, nil
+	}
+	rows, err := b.spotProtectiveOrders()
+	return len(rows) > 0, err
+}
+
 // CancelSpotStops cancels only owned standalone stop orders. Confirm zero fills
 // before allowing a caller to flatten: a stop racing cancellation can sell part
 // of the inventory, so blindly selling the original local quantity is unsafe.

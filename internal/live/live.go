@@ -59,6 +59,47 @@ func (p *futuresProtective) Cancel() error { return p.b.CancelProtective() }
 // Has implements engine.Protective.
 func (p *futuresProtective) Has() (bool, error) { return p.b.HasProtective() }
 
+// spotProtective adapts quantity-bound spot stops to the engine contract.
+// It reads the book after ApplyFill, so base-asset fees are already deducted.
+// Wiring it into New requires cycle-level protective-fill reconciliation first.
+type spotProtective struct {
+	b      *broker.BinanceBroker
+	book   *portfolio.Portfolio
+	symbol string
+}
+
+func (p *spotProtective) Open(side broker.Side, stop, target float64) error {
+	pos := p.book.Position(p.symbol)
+	if side != broker.Buy || pos.Quantity <= 0 || math.IsNaN(pos.Quantity) || math.IsInf(pos.Quantity, 0) {
+		return fmt.Errorf("现货保护只允许净多头持仓")
+	}
+	return p.b.PlaceSpotStop(pos.Quantity, stop)
+}
+
+func (p *spotProtective) Has() (bool, error) { return p.b.HasSpotStops() }
+
+func (p *spotProtective) Cancel() error {
+	if err := p.b.CancelSpotStops(); err != nil {
+		return err
+	}
+	// An empty openOrders list does not prove the stop never filled. Confirm
+	// both total inventory and released free inventory before a local sell.
+	total, _, err := p.b.Balances()
+	if err != nil {
+		return err
+	}
+	free, _, err := p.b.AvailableBalances()
+	if err != nil {
+		return err
+	}
+	qty := p.book.Position(p.symbol).Quantity
+	if math.IsNaN(total) || math.IsInf(total, 0) || math.IsNaN(free) || math.IsInf(free, 0) ||
+		math.IsNaN(qty) || math.IsInf(qty, 0) || qty < 0 || math.Abs(total-qty) > 1e-9 || free < qty-1e-9 {
+		return fmt.Errorf("现货保护撤单后净持仓或可用余额不一致，需对账")
+	}
+	return nil
+}
+
 // New builds a runner. execute=true places real orders on Binance (keys come
 // from the environment); execute=false simulates fills locally. The venue
 // (spot vs USDT-margined perpetual) and the leverage multiplier come from the

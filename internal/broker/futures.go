@@ -493,10 +493,32 @@ func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level fl
 	q.Set("workingType", "MARK_PRICE")
 	q.Set("algoType", "CONDITIONAL")
 	q.Set("triggerPrice", strconv.FormatFloat(level, 'f', -1, 64))
-	q.Set("clientAlgoId", newClientID("tap-"))
+	clientID := newClientID("tap-")
+	q.Set("clientAlgoId", clientID)
 	q.Set("newOrderRespType", "ACK")
 	_, err := b.postSigned("/fapi/v1/algoOrder", q)
-	return err
+	if err == nil {
+		return nil
+	}
+	// A failed response does not prove that placement failed. Query the exact
+	// submitted identity once; never retry POST with a fresh clientAlgoId.
+	body, queryErr := b.getSigned("/fapi/v1/algoOrder", url.Values{"clientAlgoId": {clientID}})
+	if queryErr != nil {
+		return fmt.Errorf("保护单 %s 写入失败且按 ID 查单失败，需对账: %w", clientID, queryErr)
+	}
+	var order protectiveAlgoOrder
+	if json.Unmarshal(body, &order) != nil || order.AlgoID <= 0 ||
+		order.ClientAlgoID != clientID || order.Symbol != strings.ToUpper(b.cfg.Symbol) ||
+		order.OrderType != orderType || order.Side != closeSide ||
+		order.PositionSide != "BOTH" || order.WorkingType != "MARK_PRICE" ||
+		!protectiveFlag(order.ClosePos) || order.AlgoStatus != "NEW" {
+		return fmt.Errorf("保护单 %s 按 ID 查单无法确认有效保护，需对账", clientID)
+	}
+	trigger, parseErr := strconv.ParseFloat(order.TriggerPrice, 64)
+	if parseErr != nil || math.IsNaN(trigger) || math.IsInf(trigger, 0) || trigger != level {
+		return fmt.Errorf("保护单 %s 查单触发价与本地不一致，需对账", clientID)
+	}
+	return nil
 }
 
 // CancelProtective cancels only this agent's close-all conditional legs, by
@@ -531,6 +553,7 @@ func (b *FuturesBroker) HasProtective() (bool, error) {
 
 type protectiveAlgoOrder struct {
 	AlgoID       int64       `json:"algoId"`
+	AlgoStatus   string      `json:"algoStatus"`
 	ClientAlgoID string      `json:"clientAlgoId"`
 	Symbol       string      `json:"symbol"`
 	OrderType    string      `json:"orderType"`

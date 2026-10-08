@@ -79,6 +79,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 本轮子项 done：合约保护单写入响应丢失后，按原 clientAlgoId 查询官方 Algo Order 端点一次，完整核验有效 NEW 保护腿，不盲重发；离线 TCP 断连覆盖多空与两腿、后续多轮幂等及查询失败/坏 JSON/字段冲突。gofmt/build/vet/test 全绿，broker/live race 通过。T5/P0-1 仍 partial，仅 spot 保护单未完成；跨进程恢复仍沿用 openAlgoOrders 逐腿对账，未新增保护单持久化意图日志。此记录替代下文历史超时按 ID 查单待办。
+
 - 本轮子项 done：保护单挂单失败后保留本地退出。已确认入场只 halt 新入场，不标记成交不确定；下一轮先确认撤单再 risk halt 平仓。撤单失败/成交不确定仍封锁后续操作；halt 已持久化，离线 runner 保存/恢复后验证退出与撤单超时不重试。engine/live race、全量 gofmt/build/vet/test 通过。本记录替代下文历史“挂单失败 fail-open”及其阻断待办；T5/P0-1 仍 partial，剩余 spot 保护单和保护单超时按 ID 查单。
 
 - 本轮子项 done：合约保护单逐腿幂等补挂。broker 写前查单并严格核验已有腿，只补缺失腿；runner 重启时即使仅剩止盈也补止损。离线多空/重复调用/部分失败恢复/冲突拒写/runner 重启测试；gofmt/build/vet/test 全绿，broker/live race 通过。T5/P0-1 仍 partial（spot、超时按 ID 查单、本地保护被 OrderUncertain 阻断尚未解决）。
@@ -153,7 +155,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |
-| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (逐腿幂等/挂单失败后本地退出 done；剩 spot/超时查单) |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (逐腿幂等/挂单失败后本地退出/响应丢失按 ID 查单 done；剩 spot) |
 | T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |

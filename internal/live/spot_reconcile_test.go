@@ -75,7 +75,7 @@ func TestReconcileSpotProtection(t *testing.T) {
 						t.Error("wrong orphan identity")
 					}
 					row = ""
-					fmt.Fprint(w, `{"orderId":1,"symbol":"BTCUSDT","status":"CANCELED","executedQty":"0"}`)
+					fmt.Fprint(w, `{"orderId":1,"clientOrderId":"tas-existing","symbol":"BTCUSDT","side":"SELL","type":"STOP_LOSS","status":"CANCELED","origQty":"0.999","executedQty":"0","stopPrice":"90","orderListId":-1}`)
 				default:
 					t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
 					http.Error(w, "unexpected", 400)

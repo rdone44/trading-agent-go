@@ -72,6 +72,7 @@ func TestSpotProtectiveCancelChecksReleasedInventory(t *testing.T) {
 		{"partial_fill", "0.5", "0", true},
 		{"unrelated_inventory", "1.1", "0", true},
 		{"account_error", "", "", true},
+		{"wrong_cancel_identity", "0.999", "0", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			canceled := false
@@ -87,7 +88,11 @@ func TestSpotProtectiveCancelChecksReleasedInventory(t *testing.T) {
 					}
 				case "DELETE /api/v3/order":
 					canceled = true
-					fmt.Fprint(w, `{"orderId":1,"symbol":"BTCUSDT","status":"CANCELED","executedQty":"0"}`)
+					if tc.name == "wrong_cancel_identity" {
+						fmt.Fprint(w, `{"orderId":1,"clientOrderId":"tas-other","symbol":"BTCUSDT","side":"SELL","type":"STOP_LOSS","status":"CANCELED","origQty":"0.999","executedQty":"0","stopPrice":"90","orderListId":-1}`)
+						return
+					}
+					fmt.Fprint(w, `{"orderId":1,"clientOrderId":"tas-test","symbol":"BTCUSDT","side":"SELL","type":"STOP_LOSS","status":"CANCELED","origQty":"0.999","executedQty":"0","stopPrice":"90","orderListId":-1}`)
 				case "GET /api/v3/account":
 					reads++
 					if tc.name != "stop_already_filled" && tc.name != "partial_fill" && !canceled {
@@ -113,7 +118,11 @@ func TestSpotProtectiveCancelChecksReleasedInventory(t *testing.T) {
 			if (err != nil) != tc.fail {
 				t.Fatalf("Cancel err=%v want failure=%v", err, tc.fail)
 			}
-			if reads == 0 {
+			if tc.name == "wrong_cancel_identity" {
+				if reads != 0 {
+					t.Fatal("unconfirmed cancellation reached balance checks")
+				}
+			} else if reads == 0 {
 				t.Fatal("no inventory confirmation")
 			}
 		})

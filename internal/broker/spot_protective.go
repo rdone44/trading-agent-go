@@ -140,8 +140,15 @@ func (b *BinanceBroker) CancelSpotStops() error {
 			return err
 		}
 		var canceled spotProtectiveOrder
-		if json.Unmarshal(body, &canceled) != nil || canceled.OrderID != row.OrderID || canceled.Symbol != row.Symbol ||
-			canceled.Status != "CANCELED" || !spotNumber(canceled.Executed, 0) {
+		// A terminal status alone is not proof that the requested stop was
+		// canceled. Confirm the full original identity and immutable fields.
+		qty, qtyErr := strconv.ParseFloat(row.Quantity, 64)
+		stop, stopErr := strconv.ParseFloat(row.Stop, 64)
+		if json.Unmarshal(body, &canceled) != nil || qtyErr != nil || stopErr != nil || qty <= 0 || stop <= 0 ||
+			canceled.OrderID != row.OrderID || canceled.ClientID != row.ClientID || canceled.Symbol != row.Symbol ||
+			canceled.Side != "SELL" || canceled.Type != "STOP_LOSS" || canceled.ListID != -1 ||
+			canceled.Status != "CANCELED" || !spotNumber(canceled.Executed, 0) ||
+			!spotNumber(canceled.Quantity, qty) || !spotNumber(canceled.Stop, stop) {
 			return fmt.Errorf("现货保护单撤单未确认或已有成交，需对账")
 		}
 	}

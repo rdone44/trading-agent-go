@@ -125,7 +125,7 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 		if i%step != 0 {
 			continue
 		}
-		pos, sp, tp, ok := s.decideAt(ask, series, cfg, ind, i, window)
+		pos, sp, tp, _, ok := s.decideAt(ask, series, cfg, ind, i, window)
 		if !ok {
 			continue // unusable answer: hold the previous state
 		}
@@ -153,32 +153,33 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 // erroring: the live loop must stay alive when the model is down, exactly the
 // fail-open philosophy the entry veto uses. A flat answer is always a safe
 // no-op for the engine.
-func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64) {
+func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string) {
 	ask, enabled := s.resolver(cfg)
 	if !enabled || series.Len() == 0 {
-		return 0, math.NaN(), math.NaN()
+		return 0, math.NaN(), math.NaN(), ""
 	}
 	ind := buildIndicators(series, cfg)
 	window := cfg.IntParam("llm_window", 30)
 	if window < 5 {
 		window = 5
 	}
-	pos, sp, tp, ok := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
+	pos, sp, tp, why, ok := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
 	if !ok {
-		return 0, math.NaN(), math.NaN()
+		return 0, math.NaN(), math.NaN(), ""
 	}
-	return pos, sp, tp
+	return pos, sp, tp, why
 }
 
 // decideAt asks the model for one target-position decision on bar i and
 // returns the snapped position plus any stop/target it supplied. ok is false
 // when the model could not be called or its answer did not parse, in which
-// case the caller holds the previous state.
-func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, ok bool) {
+// case the caller holds the previous state. reason is the model's own short
+// explanation, trimmed to one line for the console.
+func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, reason string, ok bool) {
 	user := llmUserPrompt(series.Symbol, i, window, series.Close(), ind)
 	answer, err := ask(llmSystemPrompt(cfg), user)
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	return parseLLMAnswer(answer)
 }
@@ -187,18 +188,19 @@ func (s LLM) decideAt(ask func(string, string) (string, error), series model.Ser
 // reply is expected to contain a JSON object, possibly inside markdown fences
 // or around prose; anything that does not parse returns ok=false and the
 // caller holds the last state.
-func parseLLMAnswer(answer string) (position, stop, target float64, ok bool) {
+func parseLLMAnswer(answer string) (position, stop, target float64, reason string, ok bool) {
 	var payload struct {
 		Position json.Number `json:"position"`
 		Stop     json.Number `json:"stop"`
 		Target   json.Number `json:"target"`
+		Reason   string      `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(answer)), &payload); err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	pos, err := payload.Position.Float64()
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	// Snap to the three legal targets; out-of-range values become flat.
 	switch {
@@ -219,7 +221,16 @@ func parseLLMAnswer(answer string) (position, stop, target float64, ok bool) {
 	if math.IsNaN(tp) || math.IsInf(tp, 0) {
 		tp = 0
 	}
-	return pos, sp, tp, true
+	// The model writes the reason in its own words; trim it to one short line
+	// so it fits the status strip without crowding the controls.
+	reason = strings.TrimSpace(payload.Reason)
+	if idx := strings.IndexAny(reason, "\r\n"); idx >= 0 {
+		reason = reason[:idx]
+	}
+	if len([]rune(reason)) > 80 {
+		reason = string([]rune(reason)[:80]) + "…"
+	}
+	return pos, sp, tp, reason, true
 }
 
 // extractJSONObject trims a reply down to the first balanced object, so the

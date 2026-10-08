@@ -3,6 +3,7 @@ package strategy
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,7 +83,7 @@ func TestLastDecisionDelegatesToModelOnce(t *testing.T) {
 	cfg := cfgFor(map[string]float64{"llm_window": 10, "llm_step": 1})
 
 	s := stratOf(t, f, true)
-	sig, stop, target := s.LastDecision(series, cfg)
+	sig, stop, target, reason := s.LastDecision(series, cfg)
 
 	if f.calls != 1 {
 		t.Fatalf("LastDecision made %d model calls, want exactly 1 (single-decision path)", f.calls)
@@ -93,6 +94,9 @@ func TestLastDecisionDelegatesToModelOnce(t *testing.T) {
 	if stop != 90 || target != 110 {
 		t.Fatalf("levels = (%v,%v), want (90,110)", stop, target)
 	}
+	if reason != "" {
+		t.Fatalf("LastDecision reason = %q, want empty (no reason in the fixture)", reason)
+	}
 }
 
 func TestLastDecisionDegradesFlatOnModelError(t *testing.T) {
@@ -100,9 +104,12 @@ func TestLastDecisionDegradesFlatOnModelError(t *testing.T) {
 	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
 	s := stratOf(t, f, true)
 
-	sig, stop, target := s.LastDecision(series, cfgFor(nil))
+	sig, stop, target, reason := s.LastDecision(series, cfgFor(nil))
 	if sig != 0 || !math.IsNaN(stop) || !math.IsNaN(target) {
 		t.Fatalf("LastDecision on model error = (%v,%v,%v), want flat (0,NaN,NaN) — fail-open", sig, stop, target)
+	}
+	if reason != "" {
+		t.Fatalf("LastDecision on model error reason = %q, want empty", reason)
 	}
 }
 
@@ -111,9 +118,12 @@ func TestLastDecisionDegradesFlatWhenDisabled(t *testing.T) {
 	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
 	s := stratOf(t, f, false) // model present but disabled
 
-	sig, _, _ := s.LastDecision(series, cfgFor(nil))
+	sig, _, _, reason := s.LastDecision(series, cfgFor(nil))
 	if sig != 0 {
 		t.Fatalf("LastDecision disabled = %v, want 0", sig)
+	}
+	if reason != "" {
+		t.Fatalf("LastDecision disabled reason = %q, want empty", reason)
 	}
 	if f.calls != 0 {
 		t.Fatalf("disabled strategy made %d model calls, want 0", f.calls)
@@ -162,12 +172,15 @@ func TestParseLLMAnswerSnapsPosition(t *testing.T) {
 		{`{"position":"NaN"}`, 0, 0, 0, false},                         // bad number
 	}
 	for _, c := range cases {
-		pos, sp, tp, ok := parseLLMAnswer(c.in)
+		pos, sp, tp, reason, ok := parseLLMAnswer(c.in)
 		if ok != c.wantOK {
 			t.Fatalf("parse(%q) ok=%v, want %v", c.in, ok, c.wantOK)
 		}
 		if !ok {
 			continue
+		}
+		if reason != "" {
+			t.Fatalf("parse(%q) reason = %q, want empty (no reason in the fixture)", c.in, reason)
 		}
 		if pos != c.wantPos {
 			t.Fatalf("parse(%q) position=%v, want %v", c.in, pos, c.wantPos)
@@ -181,12 +194,31 @@ func TestParseLLMAnswerSnapsPosition(t *testing.T) {
 func TestParseLLMAnswerTreatsNullLevelsAsZero(t *testing.T) {
 	// A null stop/target must come through as 0 so the engine falls back to
 	// its own protective levels rather than a NaN level that never fires.
-	pos, sp, tp, ok := parseLLMAnswer(`{"position":1,"stop":null,"target":null}`)
+	pos, sp, tp, _, ok := parseLLMAnswer(`{"position":1,"stop":null,"target":null}`)
 	if !ok {
 		t.Fatalf("parse null levels: ok=false")
 	}
 	if pos != 1 || sp != 0 || tp != 0 {
 		t.Fatalf("null levels = (pos=%v,stop=%v,target=%v), want (1,0,0)", pos, sp, tp)
+	}
+}
+
+func TestParseLLMAnswerKeepsOneLineReason(t *testing.T) {
+	pos, _, _, reason, ok := parseLLMAnswer(`{"position":1,"reason":"RSI 超卖后金叉\n第二行应被丢弃"}`)
+	if !ok || pos != 1 {
+		t.Fatalf("parse reason fixture = (pos=%v,ok=%v), want (1,true)", pos, ok)
+	}
+	if reason != "RSI 超卖后金叉" {
+		t.Fatalf("reason = %q, want the first line only", reason)
+	}
+
+	long := make([]rune, 100)
+	for i := range long {
+		long[i] = 'x'
+	}
+	_, _, _, longReason, _ := parseLLMAnswer(`{"position":0,"reason":"` + string(long) + `"}`)
+	if len([]rune(longReason)) != 81 || !strings.HasSuffix(longReason, "…") {
+		t.Fatalf("long reason = %d runes (suffix %q), want 80 + ellipsis", len([]rune(longReason)), longReason[len([]rune(longReason))-1:])
 	}
 }
 

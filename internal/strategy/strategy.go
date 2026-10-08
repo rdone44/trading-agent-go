@@ -58,9 +58,12 @@ type Strategy interface {
 // historical bar on every live poll. The live loop asks such a strategy for a
 // single decision on the most recent bar instead of regenerating the full
 // signal, so a poll bills the model once rather than O(bars) times. Backtests
-// keep using Generate, which genuinely needs every bar.
+// keep using Generate, which genuinely needs every bar. reason carries the
+// model's own one-line explanation of the call (empty for non-LLM
+// implementations) so the console can show what the AI is thinking instead of
+// a bare position number.
 type LiveDecision interface {
-	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64)
+	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string)
 }
 
 // New builds a strategy by name.

@@ -49,6 +49,7 @@ type User struct {
 	BinAPIKey    string
 	BinSecretKey string
 	LLMBaseURL   string
+	LLMModel     string
 	LLMAPIKey    string
 }
 
@@ -58,6 +59,7 @@ type Status struct {
 	BinSecretKey bool
 	LLMAPIKey    bool
 	LLMBaseURL   string
+	LLMModel     string
 }
 
 type userRecord struct {
@@ -69,6 +71,7 @@ type userRecord struct {
 	BinAPIKey    string
 	BinSecretKey string
 	LLMBaseURL   string
+	LLMModel     string
 	LLMAPIKey    string
 	CreatedAt    time.Time
 }
@@ -228,7 +231,7 @@ func (s *Service) authenticateLocked(username string, ur *userRecord, password s
 
 // SetCredentials stores per-user credentials. Empty values leave the stored
 // value unchanged, so the form can post only what the user typed.
-func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmKey string) error {
+func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmModel, llmKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.byName[username]
@@ -248,6 +251,9 @@ func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmKey str
 	if llmKey != "" {
 		ur.LLMAPIKey = llmKey
 	}
+	if llmModel != "" {
+		ur.LLMModel = llmModel
+	}
 	return s.saveLocked()
 }
 
@@ -261,8 +267,8 @@ func (s *Service) Status(username string) (Status, error) {
 	}
 	ur := s.users[id]
 	return Status{
-		BinAPIKey: ur.BinAPIKey != "", BinSecretKey: ur.BinSecretKey != "",
-		LLMAPIKey: ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL,
+		BinAPIKey:    ur.BinAPIKey != "", BinSecretKey: ur.BinSecretKey != "",
+		LLMAPIKey:    ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel,
 	}, nil
 }
 
@@ -280,8 +286,8 @@ func (s *Service) Get(username string) (*User, bool) {
 func (s *Service) userCopyLocked(ur *userRecord) *User {
 	return &User{
 		ID: ur.ID, Username: ur.Username,
-		BinAPIKey: ur.BinAPIKey, BinSecretKey: ur.BinSecretKey,
-		LLMBaseURL: ur.LLMBaseURL, LLMAPIKey: ur.LLMAPIKey,
+		BinAPIKey:    ur.BinAPIKey, BinSecretKey: ur.BinSecretKey,
+		LLMBaseURL:   ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMAPIKey: ur.LLMAPIKey,
 	}
 }
 

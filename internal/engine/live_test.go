@@ -242,6 +242,7 @@ func TestLiveStepShortProtectiveExit(t *testing.T) {
 type countStrat struct {
 	generateCalls int
 	lastCalls     int
+	reason        string
 }
 
 func (c *countStrat) Name() string     { return "count" }
@@ -252,9 +253,9 @@ func (c *countStrat) Generate(s model.Series, cfg config.Config) (strategy.Signa
 	return strategy.Signals{Signal: make([]float64, s.Len())}, nil
 }
 
-func (c *countStrat) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64) {
+func (c *countStrat) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string) {
 	c.lastCalls++
-	return 0, math.NaN(), math.NaN()
+	return 0, math.NaN(), math.NaN(), c.reason
 }
 
 // TestLiveStepUsesSingleDecisionForExpensiveStrategy locks the P0 guarantee:
@@ -279,6 +280,27 @@ func TestLiveStepUsesSingleDecisionForExpensiveStrategy(t *testing.T) {
 	}
 	if s.generateCalls != 0 {
 		t.Fatalf("Generate called %d times; an expensive strategy must not regenerate the full signal on a live poll", s.generateCalls)
+	}
+}
+
+// TestLiveStepCarriesStrategyReasonIntoResult locks the AI's face: the model's
+// one-line explanation from LastDecision must surface on StepResult.Reason so
+// the session can expose it to the console.
+func TestLiveStepCarriesStrategyReasonIntoResult(t *testing.T) {
+	cfg := testConfig()
+	series := testfx.Bars(cfg.Agent.Symbol, 60, 7, time.Now().UTC())
+
+	s := &countStrat{reason: "RSI 超卖，维持空仓"}
+	agent := engine.NewWithBroker(cfg, s,
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+
+	price := series.Close()[series.Len()-1]
+	res, err := agent.LiveStep(series, price, time.Now())
+	if err != nil {
+		t.Fatalf("LiveStep: %v", err)
+	}
+	if res.Reason != "RSI 超卖，维持空仓" {
+		t.Fatalf("StepResult.Reason = %q, want the strategy's explanation to carry through", res.Reason)
 	}
 }
 

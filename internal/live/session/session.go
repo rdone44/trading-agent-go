@@ -100,6 +100,11 @@ type SessionStatus struct {
 	LastAction string  `json:"last_action"`
 	LastError  string  `json:"last_error,omitempty"`
 
+	// The AI's face: which model is deciding and its own one-line
+	// explanation of the latest call. Empty for non-LLM strategies.
+	AIModel string `json:"ai_model,omitempty"`
+	AIReason string `json:"ai_reason,omitempty"`
+
 	Equity         float64 `json:"equity"`
 	Cash           float64 `json:"cash"`
 	InitialCash    float64 `json:"initial_cash"`
@@ -209,6 +214,7 @@ type Session struct {
 	lastPrice  float64
 	lastAction string
 	lastError  string
+	lastReason string // the LLM's explanation of the latest decision
 	log        []CycleRecord
 
 	// SeriesLoader and PriceLoader are injected by tests so the suite stays
@@ -291,6 +297,7 @@ func (s *Session) Start(opts StartOptions) error {
 	s.lastError = ""
 	s.lastAction = "启动"
 	s.lastPrice = 0
+	s.lastReason = ""
 	s.log = nil
 
 	go s.loop(ctx)
@@ -354,6 +361,9 @@ func (s *Session) cycleLocked() {
 
 	s.lastError = ""
 	s.lastAction = result.Action
+	// Carry the strategy's explanation of this decision so the console can
+	// show what the AI is thinking (empty for indicator strategies).
+	s.lastReason = result.Reason
 	// A successful cycle always fetched a live price; the mark-to-market
 	// equity the engine returned is the authoritative number for this tick.
 
@@ -462,6 +472,8 @@ func (s *Session) Status() SessionStatus {
 		LastPrice:   s.lastPrice,
 		LastAction:  s.lastAction,
 		LastError:   s.lastError,
+		AIModel:     s.cfg.LLM.Model,
+		AIReason:    s.lastReason,
 		InitialCash: s.cfg.Risk.InitialCash,
 		Leverage:    s.cfg.Risk.Leverage,
 		Log:         append([]CycleRecord(nil), s.log...),

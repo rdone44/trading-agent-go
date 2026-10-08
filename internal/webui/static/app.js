@@ -358,6 +358,38 @@ function renderTopbar(s) {
     : s.mode === "live" ? "实盘资金 · 本地轮询止损，非交易所保护订单；断网或退出会失去保护"
     : s.running ? "纸面策略运行中 · 使用真实 Binance 行情，成交仅本地模拟"
     : "纸面模式 · 可独立查看行情，在交易配置区核对参数";
+
+  renderAI(s);
+}
+
+// renderAI gives the model a visible face. While the LLM strategy is cycling
+// it shows the model name; once the model explains a call, its own words take
+// over the strip. Non-LLM strategies never touch this strip — the AI is only
+// on stage when it is actually deciding.
+function renderAI(s) {
+  const strip = $("#ai-strip");
+  const text = $("#ai-text");
+  const model = (s.ai_model || "").trim();
+  const reason = (s.ai_reason || "").trim();
+  const active = s.cycles > 0;
+
+  if (reason) {
+    strip.hidden = false;
+    strip.classList.remove("thinking");
+    const tag = model ? `${model} · ` : "";
+    text.textContent = `AI 决策 · ${tag}${reason}`;
+    text.title = reason;
+    return;
+  }
+  if (active && s.strategy === "llm" && model) {
+    strip.hidden = false;
+    strip.classList.add("thinking");
+    text.textContent = `AI 思考中 · ${model}`;
+    text.title = model;
+    return;
+  }
+  strip.hidden = true;
+  strip.classList.remove("thinking");
 }
 
 // ---------------------------------------------------------------- account
@@ -794,6 +826,7 @@ function applyAuthUi(config) {
   if (signedIn) {
     renderCredStatus(config.auth);
     $('[data-cred="llm_base_url"]').value = config.auth.llm_base_url || "";
+    $('[data-cred="llm_model"]').value = config.auth.llm_model || "";
   }
 
   renderKeyHint();
@@ -806,7 +839,8 @@ function renderCredStatus(auth) {
   const bits = [];
   bits.push(auth.binance_api ? "Binance Key 已配置" : "Binance Key 未配置");
   bits.push(auth.binance_secret ? "Secret 已配置" : "Secret 未配置");
-  if (auth.llm_base_url) bits.push(`模型 ${auth.llm_base_url}`);
+  if (auth.llm_base_url) bits.push(`模型服务 ${auth.llm_base_url}`);
+  if (auth.llm_model) bits.push(`模型 ${auth.llm_model}`);
   bits.push(auth.llm_key ? "Token 已配置" : "Token 未配置");
   $("#cred-status").textContent = bits.join(" · ");
 }

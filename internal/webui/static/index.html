@@ -48,6 +48,7 @@
       <button type="button" id="quit-button" class="btn ghost" title="关闭本地服务并退出" hidden>退出</button>
     </div>
   </div>
+  <div class="ai-strip" id="ai-strip" hidden><span class="ai-dot" aria-hidden="true"></span><span id="ai-text">AI 决策 · —</span></div>
 
   <div class="rail-backdrop" id="rail-backdrop" hidden></div>
 
@@ -74,6 +75,10 @@
               <label class="field">
                 <span>Binance Secret Key</span>
                 <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
+              </label>
+              <label class="field">
+                <span>AI 模型名</span>
+                <input type="text" spellcheck="false" data-cred="llm_model" placeholder="如 gpt-5.4">
               </label>
               <label class="field">
                 <span>AI 服务 URL</span>

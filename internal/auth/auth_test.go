@@ -103,14 +103,14 @@ func TestCredentialsRoundTrip(t *testing.T) {
 	if _, err := s.Register("erin", "password1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetCredentials("erin", "BINKEY", "BINSECRET", "https://llm.example/v1", "sk-test"); err != nil {
+	if err := s.SetCredentials("erin", "BINKEY", "BINSECRET", "https://llm.example/v1", "gpt-5.4", "sk-test"); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.Status("erin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.BinAPIKey || !st.BinSecretKey || !st.LLMAPIKey || st.LLMBaseURL != "https://llm.example/v1" {
+	if !st.BinAPIKey || !st.BinSecretKey || !st.LLMAPIKey || st.LLMBaseURL != "https://llm.example/v1" || st.LLMModel != "gpt-5.4" {
 		t.Errorf("status = %+v", st)
 	}
 	user, ok := s.Get("erin")

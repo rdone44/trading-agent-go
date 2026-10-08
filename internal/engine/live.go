@@ -17,6 +17,8 @@ type StepResult struct {
 	Exited    bool
 	Entered   bool
 	Action    string // human-readable outcome, e.g. "hold", "entry_long", "stop_loss"
+	Reason    string // the strategy's own one-line explanation of this call; the
+	                // LLM strategy returns the model's words, others stay empty
 	Equity    float64
 	Cash      float64
 	Open      *OpenTrade
@@ -116,8 +118,9 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 	// times. Both yield the same (target, stop, target-price) triple.
 	n := series.Len()
 	var target, stop, takeProfit float64
+	var reason string
 	if ld, ok := a.Strategy.(strategy.LiveDecision); ok {
-		target, stop, takeProfit = ld.LastDecision(series, a.Config)
+		target, stop, takeProfit, reason = ld.LastDecision(series, a.Config)
 	} else {
 		signals, err := a.Strategy.Generate(series, a.Config)
 		if err != nil {
@@ -131,6 +134,7 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 
 	// 3) Act on the decision at the live price.
 	before := len(a.Broker.Fills())
+	res.Reason = reason
 	a.liveRebalance(now, target, stop, takeProfit, price, n, &res)
 	res = a.liveResult(res, price)
 	if curve := a.Book.Curve; len(curve) > 0 {

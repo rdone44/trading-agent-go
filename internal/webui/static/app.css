@@ -41,6 +41,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .safety-strip.warn { color: #f0cbb1; background: #302626; }
 .safety-strip.warn .safety-dot { background: var(--down); }
 #setup-shortcut { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 11px; white-space: nowrap; }
+/* The AI strip is the model's own line: shown only while an LLM is deciding,
+   with a pulsing dot while it is mid-call and plain text once it has spoken. */
+.ai-strip { min-height: 30px; padding: 6px 24px; font-size: 11px; display: flex; align-items: center; gap: 8px; color: var(--ink); background: #101d29; border-bottom: 1px solid var(--line); }
+.ai-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.ai-strip.thinking .ai-dot { animation: ai-pulse 1s ease-in-out infinite; }
+.ai-strip .ai-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes ai-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 /* Actions sit on the status strip, next to the safety state they govern:
    开始交易 submits the strategy form, 立即执行/停止 act on the running
    session — one row of context instead of a second chrome bar. */

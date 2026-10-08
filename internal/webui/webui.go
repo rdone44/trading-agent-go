@@ -24,6 +24,7 @@ import (
 
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/engine"
+	livesession "github.com/rdone44/trading-agent-go/internal/live/session"
 	"github.com/rdone44/trading-agent-go/internal/llm"
 	"github.com/rdone44/trading-agent-go/internal/marketdata"
 	"github.com/rdone44/trading-agent-go/internal/metrics"
@@ -58,7 +59,7 @@ type Server struct {
 	Token string
 	// session owns the live trading loop the console starts and stops. It is
 	// created lazily so a pure-backtest deployment never spins one up.
-	session     *Session
+	session     *livesession.Session
 	sessionOnce sync.Once
 	// SeriesLoader loads market data for a run. It defaults to the public
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
@@ -184,8 +185,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // Session returns the lazily-created trading session.
-func (s *Server) Session() *Session {
-	s.sessionOnce.Do(func() { s.session = NewSession() })
+func (s *Server) Session() *livesession.Session {
+	s.sessionOnce.Do(func() { s.session = livesession.NewSession() })
 	return s.session
 }
 
@@ -272,7 +273,7 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		statePath = filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", mode+"-"+venue+"-"+cfg.Agent.Symbol+".json")
 	}
 
-	err := s.Session().Start(StartOptions{
+	err := s.Session().Start(livesession.StartOptions{
 		Config:    cfg,
 		Interval:  time.Duration(req.IntervalSeconds) * time.Second,
 		Execute:   req.Execute,

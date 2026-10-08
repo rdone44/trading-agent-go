@@ -50,6 +50,9 @@
 ### P2-1 session.go 与 webui.go 职责拆分
 - session.go(596) 管实盘会话状态机，webui.go(814) 管路由+回测+调参。两者都在改 `Server`。把实盘会话收进独立 `internal/live/session` 包，webui.go 只留路由适配，消掉 `Server` 上的会话字段。
 - **验证**：build + 既有 webui_test 全过；session_test 迁移。
+- **状态：done** — 状态机迁入新包 `internal/live/session`（`Session`/`NewSession`/`StartOptions` + 自有 view 类型 `SessionStatus`/`CycleRecord`/`PositionView`/`RiskView`/`ExecutionView`/`TradeView`/`Settings`）。webui.go 只留路由适配（`/api/session*` 四个 handler + `Serve` 关停钩子），`Server.session` 字段改指 `*livesession.Session`，旧类型经别名（`webui.Session = livesession.Session` 等）保留，外部 `webui_test` 引用的 `webui.SessionStatus` 等不破。
+  - wire format 守护：`Settings` 序列化与原 `StartSessionRequest`（含 `json:",inline"` 展开）逐字节一致，`session_wire_test.go` 用复刻的 legacy 结构体做 byte-equal 断言（全字段 + 全 nil 两组）。
+  - 无新依赖、无循环 import（`live` 不 import webui）；session_test / E2E 仍全绿。
 
 ### P2-2 桌面/服务器 E2E 冒烟
 - 一个 `make e2e`（或 workflow 步骤）：起 server 版（TA_ALLOW_LIVE=0、stub 行情）→ `GET /api/config` → 跑一次 backtest → 断言 200。stub LLM 走既有 httptest 模式。

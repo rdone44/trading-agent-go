@@ -103,12 +103,13 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T7. Web 控制台与 API
 
-- 范围：`internal/webui/`（`webui.go`、`session.go`、`market.go`、`settings.go`、`convert.go`）
+- 范围：`internal/webui/`（`webui.go`、`session.go`、`market.go`、`settings.go`、`convert.go`）；P2-1 起实盘会话状态机独立在 `internal/live/session/`
 - 现状：中文控制台内嵌在二进制里，无前端框架。API 见 README 的表格
 - 可做：API 回归测试、前端展示问题修复
 - 约束：`/api/shutdown` 只在 desktop 构建注册；server 构建必须有 token 才能启动（`--allow-anonymous` 除外）
 - 认领：coding（单人重构，含原 muse 地盘）
-- 状态：open（P 级到达时做）
+- 状态：partial（P2-1 会话状态机拆分 done）
+- P2-1 落地：状态机收进新包 `internal/live/session`（`Session`/`NewSession`/`StartOptions` + 自有 view 类型），webui.go 只留路由适配（`/api/session*` 四 handler + 关停钩子）；旧类型经别名 `webui.Session/livesession.Session` 保留，外部 `webui_test` 不破；`Settings` wire format 由 `session_wire_test.go` byte-equal 守护；无新依赖、无循环 import（`live` 不 import webui）。
 
 ### T8. 部署
 
@@ -146,6 +147,6 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T4 | coding（单人） | 2026-10-08 | done |
 | T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 done) |
 | T6 | coding（单人） | 2026-10-08 | open |
-| T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | claimed |
+| T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |
 | T9 | coding（单人） | 2026-10-08 | open |

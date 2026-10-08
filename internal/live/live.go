@@ -78,6 +78,21 @@ func (p *spotProtective) Open(side broker.Side, stop, target float64) error {
 
 func (p *spotProtective) Has() (bool, error) { return p.b.HasSpotStops() }
 
+// checkInventory detects possible protective fills without inventing ledger
+// entries. Locked inventory is valid; only total net quantity must agree.
+func (p *spotProtective) checkInventory() error {
+	total, _, err := p.b.Balances()
+	if err != nil {
+		return fmt.Errorf("现货保护周期余额查询失败，需对账: %w", err)
+	}
+	qty := p.book.Position(p.symbol).Quantity
+	if math.IsNaN(total) || math.IsInf(total, 0) || total < 0 ||
+		math.IsNaN(qty) || math.IsInf(qty, 0) || qty < 0 || math.Abs(total-qty) > 1e-9 {
+		return fmt.Errorf("现货保护周期净持仓不一致，可能已有保护成交，需对账")
+	}
+	return nil
+}
+
 func (p *spotProtective) Cancel() error {
 	if err := p.b.CancelSpotStops(); err != nil {
 		return err
@@ -459,6 +474,21 @@ func (r *Runner) reconcileFutures() error {
 func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
 	if r.agent.Risk.OrderUncertain {
 		return engine.StepResult{}, fmt.Errorf("订单状态待核对：%s", r.agent.Risk.HaltReason)
+	}
+	// Quantity-bound spot stops can fill between polls without a local fill.
+	// Check total inventory before history, strategy or local exits; never
+	// infer execution price/fees from a balance delta or sell the stale book.
+	// This seam is inactive until spot protection is explicitly installed.
+	if !r.futures {
+		if p, ok := r.agent.Protective.(*spotProtective); ok {
+			if err := p.checkInventory(); err != nil {
+				r.agent.Risk.RequireReconciliation(err.Error())
+				if saveErr := r.Save(); saveErr != nil {
+					return engine.StepResult{}, fmt.Errorf("%v；保存失败：%w", err, saveErr)
+				}
+				return engine.StepResult{}, err
+			}
+		}
 	}
 	price, _, err := r.loadPrice()
 	if err != nil {

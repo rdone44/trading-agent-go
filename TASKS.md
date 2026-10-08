@@ -79,6 +79,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 现货 cycle 库存差异阻断子项 done：显式安装 spotProtective 后，每周期先核验总库存（含冻结量）；完全/部分成交疑点、额外库存、微差、非有限余额及查询失败均保存 OrderUncertain + halt，行情/策略/本地卖出不执行，重复周期及恢复后不重试；不猜成交价/手续费、不改账本。离线 8 场景三轮与状态恢复验证通过，gofmt/build/vet/test、broker/live race 全绿。T5/P0-1 仍 partial：缺按保护单身份自动成交入账与生产接入，New 未启用适配器；Leverage:1/CVFolds=0 原路径未变。本轮另独立格式提交修复已有 CLI/tune/webui 的 gofmt 漂移，以恢复全仓提交门禁。
+
 - 现货重启保护恢复子项 done：显式安装 spotProtective 后，runner 对账使用含冻结量的总库存，严格核验净数量/订单确定性，再幂等校验或补挂同源止损；空仓精撤残留。离线 12 场景三轮验证补挂/撤单各只写一次、冲突/查询错误/成交导致余额变化拒写、账本不变。gofmt/build/vet/test 与 broker/live race 全绿。T5/P0-1 仍 partial：New 未启用现货适配器，待 cycle 保护成交对账与生产接入；未改变 Leverage:1/CVFolds=0 现有行为。
 
 - 现货净持仓适配/撤单余额护栏子项 done：live spotProtective 读取扣 base 手续费后的账本数量，沿用 risk stop，broker HasSpotStops 作存在性查询；精撤后核验总持仓与释放的可用余额，保护单已成交消失/部分成交/仍冻结/额外库存/账户错误均拒绝本地卖出许可。离线测试验证 0.999 净数量、重复调用只写一次、拒绝空头与撤单余额边界；全量 gofmt/build/vet/test、broker/live race 通过。T5/P0-1 仍 partial：未在 New 安装适配器，待 cycle 保护成交对账与重启补挂完成后启用；本轮不改变现货执行、Leverage:1 或 CVFolds=0 路径。

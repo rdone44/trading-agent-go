@@ -17,6 +17,7 @@
 ## P0 — 安全（会亏钱的洞，必须最先做）
 
 ### P0-1 交易所侧保护性止损（最高优先）
+- 现货 cycle 库存差异阻断子项：**done** — 显式安装 spotProtective 时，每周期先核验含冻结量的总库存；疑似完全/部分保护成交、额外库存、微差、非有限余额或查询失败均持久化 OrderUncertain + halt，阻断行情/策略/本地卖出及后续重试，账本不靠余额差猜成交。离线 8 场景三轮及恢复验证通过；gofmt/build/vet/test 与 broker/live race 全绿。**总体仍 partial**：这是 fail-safe 检测，不是自动成交对账；待按保护单身份核验成交价/手续费并安全入账后，再生产接入。New 尚未启用现货适配器，Leverage:1/CVFolds=0 历史路径不变。
 - 现货重启保护恢复子项：**done** — 在显式安装 spotProtective 的 runner 对账路径中，以含冻结量的总库存核验净持仓，再校验/幂等补挂同源止损；空仓仅精撤本程序残留止损。数量微差、部分/完全成交、额外库存、订单不确定、查询错误或已有单字段冲突均拒绝恢复写入，不猜成交、不改账本。离线 12 场景各跑三轮，验证补挂/撤单只写一次；gofmt/build/vet/test 与 broker/live race 全绿。**总体仍 partial**：New 尚未启用现货适配器，剩 cycle 保护成交对账与生产接入；Leverage:1/CVFolds=0 现有路径不变。
 - 现货净持仓适配/撤单余额护栏子项：**done** — 新增 live `spotProtective` 适配器，从 ApplyFill 后账本读取扣除 base 手续费的净数量；只允许多头，沿用本地 stop，HasSpotStops 只作存在性查询。Cancel 精撤后同时确认总持仓匹配且可用余额释放；已完全/部分成交导致 openOrders 为空、余额仍冻结、无关库存或账户查询错误均拒绝确认可平仓。离线测试覆盖扣费 1→0.999、三轮幂等只写一次、方向拒绝与撤单余额护栏；gofmt/build/vet/test 全绿，broker/live race 通过。**总体仍 partial**：适配器尚未在 New 中启用，现货生产路径保持不变（Leverage:1/CVFolds=0 不变）；先完成 cycle 保护成交对账与重启补挂再启用，避免 stop 已成交后按旧账本重复卖出。
 - 现货 broker 保护原语子项：**done** — 依据官方 Spot Trade 契约新增 `PlaceSpotStop(netQuantity, stop)`：单腿 SELL STOP_LOSS（不是无效的 STOP 类型），写前查 openOrders，严格校验数量/同源触发价/NEW/零成交/独立订单，重复与冲突拒写；响应丢失仅按原 origClientOrderId 查单一次，不盲重发。`CancelSpotStops` 仅逐单撤本程序 tas- 独立止损，保留手工/异币种/非止损订单，撤单返回已有成交则要求对账，防止用旧数量再平仓。离线 TCP 断连、幂等/冲突/查询错误/撤单成交竞态/dry-run 覆盖；gofmt/build/vet/test 全绿，broker race 通过。**总体仍 partial**：本轮只完成 broker 原语，未接入 live；下一子项需净持仓数量适配、重启补挂、撤单释放冻结余额与保护成交对账。未改变 Leverage:1、CVFolds=0 现有路径。

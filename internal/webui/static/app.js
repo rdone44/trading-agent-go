@@ -176,6 +176,32 @@ function setRail(open) {
 
 const railOpen = () => $("#rail").classList.contains("open");
 
+// loadAllSymbols pulls the venue's whole tradable pair list (liquidity-ranked)
+// and offers it as the datalist behind the 交易对 field. This is the "get me
+// all the coins, don't make me type a ticker I might not know" path: pick a
+// venue, press 全部币种, choose from the market. Manual typing still works.
+async function loadAllSymbols() {
+  const venue = $('[name="futures"]').checked ? "futures" : "spot";
+  const button = $("#load-symbols");
+  if (button) { button.disabled = true; button.textContent = "拉取中…"; }
+  try {
+    const data = await api(`/api/symbols?venue=${venue}`);
+    const options = document.getElementById("symbol-options");
+    const rows = data.symbols || [];
+    options.innerHTML = rows
+      .map((s) => `<option value="${escape(s.symbol)}">${escape(s.symbol)} · 24h ${fmt.money(s.volume_24h)}</option>`)
+      .join("");
+    // Offer the list to the user: focus the field so the datalist pops open.
+    const input = $('[name="symbol"]');
+    if (input && rows.length) input.focus();
+  } catch (error) {
+    setStatus(`无法加载币种列表：${error.message}`, "error");
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "全部币种"; }
+  }
+}
+
+
 function applySettings(settings) {
   for (const name of ["symbol", "days", "interval_seconds", "initial_cash", "leverage", "strategy"]) {
     const input = $(`[name="${name}"]`);
@@ -781,8 +807,13 @@ $("#strategy-select").addEventListener("change", () => renderStrategyParams());
 $('[name="futures"]').addEventListener("change", (event) => {
   $("#leverage-field").hidden = !event.target.checked;
   if (!event.target.checked) $('[name="leverage"]').value = 1;
+  // The all-pair list is venue-specific, so a venue change re-pulls it.
+  loadAllSymbols();
   refreshMarket();
 });
+
+// 全部币种: pull the whole market for the current venue into the datalist.
+$("#load-symbols").addEventListener("click", loadAllSymbols);
 
 // Arming real orders reveals the confirmation box and is deliberately noisy:
 // this is the only control in the UI that can move real money.

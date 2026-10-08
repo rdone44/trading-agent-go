@@ -57,8 +57,12 @@
         <legend>标的与节奏</legend>
         <label class="field">
           <span>交易对</span>
-          <input name="symbol" value="BTCUSDT" spellcheck="false">
+          <div class="inline">
+            <input name="symbol" value="BTCUSDT" list="symbol-options" spellcheck="false">
+            <button type="button" id="load-symbols" class="btn ghost" title="拉取该场所全部币种（按 24 小时成交额排序）">全部币种</button>
+          </div>
         </label>
+        <datalist id="symbol-options"></datalist>
         <div class="grid2">
           <label class="field">
             <span>回看</span>

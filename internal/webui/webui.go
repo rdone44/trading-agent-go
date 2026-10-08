@@ -70,8 +70,16 @@ type Server struct {
 	// real model.
 	TuneRunner   func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
 	MarketLoader func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
-	marketMu     sync.Mutex
-	marketCache  map[string]marketdata.MarketSnapshot
+	// SymbolList loads the venue's tradable pairs, liquidity-ranked. It
+	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
+	// the /api/symbols handler stays offline.
+	SymbolList  func(venue string, limit int) ([]marketdata.SymbolInfo, error)
+	marketMu    sync.Mutex
+	marketCache map[string]marketdata.MarketSnapshot
+	// symbolsMu guards symbolsCache: the per-venue all-pair list, cached for
+	// symbolsCacheTTL so the console cannot hammer the heavy ticker endpoint.
+	symbolsMu    sync.Mutex
+	symbolsCache map[string]cachedSymbols
 }
 
 // New builds a server from the effective configuration.
@@ -88,6 +96,7 @@ func New(cfg config.Config) *Server {
 			return marketdata.Binance(symbol, days, end)
 		},
 		TuneRunner: tune.Run,
+		SymbolList: marketdata.AllSymbols,
 	}
 }
 
@@ -115,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/session/stop", s.handleSessionStop)
 	mux.HandleFunc("/api/session/step", s.handleSessionStep)
 	mux.HandleFunc("/api/market", s.handleMarket)
+	mux.HandleFunc("/api/symbols", s.handleSymbols)
 	// /healthz is what a systemd unit, a container probe or a load balancer
 	// polls; it touches no disk and no network, so it stays cheap.
 	mux.HandleFunc("/healthz", s.handleHealth)

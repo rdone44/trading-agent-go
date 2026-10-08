@@ -1,6 +1,8 @@
 package webui_test
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -77,5 +79,88 @@ func TestInvalidParametersFailBeforeTrading(t *testing.T) {
 		if r.Code != 400 || s.Session().Running() {
 			t.Fatalf("invalid request started trading: %s => %d", body, r.Code)
 		}
+	}
+}
+
+// /api/symbols must serve the whole venue's pair list offline (injected
+// loader, no real exchange call), cache it within the 30s window, honour a
+// limit cap, and never start a trading session.
+func TestSymbolsEndpointServesCachedList(t *testing.T) {
+	s, _ := newTestServer(t)
+	calls := 0
+	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+		calls++
+		return []marketdata.SymbolInfo{
+			{Symbol: "BTCUSDT", Price: 60000, Volume24h: 500000000},
+			{Symbol: "ETHUSDT", Price: 3000, Volume24h: 400000000},
+			{Symbol: "SOLUSDT", Price: 100, Volume24h: 300000000},
+		}, nil
+	}
+
+	// First request loads, second is served from the cache (no extra call).
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRecorder()
+		s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/symbols?venue=spot", nil))
+		if r.Code != 200 {
+			t.Fatalf("GET /api/symbols = %d: %s", r.Code, r.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("SymbolList called %d times, want 1 (must cache)", calls)
+	}
+	if s.Session().Running() {
+		t.Fatal("loading a pair list must not start a trading session")
+	}
+
+	// limit caps the result without another loader call.
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/symbols?venue=spot&limit=2", nil))
+	var payload struct {
+		Venue   string                  `json:"venue"`
+		Symbols []marketdata.SymbolInfo `json:"symbols"`
+	}
+	if err := json.Unmarshal(r.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode /api/symbols: %v", err)
+	}
+	if payload.Venue != "spot" || len(payload.Symbols) != 2 {
+		t.Fatalf("venue=%q len=%d, want spot/2", payload.Venue, len(payload.Symbols))
+	}
+	if calls != 1 {
+		t.Fatalf("limit re-read the cache wrongly: SymbolList called %d times", calls)
+	}
+}
+
+// A malformed limit is a client error, not a 500, and the wrong method is
+// rejected like every other API route.
+func TestSymbolsEndpointRejectsBadLimitAndMethod(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+		return nil, nil
+	}
+
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/symbols?limit=abc", nil))
+	if r.Code != http.StatusBadRequest {
+		t.Errorf("bad limit = %d, want 400", r.Code)
+	}
+
+	r = httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/symbols", nil))
+	if r.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/symbols = %d, want 405", r.Code)
+	}
+}
+
+// When the exchange answer cannot be loaded the endpoint degrades to 502,
+// which the console shows as "cannot list coins" rather than a blank page.
+func TestSymbolsEndpointLoaderFailureIs502(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+		return nil, errors.New("exchange down")
+	}
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/symbols", nil))
+	if r.Code != http.StatusBadGateway {
+		t.Errorf("loader failure = %d, want 502", r.Code)
 	}
 }

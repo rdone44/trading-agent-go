@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rdone44/trading-agent-go/internal/auth"
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/engine"
 	livesession "github.com/rdone44/trading-agent-go/internal/live/session"
@@ -73,7 +74,14 @@ type Server struct {
 	// SymbolList loads the venue's tradable pairs, liquidity-ranked. It
 	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
 	// the /api/symbols handler stays offline.
-	SymbolList  func(venue string, limit int) ([]marketdata.SymbolInfo, error)
+	SymbolList func(venue string, limit int) ([]marketdata.SymbolInfo, error)
+	// Auth, when set, enables account login: /api/auth/* routes plus a
+	// session middleware on the credential-bearing routes. The credential
+	// vault also carries each user's Binance and LLM keys, which the
+	// session/backtest/tune handlers inject into the effective config.
+	// Desktop and server builds without -users leave it nil, which keeps
+	// every historical behaviour byte-for-byte intact.
+	Auth        *auth.Service
 	marketMu    sync.Mutex
 	marketCache map[string]marketdata.MarketSnapshot
 	// symbolsMu guards symbolsCache: the per-venue all-pair list, cached for
@@ -114,17 +122,27 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/runs/", noCache(http.StripPrefix("/runs/", http.FileServer(http.Dir(s.OutputDir)))))
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/strategies", s.handleStrategies)
-	mux.HandleFunc("/api/backtest", s.handleBacktest)
-	mux.HandleFunc("/api/tune", s.handleTune)
-	mux.HandleFunc("/api/runs", s.handleRuns)
-	mux.HandleFunc("/api/run", s.handleRunDetail)
+	// Account routes are public by design: registration and login cannot
+	// require the very session they create. The rest of /api is guarded
+	// below only when accounts are enabled.
+	mux.HandleFunc("/api/auth/register", s.handleAuthRegister)
+	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("/api/auth/me", s.handleAuthMe)
+	mux.HandleFunc("/api/auth/credentials", s.handleAuthCredentials)
+	protected := http.NewServeMux()
+	protected.HandleFunc("/api/backtest", s.handleBacktest)
+	protected.HandleFunc("/api/tune", s.handleTune)
+	protected.HandleFunc("/api/runs", s.handleRuns)
+	protected.HandleFunc("/api/run", s.handleRunDetail)
 	// Trading-console routes: the live session, not a backtest.
-	mux.HandleFunc("/api/session", s.handleSession)
-	mux.HandleFunc("/api/session/start", s.handleSessionStart)
-	mux.HandleFunc("/api/session/stop", s.handleSessionStop)
-	mux.HandleFunc("/api/session/step", s.handleSessionStep)
-	mux.HandleFunc("/api/market", s.handleMarket)
-	mux.HandleFunc("/api/symbols", s.handleSymbols)
+	protected.HandleFunc("/api/session", s.handleSession)
+	protected.HandleFunc("/api/session/start", s.handleSessionStart)
+	protected.HandleFunc("/api/session/stop", s.handleSessionStop)
+	protected.HandleFunc("/api/session/step", s.handleSessionStep)
+	protected.HandleFunc("/api/market", s.handleMarket)
+	protected.HandleFunc("/api/symbols", s.handleSymbols)
+	mux.Handle("/api/", s.requireUserSession(protected))
 	// /healthz is what a systemd unit, a container probe or a load balancer
 	// polls; it touches no disk and no network, so it stays cheap.
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -237,6 +255,7 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
 		return
 	}
+	req.AuthUser = s.requestUsername(r)
 
 	cfg := s.applyRequest(req.BacktestRequest)
 	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
@@ -438,6 +457,11 @@ type BacktestRequest struct {
 	// Review asks for an LLM post-mortem of the finished run. Degrades
 	// silently (empty Review field) when no model is configured.
 	Review bool `json:"review"`
+	// AuthUser carries the session cookie's account name from the HTTP
+	// handler into the config pipeline. json:"-" keeps the wire format
+	// unchanged; an empty value means "no session / no injected
+	// credentials".
+	AuthUser string `json:"-"`
 }
 
 // RiskOverrides lets the UI override the config defaults per run.
@@ -536,7 +560,7 @@ type RiskEventView struct {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config
-	writeJSON(w, http.StatusOK, map[string]any{
+	view := map[string]any{
 		"symbol":       cfg.Agent.Symbol,
 		"strategy":     cfg.Strategy.Name,
 		"days":         cfg.Agent.HistoryDays,
@@ -559,7 +583,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"settings":   settingsView(cfg, cfg.Live.PollSeconds, false),
 		"strategies": strategy.Specs(),
-	})
+		"auth":       s.authStatusForRequest(r),
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// authStatusForRequest is the /api/config answer about accounts: whether
+// login is enabled, who the session cookie belongs to (if anyone), and which
+// credentials that account has stored. Secrets never appear in the payload.
+func (s *Server) authStatusForRequest(r *http.Request) map[string]any {
+	if s.Auth == nil {
+		return map[string]any{"enabled": false}
+	}
+	view := s.authView(s.requestUsername(r))
+	view["enabled"] = true
+	return view
 }
 
 func (s *Server) handleStrategies(w http.ResponseWriter, r *http.Request) {
@@ -642,6 +680,7 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
 		return
 	}
+	req.AuthUser = s.requestUsername(r)
 
 	result, runName, err := s.Run(req)
 	if err != nil {
@@ -679,7 +718,10 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 
 // applyRequest overlays the request's overrides onto a copy of the server's
 // base config. It is shared by Run (a single backtest) and handleTune (which
-// needs the same effective config to run the baseline).
+// needs the same effective config to run the baseline). When the request
+// carries an authenticated account, that user's vault credentials are
+// injected last, so stored keys win over any config-file value while the
+// environment stays the historical fallback for CLI and desktop.
 func (s *Server) applyRequest(req BacktestRequest) config.Config {
 	cfg := s.Config
 	if req.Symbol != "" {
@@ -703,6 +745,7 @@ func (s *Server) applyRequest(req BacktestRequest) config.Config {
 	if req.Risk != nil {
 		applyRiskOverrides(&cfg, *req.Risk)
 	}
+	s.applyUserCredentials(&cfg, req.AuthUser)
 	return cfg
 }
 
@@ -720,6 +763,7 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
 		return
 	}
+	req.AuthUser = s.requestUsername(r)
 	if req.CVFolds < 0 || req.CVFolds > 32 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("cv folds must be between 0 and 32"))
 		return

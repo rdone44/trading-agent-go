@@ -31,6 +31,11 @@
       <span class="mode" id="mode-badge">纸面</span>
     </div>
 
+    <div class="user-chip" id="user-chip" hidden>
+      <span class="user-name" id="user-name"></span>
+      <button type="button" id="logout-button" class="btn ghost" title="退出登录">退出</button>
+    </div>
+
     <div class="controls">
       <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">策略设置</button>
       <button type="button" id="step-button" class="btn ghost" disabled title="立即跑一个决策周期">立即执行</button>
@@ -144,6 +149,31 @@
         </details>
       </fieldset>
 
+      <fieldset id="credentials-fieldset" hidden>
+        <legend>密钥与模型</legend>
+        <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。密钥只保存在登录账号里，不会显示明文。</p>
+        <div class="grid2">
+          <label class="field">
+            <span>Binance API Key</span>
+            <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_api_key" placeholder="填入后保存">
+          </label>
+          <label class="field">
+            <span>Binance Secret Key</span>
+            <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
+          </label>
+          <label class="field">
+            <span>AI 服务 URL</span>
+            <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
+          </label>
+          <label class="field">
+            <span>AI Token</span>
+            <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">
+          </label>
+        </div>
+        <p class="hint" id="cred-status"></p>
+        <button type="button" id="cred-save" class="btn ghost wide">保存密钥</button>
+      </fieldset>
+
       <fieldset class="danger-zone">
         <legend>实盘开关</legend>
         <label class="check danger">
@@ -169,6 +199,20 @@
 
 
   <main class="board">
+
+    <section class="panel auth-card" id="auth-card" hidden>
+      <header class="panel-head"><h2>账号登录</h2><span class="panel-note">行情可以匿名查看，启动交易需要登录</span></header>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="btn ghost active" id="auth-tab-login">登录</button>
+        <button type="button" class="btn ghost" id="auth-tab-register">注册</button>
+      </div>
+      <form id="auth-form" class="grid2" autocomplete="off">
+        <label class="field"><span>用户名</span><input id="auth-username" spellcheck="false" autocomplete="off" required></label>
+        <label class="field"><span>密码</span><input id="auth-password" type="password" autocomplete="new-password" required></label>
+        <button type="submit" class="btn primary wide" id="auth-submit">登录</button>
+      </form>
+      <p class="hint" id="auth-message"></p>
+    </section>
 
     <section class="panel market">
       <header class="market-head"><div><p class="eyebrow">BINANCE · PUBLIC MARKET DATA</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">现货</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>

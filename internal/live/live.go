@@ -71,6 +71,18 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	if execute && statePath == "" {
 		return nil, fmt.Errorf("实盘必须指定持久化状态文件")
 	}
+	// Credentials: the per-user vault values the webui injected win; when
+	// they are empty (CLI, desktop, or a paper session) the environment is
+	// the fallback, preserving the existing behaviour. Absence of both is a
+	// runtime concern the session layer checks, not a construction failure.
+	apiKey := cfg.Live.ExchangeAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("BINANCE_API_KEY")
+	}
+	secretKey := cfg.Live.ExchangeSecretKey
+	if secretKey == "" {
+		secretKey = os.Getenv("BINANCE_SECRET_KEY")
+	}
 	book := portfolio.New(cfg.Risk.InitialCash)
 	if cfg.Live.Futures {
 		book = portfolio.NewFutures(cfg.Risk.InitialCash, cfg.Risk.Leverage)
@@ -96,17 +108,16 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps,
 		}
 		if execute {
-			// Keys are read from the environment only — never from config files.
-			fc.APIKey = os.Getenv("BINANCE_API_KEY")
-			fc.SecretKey = os.Getenv("BINANCE_SECRET_KEY")
+			fc.APIKey = apiKey
+			fc.SecretKey = secretKey
 			fc.JournalPath = statePath + ".order-pending.json"
 		}
 		bk = broker.NewFutures(fc)
 	case execute:
 		bk = broker.NewBinance(broker.BinanceConfig{
 			Symbol:      cfg.Agent.Symbol,
-			APIKey:      os.Getenv("BINANCE_API_KEY"),
-			SecretKey:   os.Getenv("BINANCE_SECRET_KEY"),
+			APIKey:      apiKey,
+			SecretKey:   secretKey,
 			JournalPath: statePath + ".order-pending.json",
 		})
 	default:

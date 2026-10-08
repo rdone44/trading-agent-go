@@ -57,6 +57,7 @@ is never stretched to fill leftover space.
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-rows: auto auto auto;
   grid-template-areas:
+    "auth    auth"
     "market  market"
     "account position"
     "log     risk";
@@ -65,6 +66,11 @@ is never stretched to fill leftover space.
 }
 
 .panel { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-width: 0; overflow: hidden; }
+.auth-card { grid-area: auth; padding: 16px 20px 18px; }
+.auth-tabs { display: flex; gap: 8px; margin: 4px 0 14px; }
+.user-chip { display: flex; align-items: center; gap: 8px; font: 600 11px var(--mono); color: var(--ink-2); border: 1px solid var(--line); padding: 5px 9px; border-radius: 5px; }
+.user-chip .user-name { color: var(--accent); }
+.user-chip .btn { padding: 2px 8px; font-size: 10px; }
 .market  { grid-area: market;  display: flex; flex-direction: column; }
 .account { grid-area: account; }
 .position { grid-area: position; }
@@ -204,7 +210,7 @@ input:disabled, select:disabled { opacity: .65; }
      then the position, then risk, then the log at the bottom. */
   .board {
     grid-template-columns: 1fr;
-    grid-template-areas: "market" "account" "position" "risk" "log";
+    grid-template-areas: "auth" "market" "account" "position" "risk" "log";
   }
   .risk-rows { display: grid; grid-template-columns: 1fr 1fr; }
   .flags, .alert { grid-column: 1 / -1; }
@@ -222,7 +228,7 @@ input:disabled, select:disabled { opacity: .65; }
   .safety-strip { padding: 8px 12px; align-items: flex-start; font-size: 10px; }
   .safety-dot { flex: none; margin-top: 5px; }
   .safety-strip button { display: none; }
-  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "market" "account" "position" "risk" "log"; }
+  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "account" "position" "risk" "log"; }
   .market-head { padding: 14px 14px 5px; }
   .market-head h1 { font-size: 19px; }
   .market-toolbar { padding: 8px 14px; }

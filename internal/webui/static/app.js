@@ -71,7 +71,17 @@ async function api(path, options) {
     throw new Error(offlineMessage());
   }
   const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    if (response.status === 401) {
+      // Auth is enabled and the session has expired or is missing. Tag the
+      // error so the caller can fall back to the login card instead of the
+      // "server is gone" banner.
+      const error = new Error(payload.error || "需要登录");
+      error.status = 401;
+      throw error;
+    }
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
   return payload;
 }
 
@@ -91,6 +101,8 @@ let marketInterval = "1h";
 let formIdentity = "";
 let busy = false;
 let closing = false;
+let authEnabled = false;
+let authMode = "login";
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
 
@@ -703,6 +715,15 @@ async function refreshSession() {
     // hammer the server for a session that is not running.
     schedulePoll(status.running ? 3000 : 15000);
   } catch (error) {
+    if (error.status === 401 && authEnabled) {
+      // The session cookie expired while this tab was open: offer the login
+      // card again instead of pretending the server died.
+      session = null;
+      showAuthCard();
+      setStatus("登录已失效，请重新登录", "error");
+      schedulePoll(30000);
+      return;
+    }
     setServerDown(true);
     setStatus(error.message, "error");
     // Back off while the server is unreachable: retrying every 15s forever
@@ -741,7 +762,117 @@ function setRunningUi(running) {
   $("#stop-button").disabled = !running || busy;
 }
 
-// ---------------------------------------------------------------- bootstrap
+// ------------------------------------------------------------------- auth
+
+// applyAuthUi shows the login card when accounts are on and no one is signed
+// in, the user chip when a session exists, and the credential form in the
+// rail whenever accounts are enabled (it is where the Binance keys and the
+// model URL/token live). Every piece degrades to the historical page when
+// authEnabled is false.
+function applyAuthUi(config) {
+  authEnabled = Boolean(config?.auth?.enabled);
+  const user = config?.auth?.username || "";
+
+  const chip = $("#user-chip");
+  const card = $("#auth-card");
+  const cred = $("#credentials-fieldset");
+
+  chip.hidden = !authEnabled || !user;
+  if (user) $("#user-name").textContent = user;
+  card.hidden = authEnabled && user !== "";
+  cred.hidden = !authEnabled;
+
+  if (authEnabled && config?.auth && user) renderCredStatus(config.auth);
+}
+
+// renderCredStatus shows which credential slots are filled without ever
+// echoing the values — the server only returns presence flags plus the LLM
+// base URL, which is public state ("which AI endpoint is configured").
+function renderCredStatus(auth) {
+  const bits = [];
+  bits.push(auth.binance_api ? "Binance Key 已配置" : "Binance Key 未配置");
+  bits.push(auth.binance_secret ? "Secret 已配置" : "Secret 未配置");
+  if (auth.llm_base_url) bits.push(`模型 ${auth.llm_base_url}`);
+  bits.push(auth.llm_key ? "Token 已配置" : "Token 未配置");
+  $("#cred-status").textContent = bits.join(" · ");
+}
+
+function setAuthTab(mode) {
+  authMode = mode;
+  const isLogin = mode === "login";
+  $("#auth-tab-login").classList.toggle("active", isLogin);
+  $("#auth-tab-register").classList.toggle("active", !isLogin);
+  $("#auth-submit").textContent = isLogin ? "登录" : "注册账号";
+  $("#auth-card .panel-head h2").textContent = isLogin ? "账号登录" : "注册账号";
+  $("#auth-username").placeholder = isLogin ? "用户名" : "用户名（3–32 位）";
+  $("#auth-message").textContent = "";
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const body = {
+    username: $("#auth-username").value.trim(),
+    password: $("#auth-password").value,
+  };
+  const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  const button = $("#auth-submit");
+  button.disabled = true;
+  try {
+    await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    // A fresh session: re-read config so the chip and credential form appear.
+    const config = await api("/api/config");
+    applyAuthUi(config);
+    $("#auth-password").value = "";
+    refreshSession();
+  } catch (error) {
+    $("#auth-message").textContent = error.message;
+    $("#auth-message").className = "hint warn";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function logout() {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch (error) { /* the session clears on the way out */ }
+  const config = await api("/api/config").catch(() => null);
+  applyAuthUi(config);
+  refreshSession();
+}
+
+// showAuthCard re-opens the login card after a 401: the session is gone, so
+// hide the user chip and credential form and put the card back on the board.
+function showAuthCard() {
+  $("#user-chip").hidden = true;
+  $("#credentials-fieldset").hidden = true;
+  $("#auth-card").hidden = false;
+  setAuthTab("login");
+}
+
+// saveCredentials posts the four credential fields the user typed. Empty
+// inputs are omitted so a partial save only touches what was entered.
+async function saveCredentials() {
+  const fields = {};
+  for (const input of $$("[data-cred]")) {
+    const value = input.value.trim();
+    if (value) fields[input.dataset.cred] = value;
+  }
+  const button = $("#cred-save");
+  button.disabled = true;
+  try {
+    const view = await api("/api/auth/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+    renderCredStatus(view);
+    // Clear the secret inputs; the status line now reflects the stored state,
+    // and the LLM URL stays typed so it can be read at a glance.
+    $$("[data-cred]").forEach((input) => { if (input.type !== "url") input.value = ""; });
+    $("#cred-status").textContent += " · 已保存";
+  } catch (error) {
+    $("#cred-status").textContent = `保存失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ------------------------------------------------------------------- bootstrap
 
 async function bootstrap() {
   const config = await api("/api/config");
@@ -794,6 +925,7 @@ async function bootstrap() {
 
   renderStrategyParams();
   if (config.settings) applySettings(config.settings);
+  applyAuthUi(config);
   await refreshSession();
   refreshMarket();
 }
@@ -910,5 +1042,12 @@ $$('[data-interval]').forEach(button => {
     refreshMarket();
   });
 });
+
+// ------------------------------------------------------------------- auth wiring
+$("#auth-tab-login").addEventListener("click", () => setAuthTab("login"));
+$("#auth-tab-register").addEventListener("click", () => setAuthTab("register"));
+$("#auth-form").addEventListener("submit", submitAuth);
+$("#logout-button").addEventListener("click", logout);
+$("#cred-save").addEventListener("click", saveCredentials);
 
 bootstrap().catch((error) => setStatus(`无法加载配置：${error.message}`, "error"));

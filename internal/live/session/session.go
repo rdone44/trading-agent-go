@@ -248,8 +248,8 @@ func (s *Session) Start(opts StartOptions) error {
 		if err := live.CheckExecutionAllowed(true); err != nil {
 			return err
 		}
-		if !hasExchangeKeys() {
-			return fmt.Errorf("实盘交易需要环境变量 BINANCE_API_KEY 与 BINANCE_SECRET_KEY")
+		if !hasExchangeKeys(opts.Config) {
+			return fmt.Errorf("实盘交易需要 Binance API 密钥：在设置里填写，或配置 BINANCE_API_KEY / BINANCE_SECRET_KEY 环境变量")
 		}
 	}
 	if opts.Interval < time.Second {
@@ -649,10 +649,19 @@ func sideFromQuantity(quantity float64) string {
 	return "buy"
 }
 
-// hasExchangeKeys reports whether the Binance credentials are in the
-// environment. Keys are never read from the config file.
-func hasExchangeKeys() bool {
-	return os.Getenv("BINANCE_API_KEY") != "" && os.Getenv("BINANCE_SECRET_KEY") != ""
+// hasExchangeKeys reports whether the Binance credentials are available: the
+// per-user vault values injected by the webui (cfg.Live.Exchange*) first,
+// then the environment. Secrets are never read from a config file.
+func hasExchangeKeys(cfg config.Config) bool {
+	apiKey := cfg.Live.ExchangeAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("BINANCE_API_KEY")
+	}
+	secretKey := cfg.Live.ExchangeSecretKey
+	if secretKey == "" {
+		secretKey = os.Getenv("BINANCE_SECRET_KEY")
+	}
+	return apiKey != "" && secretKey != ""
 }
 
 // tradeViews renders closed round trips for the blotter. Its output JSON is

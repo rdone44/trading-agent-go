@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rdone44/trading-agent-go/internal/auth"
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/webui"
 )
@@ -43,6 +44,7 @@ func run() int {
 		token           = flag.String("token", envOr("TA_TOKEN", ""), "access token (default: the token file, then a generated one)")
 		tokenFile       = flag.String("token-file", envOr("TA_TOKEN_FILE", ""), "read the access token from this file")
 		allowAnonymous  = flag.Bool("allow-anonymous", envOr("TA_ALLOW_ANONYMOUS", "") == "1", "serve without a token (only safe behind a trusted proxy)")
+		usersFile       = flag.String("users", envOr("TA_USERS", ""), "enable account login: the path of the user credential vault (users + per-user exchange/LLM keys)")
 		printTokenOnly  = flag.Bool("print-token", false, "generate a token, print it, and exit")
 		shutdownTimeout = flag.Duration("shutdown-timeout", 10*time.Second, "grace period for in-flight requests")
 	)
@@ -68,6 +70,21 @@ func run() int {
 		cfg.Backtest.OutputDir = *outputDir
 	}
 
+	// The account vault and the access token are two authentication layers.
+	// When accounts are enabled the login card on the page is the entry point,
+	// so the page must stay reachable anonymously for anyone to reach it.
+	// A token on top of that would mean two competing logins; the token layer
+	// is disabled unless the operator explicitly asked for one.
+	explicitToken := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "token" || f.Name == "token-file" {
+			explicitToken = true
+		}
+	})
+	if disableTokenLayer(*usersFile != "", explicitToken) {
+		*allowAnonymous = true
+	}
+
 	accessToken, err := resolveToken(*token, *tokenFile, *allowAnonymous)
 	if err != nil {
 		log.Printf("token: %v", err)
@@ -77,6 +94,14 @@ func run() int {
 	server := webui.New(cfg)
 	server.Token = accessToken
 	server.Log = os.Stdout
+	if *usersFile != "" {
+		vault, err := auth.New(*usersFile)
+		if err != nil {
+			log.Printf("users: %v", err)
+			return 1
+		}
+		server.Auth = vault
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -86,6 +111,11 @@ func run() int {
 	log.Printf("  reports     %s", cfg.Backtest.OutputDir)
 	log.Printf("  config      %s", existingOrEmpty(*configPath))
 	log.Printf("  auth        %s", authDescription(accessToken))
+	if *usersFile != "" {
+		log.Printf("  accounts    enabled (vault %s)", *usersFile)
+	} else {
+		log.Printf("  accounts    disabled")
+	}
 
 	if err := server.Serve(ctx, *addr, func(actual string) {
 		log.Printf("  ready       http://%s", actual)
@@ -98,6 +128,12 @@ func run() int {
 	}
 	log.Printf("stopped")
 	return 0
+}
+
+// disableTokenLayer reports whether the access-token layer should be switched
+// off in favour of the account vault: accounts on and no explicit token ask.
+func disableTokenLayer(accountsEnabled, explicitToken bool) bool {
+	return accountsEnabled && !explicitToken
 }
 
 // resolveToken picks the access token, in order of precedence: the flag/env

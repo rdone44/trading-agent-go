@@ -81,6 +81,13 @@ type Live struct {
 	// or runs a leverage > 1 must be on a futures venue.
 	Futures    bool   `yaml:"futures"`
 	MarginMode string `yaml:"margin_mode"` // "ISOLATED" (default) or "CROSS"
+	// ExchangeAPIKey / ExchangeSecretKey carry the per-user Binance
+	// credentials the webui injects from the credential vault. They are
+	// yaml:"-" on purpose: secrets live in the vault (0600, hashed users),
+	// never in a YAML config file. When empty, the runner falls back to the
+	// BINANCE_API_KEY / BINANCE_SECRET_KEY environment variables.
+	ExchangeAPIKey    string `yaml:"-"`
+	ExchangeSecretKey string `yaml:"-"`
 }
 
 // LLM configures the OpenAI-compatible model used by the AI features
@@ -102,6 +109,11 @@ type LLM struct {
 	// risk limits (stop distance, size, kill switch) are still re-checked every
 	// cycle; only the soft model opinion is cached. 0 disables caching.
 	VetoCacheSec int `yaml:"veto_cache_sec"`
+	// APIKey is the model credential the webui injects from the per-user
+	// credential vault. yaml:"-" so a config file can never carry it; when
+	// empty, llm.New falls back to the LLM_API_KEY / OPENAI_API_KEY
+	// environment variables.
+	APIKey string `yaml:"-"`
 }
 
 // Default returns the built-in settings used when no config file is present.

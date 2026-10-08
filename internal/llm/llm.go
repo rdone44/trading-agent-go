@@ -32,9 +32,11 @@ type Client struct {
 	http      *http.Client
 }
 
-// New builds a client from config, reading the API key from the environment
-// (see config.LLMAPIKey). A nil-safe client: when the key is empty, Complete
-// returns an error rather than dialing.
+// New builds a client from config. The API key is taken from cfg.APIKey when
+// set (the webui injects the logged-in user's vault credential there),
+// falling back to the environment (see config.LLMAPIKey). A nil-safe
+// client: when the key is empty, Complete returns an error rather than
+// dialing.
 func New(cfg config.LLM) *Client {
 	base := cfg.BaseURL
 	if base == "" {
@@ -56,12 +58,16 @@ func New(cfg config.LLM) *Client {
 	if temp == 0 {
 		temp = 0.2
 	}
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = config.LLMAPIKey()
+	}
 	return &Client{
 		baseURL:   strings.TrimRight(base, "/"),
 		model:     model,
 		maxTokens: maxTokens,
 		temp:      temp,
-		APIKey:    config.LLMAPIKey(),
+		APIKey:    apiKey,
 		http:      &http.Client{Timeout: timeout},
 	}
 }

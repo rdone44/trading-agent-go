@@ -827,6 +827,10 @@ function applyAuthUi(config) {
     renderCredStatus(config.auth);
     $('[data-cred="llm_base_url"]').value = config.auth.llm_base_url || "";
     $('[data-cred="llm_model"]').value = config.auth.llm_model || "";
+    // Show the account's saved trading persona in the prompt-tune block so a
+    // previous L2 winner is visible and editable (empty = built-in persona).
+    const personaField = $('[name="llm_prompt"]');
+    if (personaField) personaField.value = config.auth.llm_prompt || "";
   }
 
   renderKeyHint();
@@ -1014,6 +1018,7 @@ async function bootstrap() {
   $('[name="allow_short"]').checked = Boolean(risk.allow_short);
 
   renderStrategyParams();
+  togglePromptTune();
   if (config.settings) applySettings(config.settings);
   liveGate = Boolean(config.live_gate);
   applyAuthUi(config);
@@ -1024,7 +1029,114 @@ async function bootstrap() {
 
 // ------------------------------------------------------------------- wiring
 
-$("#strategy-select").addEventListener("change", () => renderStrategyParams());
+$("#strategy-select").addEventListener("change", () => { renderStrategyParams(); togglePromptTune(); });
+
+// ----- AI prompt tuning (L2): the model rewrites its own trading persona and
+// the backtest judges each rewrite. Only meaningful for the llm strategy.
+let promptTuneReport = null; // last /api/tune-prompt response, for adopting
+
+function togglePromptTune() {
+  const isLLM = $("#strategy-select").value === "llm";
+  const block = $("#prompt-tune");
+  if (block) block.hidden = !isLLM;
+}
+
+async function runPromptTune() {
+  if (session?.running || busy) return;
+  const form = $("#prompt-tune");
+  const request = collectRequest();
+  request.strategy = "llm"; // the loop only exists for the llm strategy
+  request.objective = form.querySelector('[name="prompt_objective"]').value;
+  request.rounds = Number(form.querySelector('[name="prompt_rounds"]').value) || 1;
+  request.stall = Number(form.querySelector('[name="prompt_stall"]').value) || 0;
+  request.cv_folds = Number(form.querySelector('[name="prompt_cv"]').value) || 0;
+  request.prompt = form.querySelector('[name="llm_prompt"]').value.trim();
+
+  const runButton = $("#prompt-tune-run");
+  const log = $("#prompt-tune-log");
+  runButton.disabled = true;
+  runButton.textContent = "迭代中（回测会多次调用模型）…";
+  log.hidden = false;
+  log.textContent = `目标 ${request.objective} · ${request.rounds} 轮 · 交叉验证 ${request.cv_folds} 窗口\n正在回测基线，随后由模型改写人设…\n`;
+  try {
+    const report = await api("/api/tune-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    promptTuneReport = report;
+    renderPromptTuneReport(report);
+    if (report.best_prompt) {
+      form.querySelector('[name="llm_prompt"]').value = report.best_prompt;
+      $("#prompt-tune-adopt").hidden = false;
+    }
+  } catch (error) {
+    log.textContent += `\n失败：${error.message}`;
+  } finally {
+    runButton.disabled = false;
+    runButton.textContent = "开始迭代";
+  }
+}
+
+function renderPromptTuneReport(report) {
+  const log = $("#prompt-tune-log");
+  const lines = [];
+  if (!report.llm_enabled) lines.push("模型未配置（缺 LLM 密钥/URL）：只回测了基线，没有进行改写。请先在设置里保存 AI 服务。");
+  for (const round of report.rounds || []) {
+    const head = round.index === 0 ? "基线" : `第 ${round.index} 轮`;
+    lines.push(`[${head}] ${report.objective} = ${round.objective_value}`);
+    if (round.improved) lines.push(`  ↑ 改进，采纳`);
+    if (round.note) lines.push(`  ${round.note}`);
+    if (round.persona) lines.push(`  人设：${truncateLine(round.persona, 90)}`);
+    if (round.rationale) lines.push(`  理由：${truncateLine(round.rationale, 90)}`);
+  }
+  const delta = (report.best_value - report.baseline).toFixed(4);
+  lines.push(`\n基线 ${report.baseline} → 最佳 ${report.best_value}（Δ ${delta}）${report.early_stopped ? " · 连续无改进，已早停" : ""}`);
+  const v = report.validation;
+  if (v) {
+    lines.push(v.accepted ? "交叉验证：通过（未过拟合训练窗口）" : "交叉验证：拒绝（在验证窗口退化，保留基线人设）");
+    for (const win of v.windows || []) {
+      lines.push(`  窗口 ${win.index}${win.holdout ? "（留一）" : ""} 基线 ${win.baseline} → 新 ${win.winner} ${win.passed ? "通过" : "未通过"}`);
+    }
+  }
+  log.textContent = lines.join("\n");
+}
+
+function truncateLine(text, max) {
+  text = String(text).split("\n")[0];
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+// Adopting the winner persists it as the account's trading persona, so the
+// next session (and every backtest/tune after) starts from the better brain.
+async function adoptPromptTune() {
+  if (!promptTuneReport?.best_prompt) return;
+  const persona = promptTuneReport.best_prompt;
+  if (!authEnabled) {
+    const block = $("#prompt-tune");
+    block.querySelector('[name="llm_prompt"]').value = persona;
+    alert("匿名模式没有账号可保存：人设已填入上方文本框，请登录后在设置中保存。");
+    return;
+  }
+  try {
+    const view = await api("/api/auth/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llm_prompt: persona }),
+    });
+    lastAuthState = view;
+    renderCredStatus(view);
+    $("#prompt-tune-adopt").hidden = true;
+    const log = $("#prompt-tune-log");
+    if (!log.hidden) log.textContent += "\n\n已保存为账号人设：下次启动会话与回测都会使用它。";
+  } catch (error) {
+    alert(`保存失败：${error.message}`);
+  }
+}
+
+$("#prompt-tune-run").addEventListener("click", runPromptTune);
+$("#prompt-tune-adopt").addEventListener("click", adoptPromptTune);
+
 
 // 全部币种: pull the whole perpetual market into the datalist.
 $("#load-symbols").addEventListener("click", loadAllSymbols);

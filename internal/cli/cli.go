@@ -36,6 +36,8 @@ AI features (all degrade gracefully without LLM_API_KEY):
   LLM veto        --veto (trade)         model second-opinion gates new entries
   LLM review      --review (backtest/trade) model writes a post-mortem to the report
   LLM tune        tune [flags]           model proposes params, we backtest + compare
+  LLM tune-prompt tune-prompt [flags]    model rewrites the llm strategy's persona,
+                                         backtest judges it (AI iterates itself)
 
 Usage:
   trading-agent backtest [flags]   run a backtest and write a report
@@ -82,7 +84,9 @@ func Run(args []string) int {
 	case "trade":
 		return runTrade(args[1:])
 	case "tune":
-		return runTune(args[1:])
+	return runTune(args[1:])
+	case "tune-prompt":
+	return runTunePrompt(args[1:])
 	case "web":
 		return runWeb(args[1:])
 	case "strategies":
@@ -689,6 +693,100 @@ func runTune(args []string) int {
 		fmt.Printf("  最佳参数已写入 %s\n", *saveBest)
 	}
 	return 0
+}
+
+// runTunePrompt runs the L2 loop: the model rewrites the llm strategy's
+// trading persona, we backtest the rewrite and compare the objective against
+// the best so far, keep the winner. This is the AI iterating on its own
+// decision framework rather than on numbers.
+func runTunePrompt(args []string) int {
+	fs := flag.NewFlagSet("tune-prompt", flag.ContinueOnError)
+	var f flags
+	bind(fs, &f)
+
+	cv := fs.Int("cv", 0, "disjoint cross-validation folds plus a final holdout (0 disables)")
+	rounds := fs.Int("rounds", 3, "number of persona-rewrite rounds after the baseline")
+	objective := fs.String("objective", "sharpe", "metric to maximize: sharpe, sortino, total_return, profit_factor, win_rate")
+	saveBest := fs.String("save-best", "", "write the best persona into this YAML config path (llm.prompt)")
+	stall := fs.Int("stall", 3, "stop early after N consecutive rounds that do not improve the best metric (0 disables early stop)")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *cv < 0 || *cv > 32 {
+		return fail(fmt.Errorf("cv folds must be between 0 and 32"))
+	}
+
+	cfg, err := loadConfig(f)
+	if err != nil {
+		return fail(err)
+	}
+	if cfg.Strategy.Name != "llm" {
+		return fail(fmt.Errorf("tune-prompt requires --strategy llm (current: %q)", cfg.Strategy.Name))
+	}
+
+	series, err := loadSeries(cfg)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("tune-prompt: %s %s over %d bars, objective=%s, %d rounds\n",
+		cfg.Agent.Symbol, cfg.Strategy.Name, len(series.Close()), *objective, *rounds)
+
+	report, err := tune.RunPrompt(cfg, series, tune.PromptOptions{
+		Objective: *objective,
+		Rounds:    *rounds,
+		Stall:     *stall,
+		CVFolds:   *cv,
+	})
+	if err != nil {
+		return fail(err)
+	}
+
+	for _, r := range report.Rounds {
+		switch {
+		case r.Note != "" && r.Index == -1:
+			fmt.Printf("%s\n", r.Note)
+		case r.Note != "":
+			fmt.Printf("round %d: %s\n", r.Index, r.Note)
+		case r.Index == 0:
+			fmt.Printf("baseline  %-24s = %.4f\n  persona: %s\n", *objective, r.ObjectiveValue, oneLine(r.Persona, 120))
+		default:
+			star := " "
+			if r.Improved {
+				star = "★"
+			}
+			fmt.Printf("%s round %d  %-24s = %.4f\n  rationale: %s\n  persona: %s\n",
+				star, r.Index, *objective, r.ObjectiveValue, r.Rationale, oneLine(r.Persona, 120))
+		}
+	}
+
+	fmt.Printf("\nbest %s = %.4f\n  persona: %s\n", *objective, report.BestValue, oneLine(report.BestPrompt, 160))
+	if report.Validation != nil {
+		fmt.Printf("cross-validation: accepted=%t\n", report.Validation.Accepted)
+		for _, window := range report.Validation.Windows {
+			fmt.Printf("  window %d holdout=%t bars=[%d,%d) baseline=%.4f winner=%.4f valid=%t passed=%t\n",
+				window.Index, window.Holdout, window.Start, window.End, window.Baseline, window.Winner, window.Valid, window.Passed)
+		}
+	}
+	if set(saveBest) && *saveBest != "" {
+		best := cfg
+		best.LLM.Prompt = report.BestPrompt
+		if err := saveConfig(best, *saveBest); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("  最佳提示词已写入 %s (llm.prompt)\n", *saveBest)
+	}
+	return 0
+}
+
+// oneLine collapses a persona to a single short line for console printing.
+func oneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }
 
 // objectiveValue extracts the numeric value of a named objective from metrics;

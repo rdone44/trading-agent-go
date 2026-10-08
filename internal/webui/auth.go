@@ -45,6 +45,9 @@ func (s *Server) applyUserCredentials(cfg *config.Config, username string) {
 	if user.LLMModel != "" {
 		cfg.LLM.Model = user.LLMModel
 	}
+	if user.LLMPrompt != "" {
+		cfg.LLM.Prompt = user.LLMPrompt
+	}
 }
 
 // requestUsername resolves the session cookie to the account's username, or
@@ -190,6 +193,7 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		BinanceSecretKey string `json:"binance_secret_key"`
 		LLMBaseURL       string `json:"llm_base_url"`
 		LLMModel         string `json:"llm_model"`
+		LLMPrompt        string `json:"llm_prompt"`
 		LLMAPIKey        string `json:"llm_api_key"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
@@ -198,7 +202,7 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Auth.SetCredentials(user.Username,
 		strings.TrimSpace(body.BinanceAPIKey), strings.TrimSpace(body.BinanceSecretKey),
-		strings.TrimSpace(body.LLMBaseURL), strings.TrimSpace(body.LLMModel), strings.TrimSpace(body.LLMAPIKey)); err != nil {
+		strings.TrimSpace(body.LLMBaseURL), strings.TrimSpace(body.LLMModel), strings.TrimSpace(body.LLMPrompt), strings.TrimSpace(body.LLMAPIKey)); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -221,6 +225,7 @@ func (s *Server) authView(username string) map[string]any {
 		"llm_key":        view.LLMAPIKey,
 		"llm_base_url":   view.LLMBaseURL,
 		"llm_model":      view.LLMModel,
+		"llm_prompt":     view.LLMPrompt,
 	}
 }
 

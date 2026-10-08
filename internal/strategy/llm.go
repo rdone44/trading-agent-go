@@ -255,8 +255,25 @@ func extractJSONObject(s string) string {
 	return s[start:]
 }
 
-// llmSystemPrompt frames the model's job and the answer contract.
+// llmSystemPrompt frames the model's job and the answer contract. The
+// persona (how the model should think) is the first block: by default it is
+// the built-in conservative analyst, but cfg.LLM.Prompt can override it —
+// that is the lever the prompt-tune loop iterates. The answer contract (JSON
+// shape, risk profile) is always appended by code, so a tuned persona can
+// never break the parse contract: a reply without the JSON object is simply
+// unusable and the strategy holds its last state.
 func llmSystemPrompt(cfg config.Config) string {
+	if persona := strings.TrimSpace(cfg.LLM.Prompt); persona != "" {
+		return persona + "\n" + answerContract(cfg)
+	}
+	return builtinLLMPrompt(cfg)
+}
+
+// DefaultLLMPersona is the built-in persona, exposed so the prompt-tune loop
+// can seed its first round with the text the strategy would actually use.
+const DefaultLLMPersona = "You are a crypto technical analyst. You are given a compact snapshot of a price series and must decide the desired position on the next bar. Be conservative; when unsure, position=0."
+
+func builtinLLMPrompt(cfg config.Config) string {
 	return fmt.Sprintf(
 		"You are a crypto technical analyst. You are given a compact snapshot of a "+
 			"price series (%s, %s) and must decide the desired position on the next bar.\n"+
@@ -267,6 +284,15 @@ func llmSystemPrompt(cfg config.Config) string {
 		cfg.Agent.Symbol, cfg.Agent.Timeframe,
 		cfg.Risk.MaxRiskPerTradePct*100, stopLossPct(cfg), takeProfitPct(cfg),
 	)
+}
+
+// answerContract is the code-enforced tail every llm strategy prompt ends
+// with, tuned persona or not.
+func answerContract(cfg config.Config) string {
+	return "Answer ONLY with a JSON object: {\"position\": -1|0|1, \"stop\": <price|null>, \"target\": <price|null>, \"reason\": \"<short>\"}.\n" +
+		"position: 1 = long, 0 = flat, -1 = short. stop/target are in the same units as price; use null when none.\n" +
+		fmt.Sprintf("Risk profile: max risk per trade %.2f%%, default stop loss %.2f%%, default take profit %.2f%%.",
+			cfg.Risk.MaxRiskPerTradePct*100, stopLossPct(cfg), takeProfitPct(cfg))
 }
 
 // llmUserPrompt renders one causal snapshot as compact text: the recent close

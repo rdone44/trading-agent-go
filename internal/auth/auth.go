@@ -51,6 +51,9 @@ type User struct {
 	LLMBaseURL   string
 	LLMModel     string
 	LLMAPIKey    string
+	// LLMPrompt is the account's tuned trading persona for the llm strategy
+	// (the L2 iteration winner). Empty keeps the built-in persona.
+	LLMPrompt string
 }
 
 // Status reports which credentials are set, without exposing their values.
@@ -60,6 +63,9 @@ type Status struct {
 	LLMAPIKey    bool
 	LLMBaseURL   string
 	LLMModel     string
+	// LLMPrompt is the stored trading persona (data, not a secret): the UI
+	// pre-fills it in the prompt-tune form so a saved iteration is visible.
+	LLMPrompt string
 }
 
 type userRecord struct {
@@ -73,6 +79,7 @@ type userRecord struct {
 	LLMBaseURL   string
 	LLMModel     string
 	LLMAPIKey    string
+	LLMPrompt    string
 	CreatedAt    time.Time
 }
 
@@ -231,7 +238,7 @@ func (s *Service) authenticateLocked(username string, ur *userRecord, password s
 
 // SetCredentials stores per-user credentials. Empty values leave the stored
 // value unchanged, so the form can post only what the user typed.
-func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmModel, llmKey string) error {
+func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmModel, llmPrompt, llmKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.byName[username]
@@ -254,6 +261,9 @@ func (s *Service) SetCredentials(username, binKey, binSecret, llmURL, llmModel, 
 	if llmModel != "" {
 		ur.LLMModel = llmModel
 	}
+	if llmPrompt != "" {
+		ur.LLMPrompt = llmPrompt
+	}
 	return s.saveLocked()
 }
 
@@ -268,7 +278,7 @@ func (s *Service) Status(username string) (Status, error) {
 	ur := s.users[id]
 	return Status{
 		BinAPIKey: ur.BinAPIKey != "", BinSecretKey: ur.BinSecretKey != "",
-		LLMAPIKey: ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel,
+		LLMAPIKey: ur.LLMAPIKey != "", LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMPrompt: ur.LLMPrompt,
 	}, nil
 }
 
@@ -287,7 +297,7 @@ func (s *Service) userCopyLocked(ur *userRecord) *User {
 	return &User{
 		ID: ur.ID, Username: ur.Username,
 		BinAPIKey: ur.BinAPIKey, BinSecretKey: ur.BinSecretKey,
-		LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMAPIKey: ur.LLMAPIKey,
+		LLMBaseURL: ur.LLMBaseURL, LLMModel: ur.LLMModel, LLMPrompt: ur.LLMPrompt, LLMAPIKey: ur.LLMAPIKey,
 	}
 }
 

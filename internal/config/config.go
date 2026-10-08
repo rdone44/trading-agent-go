@@ -114,6 +114,12 @@ type LLM struct {
 	// empty, llm.New falls back to the LLM_API_KEY / OPENAI_API_KEY
 	// environment variables.
 	APIKey string `yaml:"-"`
+	// Prompt is the trading persona the llm strategy prepends to its
+	// answer-contract block. It is DATA, not code: the prompt-tune loop
+	// iterates this text against backtest metrics, and the winning text is
+	// saved back here. Empty keeps the built-in conservative persona, which
+	// preserves byte-identical behaviour for every existing config file.
+	Prompt string `yaml:"prompt,omitempty"`
 }
 
 // Default returns the built-in settings used when no config file is present.

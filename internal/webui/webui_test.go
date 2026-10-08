@@ -406,6 +406,80 @@ func TestTuneEndpointRejectsWrongMethod(t *testing.T) {
 	}
 }
 
+// TestTunePromptEndpointReturnsReport exercises /api/tune-prompt with an
+// injected PromptTuneRunner (no real model call) and verifies the handler
+// threads the request options through and returns the report as JSON.
+func TestTunePromptEndpointReturnsReport(t *testing.T) {
+	server, _ := newTestServer(t)
+	server.PromptTuneRunner = func(cfg config.Config, series model.Series, opts tune.PromptOptions) (tune.PromptReport, error) {
+		return tune.PromptReport{
+			Objective:  opts.Objective,
+			Symbol:     cfg.Agent.Symbol,
+			LLMEnabled: true,
+			Rounds:     []tune.PromptRoundResult{{Index: 0, ObjectiveValue: 0.5}, {Index: 1, ObjectiveValue: 0.9, Improved: true}},
+			Baseline:   0.5,
+			BestValue:  0.9,
+			BestPrompt: "a better persona",
+		}, nil
+	}
+	body := `{"symbol":"TEST","strategy":"llm","days":200,"objective":"sortino","rounds":2,"stall":3,"cv_folds":2,"prompt":"starter"}`
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodPost, "/api/tune-prompt", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Objective  string  `json:"objective"`
+		Symbol     string  `json:"symbol"`
+		LLMEnabled bool    `json:"llm_enabled"`
+		BestPrompt string  `json:"best_prompt"`
+		Rounds     []struct {
+			Index    int     `json:"index"`
+			Improved bool    `json:"improved"`
+			Value    float64 `json:"objective_value"`
+		} `json:"rounds"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Objective != "sortino" || !payload.LLMEnabled {
+		t.Errorf("objective/llm = %q/%v, want sortino/true", payload.Objective, payload.LLMEnabled)
+	}
+	if payload.BestPrompt != "a better persona" {
+		t.Errorf("best_prompt = %q, want the winning persona", payload.BestPrompt)
+	}
+	if len(payload.Rounds) != 2 || !payload.Rounds[1].Improved {
+		t.Errorf("rounds not threaded through: %+v", payload.Rounds)
+	}
+}
+
+// TestTunePromptEndpointRejectsNonLLMStrategy guards the scope: the persona
+// only exists for the llm strategy, so the endpoint must refuse others.
+func TestTunePromptEndpointRejectsNonLLMStrategy(t *testing.T) {
+	server, _ := newTestServer(t)
+	server.PromptTuneRunner = func(config.Config, model.Series, tune.PromptOptions) (tune.PromptReport, error) {
+		t.Fatal("runner must not be reached for a non-llm strategy")
+		return tune.PromptReport{}, nil
+	}
+	body := `{"symbol":"TEST","strategy":"ma_cross","days":200}`
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodPost, "/api/tune-prompt", strings.NewReader(body)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestTunePromptEndpointRejectsWrongMethod guards the POST-only contract.
+func TestTunePromptEndpointRejectsWrongMethod(t *testing.T) {
+	server, _ := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/tune-prompt", nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", recorder.Code)
+	}
+}
 // TestBacktestReviewUnavailableWhenNoKey verifies the degraded path: asking for
 // a review with no LLM key must not fail the backtest, and must surface the
 // unavailability note instead of a review.

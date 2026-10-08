@@ -103,7 +103,7 @@ func TestCredentialsRoundTrip(t *testing.T) {
 	if _, err := s.Register("erin", "password1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetCredentials("erin", "BINKEY", "BINSECRET", "https://llm.example/v1", "gpt-5.4", "sk-test"); err != nil {
+	if err := s.SetCredentials("erin", "BINKEY", "BINSECRET", "https://llm.example/v1", "gpt-5.4", "", "sk-test"); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.Status("erin")

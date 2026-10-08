@@ -245,6 +245,45 @@
         </div>
       </fieldset>
 
+      <fieldset id="prompt-tune" class="prompt-tune" hidden>
+        <legend>AI 提示词迭代</legend>
+        <p class="hint">让模型改写自己的交易人设（提示词），回测当裁判：更好的留下，更差的淘汰。不改代码、不下单，只改文字。</p>
+        <label class="field">
+          <span>当前人设（留空 = 内置保守人设）</span>
+          <textarea name="llm_prompt" rows="4" spellcheck="false" placeholder="You are a crypto technical analyst. …"></textarea>
+        </label>
+        <div class="grid2">
+          <label class="field">
+            <span>优化目标</span>
+            <select name="prompt_objective">
+              <option value="sharpe" selected>夏普 Sharpe</option>
+              <option value="sortino">索提诺 Sortino</option>
+              <option value="total_return">总收益</option>
+              <option value="profit_factor">盈亏比</option>
+              <option value="win_rate">胜率</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>迭代轮数</span>
+            <input name="prompt_rounds" type="number" min="1" max="10" step="1" value="3">
+          </label>
+          <label class="field">
+            <span>连续无改进即停</span>
+            <input name="prompt_stall" type="number" min="0" max="10" step="1" value="3">
+          </label>
+          <label class="field">
+            <span>交叉验证窗口</span>
+            <input name="prompt_cv" type="number" min="0" max="8" step="1" value="0">
+          </label>
+        </div>
+        <p class="hint">交叉验证 &gt; 0 时，获胜人设还要在未参与训练的窗口上复验，防止“背答案”。回测会调用模型多次，耗时与轮数成正比。</p>
+        <div class="prompt-actions">
+          <button type="button" class="btn ghost" id="prompt-tune-run">开始迭代</button>
+          <button type="button" class="btn" id="prompt-tune-adopt" hidden>采纳获胜人设</button>
+        </div>
+        <pre id="prompt-tune-log" class="prompt-log" hidden></pre>
+      </fieldset>
+
       <div class="rail-actions">
         <button type="submit" class="btn primary wide" id="rail-run">开始交易</button>
         <p class="rail-foot" id="config-source"></p>

@@ -70,6 +70,10 @@ type Server struct {
 	// defaults to tune.Run; tests inject a stub so the suite never calls a
 	// real model.
 	TuneRunner   func(cfg config.Config, series model.Series, opts tune.Options) (tune.Report, error)
+	// PromptTuneRunner runs the L2 loop behind /api/tune-prompt: the model
+	// rewrites the llm strategy's persona and the backtest judges it. It
+	// defaults to tune.RunPrompt.
+	PromptTuneRunner func(cfg config.Config, series model.Series, opts tune.PromptOptions) (tune.PromptReport, error)
 	MarketLoader func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
 	// SymbolList loads the venue's tradable pairs, liquidity-ranked. It
 	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
@@ -104,6 +108,7 @@ func New(cfg config.Config) *Server {
 			return marketdata.Binance(symbol, days, end)
 		},
 		TuneRunner: tune.Run,
+		PromptTuneRunner: tune.RunPrompt,
 		SymbolList: marketdata.AllSymbols,
 	}
 }
@@ -133,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("/api/backtest", s.handleBacktest)
 	protected.HandleFunc("/api/tune", s.handleTune)
+	protected.HandleFunc("/api/tune-prompt", s.handleTunePrompt)
 	protected.HandleFunc("/api/runs", s.handleRuns)
 	protected.HandleFunc("/api/run", s.handleRunDetail)
 	// Trading-console routes: the live session, not a backtest.
@@ -510,6 +516,10 @@ type TuneRequest struct {
 	Stall           int    `json:"stall"`
 	NoClamp         bool   `json:"no_clamp"`
 	CVFolds         int    `json:"cv_folds"`
+	// Prompt is the persona the L2 loop starts from (the llm strategy's
+	// system-prompt persona). Empty means "use the stored/built-in one".
+	// Only read by /api/tune-prompt; /api/tune ignores it.
+	Prompt string `json:"prompt"`
 }
 
 // EquityPoint is one sampled point of the equity and drawdown curves.
@@ -797,6 +807,61 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		NoClamp:   req.NoClamp,
 		CVFolds:   req.CVFolds,
 		Seed:      cfg.Strategy.Params,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+// handleTunePrompt runs the L2 loop: the model rewrites the llm strategy's
+// trading persona and the backtest judges each rewrite. Same effective
+// config and series as /api/tune; the response carries the best persona so
+// the caller (or a follow-up credentials write) can persist it.
+func (s *Server) handleTunePrompt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	var req TuneRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
+		return
+	}
+	req.AuthUser = s.requestUsername(r)
+	if req.CVFolds < 0 || req.CVFolds > 32 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("cv folds must be between 0 and 32"))
+		return
+	}
+	if req.Objective == "" {
+		req.Objective = "sharpe"
+	}
+	if req.Rounds < 0 {
+		req.Rounds = 0
+	}
+	if req.Stall < 0 {
+		req.Stall = 0
+	}
+
+	cfg := s.applyRequest(req.BacktestRequest)
+	if cfg.Strategy.Name != "llm" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("提示词迭代只适用于 llm 策略（当前: %q）", cfg.Strategy.Name))
+		return
+	}
+
+	series, err := s.SeriesLoader(cfg.Agent.Symbol, cfg.Agent.HistoryDays, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	report, err := s.PromptTuneRunner(cfg, series, tune.PromptOptions{
+		Objective:    req.Objective,
+		Rounds:       req.Rounds,
+		Stall:        req.Stall,
+		CVFolds:      req.CVFolds,
+		StartPersona: strings.TrimSpace(req.Prompt),
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

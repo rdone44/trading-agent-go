@@ -99,7 +99,9 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 可做：极端行情（跳空穿透止损）的记账测试、日亏损上限跨日重置
 - 约束：止损和熔断平仓不被策略错误或 LLM 否决跳过
 - 认领：coding（单人重构，含原 muse 地盘）
-- 状态：open（P 级到达时做）
+- 状态：done（离线回归验证，无生产行为改动）
+- 落地：`internal/engine/gap_accounting_test.go` 覆盖现货多头、合约多/空跳空穿透止损，断言按更差开盘价加不利滑点成交、手续费/净损益/钱包/已实现损益一致、保证金释放且不重复平仓；`internal/risk/daily_reset_test.go` 覆盖 UTC+8 午夜重置、新日基线、同日重启暂停延续、事件去重，以及永久熔断/订单不确定状态不被跨日清除。仅新增测试；Leverage:1 与 CVFolds=0 生产代码未变。
+- 验证：gofmt -l . 空；go build ./...、go vet ./...、go test -count=1 ./... 全绿；risk/engine 定向 verbose 测试通过。
 
 ### T7. Web 控制台与 API
 
@@ -130,6 +132,9 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ## 本轮协作记录
 
+- 本周期 as 本轮无有效完成回复（T8）：A2A 返回 `Run this command to get the current commit SHA:`，要求调用方执行 `git rev-parse HEAD`，无 `DONE`/`BLOCKED` 或 SHA；复核 worktree 干净、HEAD 仍为 d7941f8，`fork/as/main` 不存在，没有可合并提交。未修改其他 profile。
+- coding T6 done：新增离线跳空止损记账与跨日/重启风险状态回归；仅新增测试，不改生产行为。全量 gofmt/build/vet/test 绿后提交并推送 fork/main。
+
 - 本周期 as 本轮无回复（T4）：A2A 返回 `Response Stopped — Repetition Detected`，没有 DONE SHA；核实 as worktree 干净、已同步至 2eb8c72，fork/as/main 仍不存在，没有合并。未修改其他 profile。
 - coding P1-2 done（cfc7b5b）：Go 1.23.4 CI 检查 matrix 与桌面/服务器三平台构建；gofmt -l . 空、go build ./...、go vet ./...、go test -count=1 ./... 全绿，三个发行构建全部通过。推送 fork/main 后读取 Actions run 37694155551：completed/success，7 个 job 全绿。公开 API 查询两仓 PR #1 均返回 `curl: (22) The requested URL returned error: 404`，fork 开放 PR 列表为空；当前 profile/env 无 GitHub API token，未更新 PR 描述、未设置分支保护，不改其他 profile。
 
@@ -146,7 +151,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |
 | T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 done) |
-| T6 | coding（单人） | 2026-10-08 | open |
+| T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |
 | T9 | coding（单人） | 2026-10-08 | open |

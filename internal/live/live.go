@@ -359,6 +359,35 @@ func (r *Runner) reconcile() error {
 	if haveLocal && math.Abs(pos.Quantity-base) > 1e-6 {
 		return fmt.Errorf("持仓数量不一致: 本地 %.6f, 交易所 %.6f，拒绝继续", pos.Quantity, base)
 	}
+	if r.agent.Protective != nil {
+		// Total inventory includes the quantity locked by a surviving stop.
+		// Never repair protection from an uncertain or invalid restored book.
+		if math.IsNaN(base) || math.IsInf(base, 0) || base < 0 ||
+			math.IsNaN(pos.Quantity) || math.IsInf(pos.Quantity, 0) || pos.Quantity < 0 ||
+			math.Abs(pos.Quantity-base) > 1e-9 {
+			return fmt.Errorf("现货保护恢复时净持仓不一致，需对账")
+		}
+		if r.agent.Risk.OrderUncertain {
+			return fmt.Errorf("现货保护恢复时订单状态未确认，需对账")
+		}
+		if haveLocal {
+			// Open validates the existing quantity/stop, or repairs a missing
+			// stop using the persisted risk level. Has alone is insufficient.
+			if err := r.agent.Protective.Open(broker.Buy, pos.StopPrice, pos.TakeProfitPrice); err != nil {
+				return fmt.Errorf("重启后补挂现货保护单失败: %w", err)
+			}
+		} else {
+			has, err := r.agent.Protective.Has()
+			if err != nil {
+				return fmt.Errorf("查询现货残留保护单失败: %w", err)
+			}
+			if has {
+				if err := r.agent.Protective.Cancel(); err != nil {
+					return fmt.Errorf("撤销现货残留保护单失败: %w", err)
+				}
+			}
+		}
+	}
 	return nil
 }
 

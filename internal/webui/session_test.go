@@ -17,7 +17,7 @@ import (
 func newLiveTestServer(t *testing.T) *webui.Server {
 	t.Helper()
 	server, _ := newTestServer(t)
-	session := server.Session()
+	session := server.Session("")
 	session.SeriesLoader = fxLoader
 	session.PriceLoader = func(symbol string) (float64, time.Time, error) {
 		series := testfx.Bars(symbol, 5, 42, time.Now().UTC())

@@ -52,10 +52,43 @@ func TestCompleteReturnsAssistantContent(t *testing.T) {
 }
 
 func TestCompleteRequiresKey(t *testing.T) {
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
 	cfg := config.LLM{BaseURL: "http://127.0.0.1:0"}
 	c := New(cfg) // no key
 	if _, err := c.Complete("s", "u"); err == nil {
 		t.Fatal("Complete with no key: want error, got nil")
+	}
+}
+
+// Account-mode requests set NoEnvKey so the deployer's environment key is
+// never used by a logged-in account: with an empty stored key the client must
+// stay disabled even though LLM_API_KEY is set, and with a stored key it must
+// still work. Regression test for the credential-leak audit finding.
+func TestNoEnvKeyDisablesEnvironmentFallback(t *testing.T) {
+	t.Setenv("LLM_API_KEY", "deployer-env-key")
+	t.Setenv("OPENAI_API_KEY", "deployer-env-key")
+
+	// Stored key empty -> disabled, env key must NOT be picked up.
+	cfg := config.LLM{BaseURL: "http://127.0.0.1:0", NoEnvKey: true}
+	if c := New(cfg); c.Enabled() {
+		t.Fatal("NoEnvKey + empty stored key: client must be disabled")
+	}
+
+	// Stored key present -> enabled, env key irrelevant.
+	cfg = config.LLM{BaseURL: "http://127.0.0.1:0", APIKey: "user-key", NoEnvKey: true}
+	if c := New(cfg); !c.Enabled() {
+		t.Fatal("NoEnvKey + stored key: client must be enabled")
+	}
+}
+
+// Without NoEnvKey the historical env fallback is preserved (CLI / desktop).
+func TestEnvKeyFallbackPreservedWithoutFlag(t *testing.T) {
+	t.Setenv("LLM_API_KEY", "deployer-env-key")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg := config.LLM{BaseURL: "http://127.0.0.1:0"}
+	if c := New(cfg); !c.Enabled() {
+		t.Fatal("no NoEnvKey: env fallback must enable the client")
 	}
 }
 

@@ -17,15 +17,20 @@ const sessionCookie = "ta_session"
 
 // applyUserCredentials overlays the session user's vault credentials onto the
 // effective config: the Binance keys and the LLM endpoint/key. Each value is
-// applied only when the user actually stored one, so an account that has not
-// filled the form yet keeps the historical environment-variable behaviour
-// (or, with no credentials at all, fails the execute gate with a message
-// pointing at both paths). When username is empty the user has no stored
-// credentials and the config is returned untouched.
+// applied only when the user actually stored one. When username is empty the
+// user has no stored credentials and the config is returned untouched.
+//
+// Account mode also sets LLM.NoEnvKey so llm.New never falls back to the
+// deployer's LLM_API_KEY / OPENAI_API_KEY environment variables: the model
+// runs with the credential the user stored, or not at all. Otherwise a user
+// who pointed BaseURL at their own endpoint (or simply generated traffic on
+// the deployer's budget) would ride on the deployer's key. The CLI /
+// desktop path (no vault) keeps the historical env fallback.
 func (s *Server) applyUserCredentials(cfg *config.Config, username string) {
 	if s.Auth == nil || username == "" {
 		return
 	}
+	cfg.LLM.NoEnvKey = true
 	user, ok := s.Auth.Get(username)
 	if !ok {
 		return

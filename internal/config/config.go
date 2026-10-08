@@ -120,6 +120,13 @@ type LLM struct {
 	// saved back here. Empty keeps the built-in conservative persona, which
 	// preserves byte-identical behaviour for every existing config file.
 	Prompt string `yaml:"prompt,omitempty"`
+	// NoEnvKey disables the environment-variable key fallback in llm.New.
+	// The webui sets this for accounts-mode requests: the model must use only
+	// the credential the user stored in their own vault. Without it, a user
+	// who points BaseURL at their own endpoint and leaves the key empty would
+	// leak the deployer's LLM_API_KEY to the user-controlled endpoint. yaml:"-"
+	// so it can never be toggled from a config file.
+	NoEnvKey bool `yaml:"-"`
 }
 
 // Default returns the built-in settings used when no config file is present.

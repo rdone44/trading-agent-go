@@ -59,7 +59,10 @@ func New(cfg config.LLM) *Client {
 		temp = 0.2
 	}
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && !cfg.NoEnvKey {
+		// Account-mode requests set NoEnvKey: the env fallback is skipped so
+		// the deployer's LLM_API_KEY can never be sent to a user-controlled
+		// endpoint. The model is simply disabled (Complete errors) instead.
 		apiKey = config.LLMAPIKey()
 	}
 	return &Client{

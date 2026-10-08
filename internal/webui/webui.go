@@ -58,10 +58,13 @@ type Server struct {
 	// uses it because the dashboard can be reached over a network; the local
 	// desktop build leaves it empty so the window just opens.
 	Token string
-	// session owns the live trading loop the console starts and stops. It is
-	// created lazily so a pure-backtest deployment never spins one up.
-	session     *livesession.Session
-	sessionOnce sync.Once
+	// sessions owns the live trading loops the console starts and stops, keyed
+	// by account username. Per-user isolation: with the vault enabled one
+	// account can never start/stop/step or read another account's position.
+	// In desktop / no-vault builds every request has an empty username, so
+	// there is exactly one session — the historical behaviour.
+	sessions    map[string]*livesession.Session
+	sessionsMu  sync.Mutex
 	// SeriesLoader loads market data for a run. It defaults to the public
 	// Binance endpoint; tests inject an offline loader (internal/testfx) so the
 	// suite never touches the network.
@@ -104,6 +107,7 @@ func New(cfg config.Config) *Server {
 		Config:    cfg,
 		OutputDir: output,
 		Log:       os.Stdout,
+		sessions:  map[string]*livesession.Session{},
 		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
 			return marketdata.Binance(symbol, days, end)
 		},
@@ -218,10 +222,33 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Session returns the lazily-created trading session.
-func (s *Server) Session() *livesession.Session {
-	s.sessionOnce.Do(func() { s.session = livesession.NewSession() })
-	return s.session
+// Session returns the lazily-created trading session owned by the given
+// account. The empty username (desktop / no-vault builds) yields the single
+// historical session, so CLI and desktop callers are unchanged. Each account
+// gets its own session: starting, stepping, stopping or reading one account's
+// position never touches another account's loop.
+func (s *Server) Session(username string) *livesession.Session {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	if sess, ok := s.sessions[username]; ok {
+		return sess
+	}
+	sess := livesession.NewSession()
+	s.sessions[username] = sess
+	return sess
+}
+
+// StopAllSessions stops every account's trading loop on shutdown.
+func (s *Server) StopAllSessions() {
+	s.sessionsMu.Lock()
+	sess := make([]*livesession.Session, 0, len(s.sessions))
+	for _, v := range s.sessions {
+		sess = append(sess, v)
+	}
+	s.sessionsMu.Unlock()
+	for _, v := range sess {
+		_ = v.Stop()
+	}
 }
 
 // StartSessionRequest is the JSON body of /api/session/start.
@@ -247,7 +274,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 GET 请求"))
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Session().Status())
+	writeJSON(w, http.StatusOK, s.Session(s.requestUsername(r)).Status())
 }
 
 // handleSessionStart begins the live trading loop.
@@ -308,7 +335,7 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		statePath = filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", mode+"-"+venue+"-"+cfg.Agent.Symbol+".json")
 	}
 
-	err := s.Session().Start(livesession.StartOptions{
+	err := s.Session(req.AuthUser).Start(livesession.StartOptions{
 		Config:    cfg,
 		Interval:  time.Duration(req.IntervalSeconds) * time.Second,
 		Execute:   req.Execute,
@@ -319,7 +346,7 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Session().Status())
+	writeJSON(w, http.StatusOK, s.Session(req.AuthUser).Status())
 }
 
 // handleSessionStop ends the loop and persists the final state.
@@ -328,11 +355,12 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
 		return
 	}
-	if err := s.Session().Stop(); err != nil {
+	sess := s.Session(s.requestUsername(r))
+	if err := sess.Stop(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Session().Status())
+	writeJSON(w, http.StatusOK, sess.Status())
 }
 
 // handleSessionStep runs one cycle immediately instead of waiting for the
@@ -342,11 +370,12 @@ func (s *Server) handleSessionStep(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
 		return
 	}
-	if err := s.Session().Step(); err != nil {
+	sess := s.Session(s.requestUsername(r))
+	if err := sess.Step(); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Session().Status())
+	writeJSON(w, http.StatusOK, sess.Status())
 }
 
 // handleShutdown stops the process. It is registered only when the desktop
@@ -393,7 +422,7 @@ func (s *Server) ServeListener(ctx context.Context, listener net.Listener, ready
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
-		_ = s.Session().Stop()
+		s.StopAllSessions()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {

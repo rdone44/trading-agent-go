@@ -183,7 +183,7 @@ function setRail(open) {
   $("#rail-toggle").setAttribute("aria-expanded", String(open));
   $("#rail-backdrop").hidden = !open;
   if (open) {
-    const first = $('[name="symbol"]');
+    const first = $("#rail-close");
     if (first) first.focus({ preventScroll: true });
   } else $("#rail-toggle").focus({ preventScroll: true });
 }
@@ -359,7 +359,7 @@ function renderTopbar(s) {
     : open && !s.protection_active ? "策略已停止，持仓仍在 · 本地止损/止盈已停止，请人工管理持仓"
     : s.mode === "live" ? "实盘资金 · 本地轮询止损，非交易所保护订单；断网或退出会失去保护"
     : s.running ? "纸面策略运行中 · 使用真实 Binance 行情，成交仅本地模拟"
-    : "纸面模式 · 可独立查看行情，点击策略设置配置交易";
+    : "纸面模式 · 可独立查看行情，在交易配置区核对参数";
 }
 
 // ---------------------------------------------------------------- account
@@ -473,7 +473,7 @@ function renderPosition(s) {
     note.textContent = "空仓";
     host.innerHTML = s.running
       ? '<p class="empty">当前<b>空仓</b>。引擎会在策略给出目标仓位、且风控允许时开仓。</p>'
-      : '<p class="empty">当前<b>空仓</b>。请在「策略设置」核对交易对、策略与风控后开始交易。</p>';
+      : '<p class="empty">当前<b>空仓</b>。请在「交易配置」核对交易对、策略与风控后开始交易。</p>';
     return;
   }
 
@@ -704,7 +704,8 @@ function renderSession(s) {
   // letting edits look as though they apply to the running session.
   $("#run-form").classList.toggle("locked", Boolean(s.running));
   $("#rail-lock").hidden = !s.running;
-  $$("#run-form input, #run-form select").forEach((el) => { el.disabled = Boolean(s.running); });
+  Array.from($("#run-form").elements).filter(el => el.matches("input, select")).forEach(el => { el.disabled = Boolean(s.running); });
+  $("#load-symbols").disabled = Boolean(s.running);
 
   if (s.last_error) setStatus(`最近一次周期出错：${s.last_error}`, "error");
   else if (s.running) setStatus("");
@@ -780,21 +781,23 @@ function applyAuthUi(config) {
 
   const chip = $("#user-chip");
   const card = $("#auth-card");
-  // The credentials live inside the advanced group now; only a logged-in
-  // account sees them, and the group auto-opens when keys are missing so
-  // the place to fill them is never hidden behind a closed folder.
-  const cred = $("#creds-adv");
-  const missingKeys = user !== "" && !(config.auth?.binance_api && config.auth?.binance_secret);
-  cred.hidden = !user;
-  // Only auto-open the advanced group when it hides something actionable:
-  // a logged-in account with no stored keys. Otherwise the rail stays short.
-  $("#advanced").open = $("#advanced").open || missingKeys;
+  const signedIn = authEnabled && Boolean(user);
+  const previous = $("#user-name").textContent;
+  if (previous !== user) $("#credentials-form").reset();
+  $("#creds-adv").hidden = !signedIn;
+  chip.hidden = !signedIn;
+  $("#user-name").textContent = user;
+  card.hidden = !authEnabled || signedIn;
+  $("#settings-login").hidden = !authEnabled || signedIn;
+  $("#settings-account").textContent = signedIn ? `当前账号：${user}`
+    : authEnabled ? "登录后可保存本账号的连接设置。" : "此服务未启用账号设置，请由管理员配置服务环境。";
+  $("#cred-status").textContent = "";
+  liveGate = Boolean(config?.live_gate);
+  if (signedIn) {
+    renderCredStatus(config.auth);
+    $('[data-cred="llm_base_url"]').value = config.auth.llm_base_url || "";
+  }
 
-  chip.hidden = !authEnabled || !user;
-  if (user) $("#user-name").textContent = user;
-  card.hidden = authEnabled && user !== "";
-
-  if (authEnabled && config?.auth && user) renderCredStatus(config.auth);
   renderKeyHint();
 }
 
@@ -826,20 +829,20 @@ function renderKeyHint() {
   const auth = lastAuthState || {};
   if (!auth.username) {
     host.className = "key-hint warn";
-    host.textContent = "实盘需要先注册或登录账号，再在「密钥与模型」保存 Binance 密钥。";
+    host.textContent = "实盘需要先注册或登录账号，再在「设置 → Binance 与 AI 服务」保存 Binance 密钥。";
     return;
   }
   const ready = auth.binance_api && auth.binance_secret;
   if (!ready) {
     host.className = "key-hint warn";
-    host.textContent = "本账号尚未保存 Binance 密钥：到「密钥与模型」填写并保存后才能下单。";
+    host.textContent = "本账号尚未保存 Binance 密钥：到「设置 → Binance 与 AI 服务」填写并保存后才能下单。";
     return;
   }
   // Keys are in place, but the process-level kill switch may still be off.
   // Saying so up front turns a surprising 403 at start into a one-line fix.
-  host.className = "key-hint ok";
+  host.className = liveGate ? "key-hint ok" : "key-hint warn";
   host.textContent = liveGate
-    ? "Binance 密钥已在本账号保存，可直接实盘下单。"
+    ? "Binance 密钥已保存（尚未验证连接或权限）。"
     : "密钥已保存，但服务端实盘闸门未开：启动服务时加 TA_ALLOW_LIVE=1 后才允许下单。";
 }
 
@@ -879,15 +882,20 @@ async function submitAuth(event) {
 }
 
 async function logout() {
-  try { await api("/api/auth/logout", { method: "POST" }); } catch (error) { /* the session clears on the way out */ }
-  const config = await api("/api/config").catch(() => null);
-  applyAuthUi(config);
-  refreshSession();
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+    window.location.reload();
+  } catch (error) { setStatus(`退出失败：${error.message}`, "error"); }
 }
 
 // showAuthCard re-opens the login card after a 401: the session is gone, so
 // hide the user chip and credential form and put the card back on the board.
 function showAuthCard() {
+  $("#credentials-form").reset();
+  $("#cred-status").textContent = "";
+  $("#user-name").textContent = "";
+  $("#settings-account").textContent = "登录已失效，请重新登录。";
+  $("#settings-login").hidden = false;
   $("#user-chip").hidden = true;
   $("#creds-adv").hidden = true;
   $("#auth-card").hidden = false;
@@ -1011,7 +1019,7 @@ $('[name="execute"]').addEventListener("change", (event) => {
 });
 
 $("#rail-toggle").addEventListener("click", () => setRail(!railOpen()));
-$("#setup-shortcut").addEventListener("click", () => setRail(true));
+$("#setup-shortcut").addEventListener("click", () => $("#trade-config").scrollIntoView({ block: "start" }));
 $("#rail-close").addEventListener("click", () => setRail(false));
 $("#rail-backdrop").addEventListener("click", () => setRail(false));
 document.addEventListener("keydown", (event) => {
@@ -1104,6 +1112,15 @@ $("#auth-tab-login").addEventListener("click", () => setAuthTab("login"));
 $("#auth-tab-register").addEventListener("click", () => setAuthTab("register"));
 $("#auth-form").addEventListener("submit", submitAuth);
 $("#logout-button").addEventListener("click", logout);
-$("#cred-save").addEventListener("click", saveCredentials);
+$("#credentials-form").addEventListener("submit", event => { event.preventDefault(); saveCredentials(); });
+$("#settings-login").addEventListener("click", () => {
+  setRail(false);
+  $("#auth-card").scrollIntoView({ block: "start" });
+  $("#auth-username").focus();
+});
+$("#run-form").addEventListener("invalid", event => {
+  let node = event.target.parentElement;
+  while (node) { if (node.tagName === "DETAILS") node.open = true; node = node.parentElement; }
+}, true);
 
 bootstrap().catch((error) => setStatus(`无法加载配置：${error.message}`, "error"));

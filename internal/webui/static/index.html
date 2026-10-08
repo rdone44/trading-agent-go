@@ -37,7 +37,7 @@
     </div>
 
     <div class="controls">
-      <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">策略设置</button>
+      <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">设置</button>
       <button type="button" id="step-button" class="btn ghost" disabled title="立即跑一个决策周期">立即执行</button>
       <button type="button" id="stop-button" class="btn ghost danger" disabled>停止策略</button>
       <button type="submit" form="run-form" id="run-button" class="btn primary">开始交易</button>
@@ -45,23 +45,107 @@
     </div>
   </header>
 
-  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">检查策略设置 →</button></div>
+  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">查看交易配置 →</button></div>
 
   <div class="rail-backdrop" id="rail-backdrop" hidden></div>
 
-  <aside class="rail" id="rail" aria-label="交易配置" aria-hidden="true" inert>
+  <aside class="rail" id="rail" aria-label="功能设置" aria-hidden="true" inert>
     <div class="rail-head">
-      <h2>交易配置</h2>
-      <span class="rail-lock" id="rail-lock" hidden>运行中已锁定</span>
+      <h2>设置</h2>
       <button type="button" class="icon-btn" id="rail-close" title="关闭设置" aria-label="关闭设置">✕</button>
     </div>
 
-    <form id="run-form" autocomplete="off" class="rail-body">
+    <div class="rail-body">
+      <section aria-label="账号状态"><h3>账号与连接</h3><p id="settings-account" class="hint"></p>
+        <button type="button" id="settings-login" class="btn">前往登录 / 注册</button>
+      </section>
+      <form id="credentials-form" autocomplete="off">
+        <div class="adv-block" id="creds-adv" hidden>
+          <h3>Binance 与 AI 服务</h3>
+          <fieldset id="credentials-fieldset">
+            <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。设置按账号保存，留空保留原值。已保存不代表已验证连接；修改不会更新已启动的会话。</p>
+            <div class="grid2">
+              <label class="field">
+                <span>Binance API Key</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_api_key" placeholder="填入后保存">
+              </label>
+              <label class="field">
+                <span>Binance Secret Key</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
+              </label>
+              <label class="field">
+                <span>AI 服务 URL</span>
+                <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
+              </label>
+              <label class="field">
+                <span>AI Token</span>
+                <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">
+              </label>
+            </div>
+            <p class="hint" id="cred-status"></p>
+            <button type="submit" id="cred-save" class="btn ghost wide">保存密钥</button>
+          </fieldset>
+        </div>
+      </form>
+      <p class="hint">此处只保存连接设置，不启动交易。请通过 HTTPS 配置密钥。</p>
+    </div>
+  </aside>
+
+
+  <main class="board">
+
+    <section class="panel auth-card" id="auth-card" hidden>
+      <header class="panel-head"><h2>账号登录</h2><span class="panel-note">行情可以匿名查看，启动交易需要登录</span></header>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="btn ghost active" id="auth-tab-login">登录</button>
+        <button type="button" class="btn ghost" id="auth-tab-register">注册</button>
+      </div>
+      <form id="auth-form" class="grid2" autocomplete="off">
+        <label class="field"><span>用户名</span><input id="auth-username" spellcheck="false" autocomplete="off" required></label>
+        <label class="field"><span>密码</span><input id="auth-password" type="password" autocomplete="new-password" required></label>
+        <button type="submit" class="btn primary wide" id="auth-submit">登录</button>
+      </form>
+      <p class="hint" id="auth-message"></p>
+    </section>
+
+    <section class="panel market">
+      <header class="market-head"><div><p class="eyebrow">BINANCE · PUBLIC MARKET DATA</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">现货</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>
+      <div class="market-trade">
+        <label class="field">
+          <span>交易对</span>
+          <div class="inline">
+            <input form="run-form" name="symbol" value="BTCUSDT" list="symbol-options" spellcheck="false">
+            <button type="button" id="load-symbols" class="btn ghost" title="拉取该场所全部币种（按 24 小时成交额排序）">全部币种</button>
+          </div>
+        </label>
+        <datalist id="symbol-options"></datalist>
+        <label class="check">
+          <input form="run-form" name="futures" type="checkbox">
+          <span>USDT 永续（可做空 / 杠杆）</span>
+        </label>
+        <label class="field" id="leverage-field" hidden>
+          <span>杠杆</span>
+          <div class="inline"><input form="run-form" name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
+        </label>
+        <label class="check" id="short-field" hidden>
+          <input form="run-form" name="allow_short" type="checkbox">
+          <span>允许做空</span>
+        </label>
+      </div>
+      <div class="market-toolbar"><div class="market-stats" id="market-stats"></div><div class="timeframes" aria-label="K线周期"><button type="button" data-interval="15m">15分</button><button type="button" class="active" data-interval="1h">1时</button><button type="button" data-interval="4h">4时</button><button type="button" data-interval="1d">日线</button></div></div>
+      <div class="market-chart" id="market-chart"><div class="market-empty">正在加载 Binance 行情…</div></div>
+      <footer class="market-footer"><span>公开行情 · 不需要 API Key</span><span id="market-update">等待行情</span></footer>
+    </section>
+
+    <section class="panel trade-config" id="trade-config">
+      <header class="panel-head"><h2>交易配置</h2><span id="rail-lock" class="rail-lock" hidden>运行中只读</span></header>
+      <p class="hint trade-note">参数用于下一次启动，不会自动保存为账号设置。</p>
+    <form id="run-form" autocomplete="off" class="trade-body">
 
       <fieldset>
         <legend>策略</legend>
         <label class="field">
-          <span>模型</span>
+          <span>策略类型</span>
           <select name="strategy" id="strategy-select"></select>
         </label>
         <p class="hint" id="strategy-description"></p>
@@ -139,32 +223,6 @@
           </details>
         </div>
 
-        <div class="adv-block" id="creds-adv" hidden>
-          <p class="adv-title">密钥与模型</p>
-          <fieldset id="credentials-fieldset">
-            <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。密钥只保存在登录账号里，不会显示明文。</p>
-            <div class="grid2">
-              <label class="field">
-                <span>Binance API Key</span>
-                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_api_key" placeholder="填入后保存">
-              </label>
-              <label class="field">
-                <span>Binance Secret Key</span>
-                <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
-              </label>
-              <label class="field">
-                <span>AI 服务 URL</span>
-                <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
-              </label>
-              <label class="field">
-                <span>AI Token</span>
-                <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">
-              </label>
-            </div>
-            <p class="hint" id="cred-status"></p>
-            <button type="button" id="cred-save" class="btn ghost wide">保存密钥</button>
-          </fieldset>
-        </div>
       </details>
 
       <fieldset class="danger-zone">
@@ -189,52 +247,6 @@
         <p class="rail-foot" id="config-source"></p>
       </div>
     </form>
-  </aside>
-
-
-  <main class="board">
-
-    <section class="panel auth-card" id="auth-card" hidden>
-      <header class="panel-head"><h2>账号登录</h2><span class="panel-note">行情可以匿名查看，启动交易需要登录</span></header>
-      <div class="auth-tabs" role="tablist">
-        <button type="button" class="btn ghost active" id="auth-tab-login">登录</button>
-        <button type="button" class="btn ghost" id="auth-tab-register">注册</button>
-      </div>
-      <form id="auth-form" class="grid2" autocomplete="off">
-        <label class="field"><span>用户名</span><input id="auth-username" spellcheck="false" autocomplete="off" required></label>
-        <label class="field"><span>密码</span><input id="auth-password" type="password" autocomplete="new-password" required></label>
-        <button type="submit" class="btn primary wide" id="auth-submit">登录</button>
-      </form>
-      <p class="hint" id="auth-message"></p>
-    </section>
-
-    <section class="panel market">
-      <header class="market-head"><div><p class="eyebrow">BINANCE · PUBLIC MARKET DATA</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">现货</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>
-      <div class="market-trade">
-        <label class="field">
-          <span>交易对</span>
-          <div class="inline">
-            <input name="symbol" value="BTCUSDT" list="symbol-options" spellcheck="false">
-            <button type="button" id="load-symbols" class="btn ghost" title="拉取该场所全部币种（按 24 小时成交额排序）">全部币种</button>
-          </div>
-        </label>
-        <datalist id="symbol-options"></datalist>
-        <label class="check">
-          <input name="futures" type="checkbox">
-          <span>USDT 永续（可做空 / 杠杆）</span>
-        </label>
-        <label class="field" id="leverage-field" hidden>
-          <span>杠杆</span>
-          <div class="inline"><input name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
-        </label>
-        <label class="check" id="short-field" hidden>
-          <input name="allow_short" type="checkbox">
-          <span>允许做空</span>
-        </label>
-      </div>
-      <div class="market-toolbar"><div class="market-stats" id="market-stats"></div><div class="timeframes" aria-label="K线周期"><button type="button" data-interval="15m">15分</button><button type="button" class="active" data-interval="1h">1时</button><button type="button" data-interval="4h">4时</button><button type="button" data-interval="1d">日线</button></div></div>
-      <div class="market-chart" id="market-chart"><div class="market-empty">正在加载 Binance 行情…</div></div>
-      <footer class="market-footer"><span>公开行情 · 不需要 API Key</span><span id="market-update">等待行情</span></footer>
     </section>
 
     <section class="panel account">

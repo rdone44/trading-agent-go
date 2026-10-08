@@ -59,6 +59,7 @@ is never stretched to fill leftover space.
   grid-template-areas:
     "auth    auth"
     "market  market"
+    "trade trade"
     "account position"
     "log     risk";
   gap: 12px;
@@ -230,7 +231,7 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
      then the position, then risk, then the log at the bottom. */
   .board {
     grid-template-columns: 1fr;
-    grid-template-areas: "auth" "market" "account" "position" "risk" "log";
+    grid-template-areas: "auth" "market" "trade" "account" "position" "risk" "log";
   }
   .risk-rows { display: grid; grid-template-columns: 1fr 1fr; }
   .flags, .alert { grid-column: 1 / -1; }
@@ -248,7 +249,7 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
   .safety-strip { padding: 8px 12px; align-items: flex-start; font-size: 10px; }
   .safety-dot { flex: none; margin-top: 5px; }
   .safety-strip button { display: none; }
-  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "account" "position" "risk" "log"; }
+  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "auth" "market" "trade" "account" "position" "risk" "log"; }
   .market-head { padding: 14px 14px 5px; }
   .market-head h1 { font-size: 19px; }
   .market-toolbar { padding: 8px 14px; }
@@ -265,3 +266,12 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
 .market { animation: enter .25s ease-out; }
 .account, .position { animation: enter .35s ease-out; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.trade-config { grid-area: trade; }
+.trade-body { padding: 16px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
+.trade-note { padding: 0 20px; }
+.trade-body .rail-actions { grid-column: 1 / -1; }
+#credentials-form .grid2 { grid-template-columns: 1fr; }
+#credentials-form .adv-block { padding: 12px 0; }
+.rail-body { min-height: 0; }
+@media(max-width: 560px) { .trade-body { grid-template-columns: 1fr; padding: 14px; } }

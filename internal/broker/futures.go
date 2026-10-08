@@ -420,37 +420,35 @@ func (b *FuturesBroker) applyContract(raw json.RawMessage) error {
 // PlaceProtective puts exchange-side protective orders on an open position:
 // a STOP_MARKET stop-loss leg and, when a target is also present, a
 // TAKE_PROFIT_MARKET leg. Each is a self-contained closePosition=true order
-// requiring no quantity, so a fill on one leg does not orphan the other and
-// the exchange independently guarantees each protective level. Prices are
-// taken verbatim from the risk engine (single source) — never recomputed
+// requiring no quantity. These are independent legs, not an OCO group;
+// reconciliation must clean up a remaining leg after the position is flat.
+// Prices are taken verbatim from the risk engine (single source), never recomputed
 // here, so the local and exchange stops cannot drift apart. No-op in dry-run.
 //
-// Trade-off: closePosition MARKET legs buy a guarantee the position is always
-// covered at the cost of a little execution slippage. The slippage-controlled
-// alternative (a LIMIT_STOP + OCO list) is a documented future hardening, not
-// a first cut: OCO leg-side/price semantics differ by long/short and cannot
-// be verified against the real exchange offline.
+// USD-M conditional orders use the Algo Order API, not the regular order
+// endpoint. Both legs use triggerPrice; price is only a limit execution price.
+// Independent close-all legs are not an OCO list and do not guarantee fills
+// under outages or extreme market conditions.
 func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) error {
 	if b.cfg.DryRun {
 		return nil
 	}
 	if stop > 0 {
-		if err := b.placeClosePosition("STOP_MARKET", "stopPrice", side, stop); err != nil {
+		if err := b.placeClosePosition("STOP_MARKET", side, stop); err != nil {
 			return err
 		}
 	}
 	if takeProfit > 0 {
-		if err := b.placeClosePosition("TAKE_PROFIT_MARKET", "price", side, takeProfit); err != nil {
+		if err := b.placeClosePosition("TAKE_PROFIT_MARKET", side, takeProfit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// placeClosePosition places one closePosition protective leg. For
-// STOP_MARKET the trigger is stopPrice; for TAKE_PROFIT_MARKET it is price.
+// placeClosePosition places one closePosition conditional leg using triggerPrice.
 // The close side is opposite to the position side (closing a long = SELL).
-func (b *FuturesBroker) placeClosePosition(orderType, triggerKey string, side Side, level float64) error {
+func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level float64) error {
 	closeSide := "SELL" // closing a long
 	if side != Buy {
 		closeSide = "BUY" // closing a short
@@ -462,55 +460,74 @@ func (b *FuturesBroker) placeClosePosition(orderType, triggerKey string, side Si
 	q.Set("closePosition", "true")
 	q.Set("positionSide", "BOTH")
 	q.Set("workingType", "MARK_PRICE")
-	q.Set(triggerKey, strconv.FormatFloat(level, 'f', -1, 64))
-	q.Set("newClientOrderId", newClientID("tap-"))
+	q.Set("algoType", "CONDITIONAL")
+	q.Set("triggerPrice", strconv.FormatFloat(level, 'f', -1, 64))
+	q.Set("clientAlgoId", newClientID("tap-"))
 	q.Set("newOrderRespType", "ACK")
-	_, err := b.postSigned("/fapi/v1/order", q)
+	_, err := b.postSigned("/fapi/v1/algoOrder", q)
 	return err
 }
 
-// CancelProtective cancels every protective open order on the position's
-// symbol. Called before any local flatten so the exchange side cannot
-// double-close a position the book already closed. No-op in dry-run.
+// CancelProtective cancels only this agent's close-all conditional legs, by
+// algo ID. Manual orders and orders on other symbols must remain untouched.
 func (b *FuturesBroker) CancelProtective() error {
 	if b.cfg.DryRun {
 		return nil
 	}
-	return b.deleteAllOpenOrders()
+	rows, err := b.protectiveOrders()
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.AlgoID <= 0 {
+			return fmt.Errorf("保护单缺少有效 algoId，拒绝批量撤单")
+		}
+		if err := b.cancelAlgoOrder(row.AlgoID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// HasProtective reports whether any protective (close-position stop) order is
-// still open on the symbol, so a restart does not double-place. It looks at
-// the symbol's open orders for STOP_MARKET/TAKE_PROFIT_MARKET closePosition
-// legs. Returns false in dry-run.
+// HasProtective preserves the existing any-leg reconciliation contract.
 func (b *FuturesBroker) HasProtective() (bool, error) {
 	if b.cfg.DryRun {
 		return false, nil
 	}
-	body, err := b.getSigned("/fapi/v1/openOrders", url.Values{})
+	rows, err := b.protectiveOrders()
+	return len(rows) > 0, err
+}
+
+type protectiveAlgoOrder struct {
+	AlgoID       int64       `json:"algoId"`
+	ClientAlgoID string      `json:"clientAlgoId"`
+	Symbol       string      `json:"symbol"`
+	OrderType    string      `json:"orderType"`
+	ClosePos     interface{} `json:"closePosition"`
+}
+
+func (b *FuturesBroker) protectiveOrders() ([]protectiveAlgoOrder, error) {
+	body, err := b.getSigned("/fapi/v1/openAlgoOrders", url.Values{
+		"symbol": {strings.ToUpper(b.cfg.Symbol)}, "algoType": {"CONDITIONAL"},
+	})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	var rows []struct {
-		Symbol   string      `json:"symbol"`
-		Type     string      `json:"type"`
-		ClosePos interface{} `json:"closePosition"`
-	}
+	var rows []protectiveAlgoOrder
 	if err := json.Unmarshal(body, &rows); err != nil {
-		return false, fmt.Errorf("解析 openOrders 失败: %w", err)
+		return nil, fmt.Errorf("解析 openAlgoOrders 失败: %w", err)
 	}
-	want := strings.ToUpper(b.cfg.Symbol)
+	var owned []protectiveAlgoOrder
 	for _, row := range rows {
-		if strings.ToUpper(row.Symbol) != want {
+		if strings.ToUpper(row.Symbol) != strings.ToUpper(b.cfg.Symbol) ||
+			!strings.HasPrefix(row.ClientAlgoID, "tap-") || !protectiveFlag(row.ClosePos) {
 			continue
 		}
-		if row.Type == "STOP_MARKET" || row.Type == "TAKE_PROFIT_MARKET" || row.Type == "STOP" || row.Type == "TAKE_PROFIT" {
-			if protectiveFlag(row.ClosePos) {
-				return true, nil
-			}
+		if row.OrderType == "STOP_MARKET" || row.OrderType == "TAKE_PROFIT_MARKET" {
+			owned = append(owned, row)
 		}
 	}
-	return false, nil
+	return owned, nil
 }
 
 // protectiveFlag tolerates the exchange returning closePosition as either a
@@ -526,16 +543,14 @@ func protectiveFlag(v interface{}) bool {
 	return false
 }
 
-// deleteAllOpenOrders cancels all open orders on the symbol. It is used by
-// CancelProtective; only protective orders exist in a well-formed session.
-func (b *FuturesBroker) deleteAllOpenOrders() error {
-	query := url.Values{}
-	query.Set("symbol", strings.ToUpper(b.cfg.Symbol))
+// cancelAlgoOrder deletes one identified conditional leg, never all orders.
+func (b *FuturesBroker) cancelAlgoOrder(id int64) error {
+	query := url.Values{"algoId": {strconv.FormatInt(id, 10)}}
 	if err := signQuery(b.cfg.SecretKey, query); err != nil {
 		return err
 	}
 	request, err := http.NewRequest(http.MethodDelete,
-		b.cfg.BaseURL+"/fapi/v1/allOpenOrders"+"?"+query.Encode(), nil)
+		b.cfg.BaseURL+"/fapi/v1/algoOrder"+"?"+query.Encode(), nil)
 	if err != nil {
 		return err
 	}

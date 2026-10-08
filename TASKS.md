@@ -86,6 +86,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 认领：coding（钱路径：broker/live）
 - 状态：partial — P0-1 交易所侧保护性止损已落地（commit cbf151f，18 包全绿）：开仓后挂 closePosition 的 STOP_MARKET/TAKE_PROFIT_MARKET（MARK_PRICE、价格与本地 risk 同源），平仓前先撤单，reconcile 幂等补挂/清裸单，撤单失败 fail-safe、挂单失败 fail-open。P0-2 execute env 开关（TA_ALLOW_LIVE）done：runner 构造和 Web 会话双层精确校验，仅值 1 放行；paper 不受影响；新增离线 spot/futures、API 400、密钥及状态护栏回归测试。验证：gofmt -l .（空）、go build ./...、go vet ./...、go test ./...。
 
+- P0-1 本轮修正：合约条件单迁到官方 Algo Order API（`triggerPrice` / `clientAlgoId`），查询 `openAlgoOrders`，只按 algoId 撤本程序 `tap-` 保护腿，保留手工/异币种挂单。新增严格契约、归属过滤及错误路径离线测试。验证：gofmt 空、go build ./...、go vet ./...、go test ./... -count=1 全绿。T5/P0-1 仍 partial：spot 保护单、逐腿幂等补挂、超时查单及挂单失败阻断本地保护问题尚未解决；上文历史“挂单失败 fail-open”不能理解为之后本地退出仍可执行。
+
 ### T6. 风控与组合记账
 
 - 范围：`internal/risk/`、`internal/portfolio/`、`internal/engine/`

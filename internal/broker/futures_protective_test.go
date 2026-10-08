@@ -11,13 +11,13 @@ import (
 // protectiveStub records every request the futures broker makes so a test can
 // assert exactly which protective orders were placed, cancelled and read. It
 // keeps a request log (method + path) and the query values for each, and lets
-// a test control what /fapi/v1/openOrders returns so HasProtective can be
+// a test control what /fapi/v1/openAlgoOrders returns so HasProtective can be
 // exercised both ways.
 type protectiveStub struct {
 	mu         sync.Mutex
 	reqPaths   []string
 	reqQuery   []url.Values
-	openOrders string // body returned for GET /fapi/v1/openOrders
+	openOrders string // body returned for GET /fapi/v1/openAlgoOrders
 }
 
 func newProtectiveStub(openOrders string) *protectiveStub {
@@ -31,7 +31,7 @@ func (s *protectiveStub) server() *httptest.Server {
 		s.reqQuery = append(s.reqQuery, r.URL.Query())
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet && r.URL.Path == "/fapi/v1/openOrders" {
+		if r.Method == http.MethodGet && r.URL.Path == "/fapi/v1/openAlgoOrders" {
 			_, _ = w.Write([]byte(s.openOrders))
 			return
 		}
@@ -87,7 +87,7 @@ func TestPlaceProtectiveLongPutsStopAndTarget(t *testing.T) {
 	if err := b.PlaceProtective(Buy, 90, 110); err != nil {
 		t.Fatalf("PlaceProtective(long) = %v, want nil", err)
 	}
-	qs := s.queriesFor(http.MethodPost, "/fapi/v1/order")
+	qs := s.queriesFor(http.MethodPost, "/fapi/v1/algoOrder")
 	if len(qs) != 2 {
 		t.Fatalf("want 2 protective legs, got %d", len(qs))
 	}
@@ -105,13 +105,13 @@ func TestPlaceProtectiveLongPutsStopAndTarget(t *testing.T) {
 		switch q.Get("type") {
 		case "STOP_MARKET":
 			sawStop = true
-			if q.Get("stopPrice") != "90" {
-				t.Errorf("stopPrice=%q, want 90 (the risk engine's own level)", q.Get("stopPrice"))
+			if q.Get("triggerPrice") != "90" {
+				t.Errorf("stopPrice=%q, want 90 (the risk engine's own level)", q.Get("triggerPrice"))
 			}
 		case "TAKE_PROFIT_MARKET":
 			sawTarget = true
-			if q.Get("price") != "110" {
-				t.Errorf("target price=%q, want 110", q.Get("price"))
+			if q.Get("triggerPrice") != "110" {
+				t.Errorf("target price=%q, want 110", q.Get("triggerPrice"))
 			}
 		}
 	}
@@ -131,7 +131,7 @@ func TestPlaceProtectiveShortStopOnly(t *testing.T) {
 	if err := b.PlaceProtective(Sell, 110, 0); err != nil {
 		t.Fatalf("PlaceProtective(short, stop-only) = %v, want nil", err)
 	}
-	qs := s.queriesFor(http.MethodPost, "/fapi/v1/order")
+	qs := s.queriesFor(http.MethodPost, "/fapi/v1/algoOrder")
 	if len(qs) != 1 {
 		t.Fatalf("want exactly 1 leg for a stop-only position, got %d", len(qs))
 	}
@@ -139,8 +139,8 @@ func TestPlaceProtectiveShortStopOnly(t *testing.T) {
 	if q.Get("type") != "STOP_MARKET" || q.Get("side") != "BUY" {
 		t.Errorf("short stop = type %q side %q, want STOP_MARKET/BUY", q.Get("type"), q.Get("side"))
 	}
-	if q.Get("stopPrice") != "110" {
-		t.Errorf("stopPrice=%q, want 110", q.Get("stopPrice"))
+	if q.Get("triggerPrice") != "110" {
+		t.Errorf("stopPrice=%q, want 110", q.Get("triggerPrice"))
 	}
 }
 
@@ -162,7 +162,7 @@ func TestPlaceProtectiveDryRunNoOp(t *testing.T) {
 // HasProtective inspects the symbol's open orders and reports true when a
 // closePosition protective leg is present, so a restart never double-places.
 func TestHasProtectiveDetectsOpenStop(t *testing.T) {
-	body := `[{"symbol":"BTCUSDT","type":"STOP_MARKET","closePosition":true}]`
+	body := `[{"algoId":1,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true}]`
 	s := newProtectiveStub(body)
 	srv := s.server()
 	defer srv.Close()
@@ -189,10 +189,14 @@ func TestHasProtectiveFalseWhenNoStop(t *testing.T) {
 	}
 }
 
-// CancelProtective removes every open order on the symbol via the exchange's
-// allOpenOrders endpoint, so a local flatten is not double-closed by a leg.
-func TestCancelProtectiveDeletesAllOpenOrders(t *testing.T) {
-	s := newProtectiveStub(`[]`)
+// CancelProtective targets only agent-owned conditional legs by algoId.
+func TestCancelProtectiveDeletesOnlyOwnedAlgoOrders(t *testing.T) {
+	s := newProtectiveStub(`[
+{"algoId":1,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true},
+{"algoId":2,"clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","closePosition":"true"},
+{"algoId":3,"clientAlgoId":"manual","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true},
+{"algoId":4,"clientAlgoId":"tap-other","symbol":"ETHUSDT","orderType":"STOP_MARKET","closePosition":true},
+{"algoId":5,"clientAlgoId":"tap-limit","symbol":"BTCUSDT","orderType":"LIMIT","closePosition":true}]`)
 	srv := s.server()
 	defer srv.Close()
 	b := newLiveFuturesForStub(srv.URL)
@@ -200,7 +204,15 @@ func TestCancelProtectiveDeletesAllOpenOrders(t *testing.T) {
 	if err := b.CancelProtective(); err != nil {
 		t.Fatalf("CancelProtective = %v, want nil", err)
 	}
-	if !s.called(http.MethodDelete, "/fapi/v1/allOpenOrders") {
-		t.Fatal("CancelProtective must DELETE /fapi/v1/allOpenOrders")
+	qs := s.queriesFor(http.MethodDelete, "/fapi/v1/algoOrder")
+	if len(qs) != 2 || qs[0].Get("algoId") != "1" || qs[1].Get("algoId") != "2" {
+		t.Fatalf("must cancel only owned legs 1,2: %v", qs)
+	}
+	if s.called(http.MethodDelete, "/fapi/v1/allOpenOrders") || s.called(http.MethodDelete, "/fapi/v1/algoOpenOrders") {
+		t.Fatal("must never bulk-cancel unrelated orders")
+	}
+	gets := s.queriesFor(http.MethodGet, "/fapi/v1/openAlgoOrders")
+	if len(gets) != 1 || gets[0].Get("symbol") != "BTCUSDT" {
+		t.Fatal("inspection must be symbol scoped")
 	}
 }

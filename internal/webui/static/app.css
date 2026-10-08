@@ -93,6 +93,13 @@ is never stretched to fill leftover space.
 .timeframes button { background: none; border: 0; padding: 6px 8px; border-radius: 3px; color: var(--ink-3); font-size: 10px; }
 .timeframes button.active { color: var(--accent); background: var(--accent-dim); }
 .market-chart { flex: 1; min-height: 248px; position: relative; background: linear-gradient(180deg, #111e29, #111b25); }
+/* 交易什么 lives on the market panel, not in the settings drawer: it picks
+   what to look at and trade, it is not a feature setting. */
+.market-trade { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; padding: 4px 20px 10px; }
+.market-trade .field { margin-bottom: 0; }
+.market-trade .field .inline { gap: 8px; }
+.market-trade input[name="symbol"] { width: 150px; font-family: var(--mono); text-transform: uppercase; }
+.market-trade .check { margin-bottom: 0; white-space: nowrap; }
 .market-chart svg { width: 100%; height: 100%; position: absolute; inset: 0; }
 .market-empty { min-height: 248px; display: grid; place-items: center; color: var(--ink-3); text-align: center; padding: 28px; }
 .market-footer { border-top: 1px solid var(--line-soft); display: flex; justify-content: space-between; padding: 9px 20px; font-size: 9px; color: var(--ink-3); }

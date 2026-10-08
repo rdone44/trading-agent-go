@@ -59,30 +59,6 @@
     <form id="run-form" autocomplete="off" class="rail-body">
 
       <fieldset>
-        <legend>交易什么</legend>
-        <label class="field">
-          <span>交易对</span>
-          <div class="inline">
-            <input name="symbol" value="BTCUSDT" list="symbol-options" spellcheck="false">
-            <button type="button" id="load-symbols" class="btn ghost" title="拉取该场所全部币种（按 24 小时成交额排序）">全部币种</button>
-          </div>
-        </label>
-        <datalist id="symbol-options"></datalist>
-        <label class="check">
-          <input name="futures" type="checkbox">
-          <span>USDT 永续合约（可做空、可杠杆）</span>
-        </label>
-        <label class="field" id="leverage-field" hidden>
-          <span>杠杆</span>
-          <div class="inline"><input name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
-        </label>
-        <label class="check" id="short-field" hidden>
-          <input name="allow_short" type="checkbox">
-          <span>允许做空（仅合约）</span>
-        </label>
-      </fieldset>
-
-      <fieldset>
         <legend>策略</legend>
         <label class="field">
           <span>模型</span>
@@ -234,6 +210,28 @@
 
     <section class="panel market">
       <header class="market-head"><div><p class="eyebrow">BINANCE · PUBLIC MARKET DATA</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">现货</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>
+      <div class="market-trade">
+        <label class="field">
+          <span>交易对</span>
+          <div class="inline">
+            <input name="symbol" value="BTCUSDT" list="symbol-options" spellcheck="false">
+            <button type="button" id="load-symbols" class="btn ghost" title="拉取该场所全部币种（按 24 小时成交额排序）">全部币种</button>
+          </div>
+        </label>
+        <datalist id="symbol-options"></datalist>
+        <label class="check">
+          <input name="futures" type="checkbox">
+          <span>USDT 永续（可做空 / 杠杆）</span>
+        </label>
+        <label class="field" id="leverage-field" hidden>
+          <span>杠杆</span>
+          <div class="inline"><input name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
+        </label>
+        <label class="check" id="short-field" hidden>
+          <input name="allow_short" type="checkbox">
+          <span>允许做空</span>
+        </label>
+      </div>
       <div class="market-toolbar"><div class="market-stats" id="market-stats"></div><div class="timeframes" aria-label="K线周期"><button type="button" data-interval="15m">15分</button><button type="button" class="active" data-interval="1h">1时</button><button type="button" data-interval="4h">4时</button><button type="button" data-interval="1d">日线</button></div></div>
       <div class="market-chart" id="market-chart"><div class="market-empty">正在加载 Binance 行情…</div></div>
       <footer class="market-footer"><span>公开行情 · 不需要 API Key</span><span id="market-update">等待行情</span></footer>

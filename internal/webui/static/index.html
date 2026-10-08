@@ -76,16 +76,25 @@
           <span>杠杆</span>
           <div class="inline"><input name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
         </label>
+        <label class="check" id="short-field" hidden>
+          <input name="allow_short" type="checkbox">
+          <span>允许做空（仅合约）</span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>数据与节奏</legend>
         <div class="grid2">
           <label class="field">
             <span>回看</span>
             <div class="inline"><input name="days" type="number" min="30" max="5000" step="1" value="400"><span class="unit">天</span></div>
           </label>
           <label class="field">
-            <span>轮询</span>
+            <span>决策轮询</span>
             <div class="inline"><input name="interval_seconds" type="number" min="5" max="86400" step="5" value="60"><span class="unit">秒</span></div>
           </label>
         </div>
+        <p class="hint">回看是 K 线历史深度；轮询是两次策略决策的间隔。</p>
       </fieldset>
 
       <fieldset>
@@ -142,10 +151,6 @@
               <div class="inline"><input name="slippage_bps" type="number" min="0" max="200" step="0.5" value="5"><span class="unit">bp</span></div>
             </label>
           </div>
-          <label class="check">
-            <input name="allow_short" type="checkbox">
-            <span>允许做空</span>
-          </label>
         </details>
       </fieldset>
 
@@ -181,12 +186,13 @@
           <span>实盘下单（真实资金）</span>
         </label>
         <p class="hint">不勾选时全部为本地纸面模拟，不动用资金。止损由本地程序轮询执行，并非交易所挂单；停止、断网或退出后不再自动保护持仓。</p>
+        <div id="execute-key-hint" class="key-hint" hidden></div>
         <div id="live-confirm" hidden>
           <label class="field">
             <span>输入「确认实盘」解锁</span>
             <input name="confirm" spellcheck="false" placeholder="确认实盘">
           </label>
-          <p class="hint warn">将使用 BINANCE_API_KEY / BINANCE_SECRET_KEY 下达真实订单，成交不可撤销。</p>
+          <p class="hint warn">将使用你保存的 Binance 密钥下达真实订单（见「密钥与模型」），成交不可撤销。</p>
         </div>
       </fieldset>
 

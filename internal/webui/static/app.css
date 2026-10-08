@@ -185,6 +185,11 @@ input:disabled, select:disabled { opacity: .65; }
 .advanced .grid2 { padding: 0 12px; }
 .advanced .check { padding: 4px 12px 0; }
 .danger-zone legend, .check.danger, .hint.warn { color: var(--down); }
+/* Key-source hint under the 实盘 switch: neutral by default, green when the
+   account's keys are stored, amber when they are missing. */
+.key-hint { padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--ink-3); border-radius: 4px; font-size: 10px; color: var(--ink-2); margin: 4px 0 12px; line-height: 1.6; }
+.key-hint.ok { border-left-color: var(--up); background: var(--up-dim); color: #bfe8d9; }
+.key-hint.warn { border-left-color: var(--accent); background: var(--accent-dim); color: #f0dcb2; }
 .rail-foot { color: var(--ink-3); font-size: 9px; overflow-wrap: anywhere; }
 .status { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); margin: 0; padding: 12px 18px; background: #1e2c39; color: var(--ink); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; max-width: min(600px, 90vw); z-index: 95; font-size: 12px; box-shadow: 0 8px 32px #0008; }
 .status.error { border-left-color: var(--down); }

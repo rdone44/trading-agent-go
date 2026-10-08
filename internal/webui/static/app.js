@@ -103,6 +103,7 @@ let busy = false;
 let closing = false;
 let authEnabled = false;
 let authMode = "login";
+let lastAuthState = null;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
 
@@ -226,7 +227,9 @@ function applySettings(settings) {
     else input.value = value == null ? "" : name.endsWith("_pct") ? Number((value*100).toFixed(4)) : value;
   }
   $("#leverage-field").hidden = !settings.futures;
+  $("#short-field").hidden = !settings.futures;
   $("#live-confirm").hidden = !settings.execute;
+  renderKeyHint();
   $('[name="confirm"]').value = "";
   renderStrategyParams(settings.params || {});
 }
@@ -771,6 +774,7 @@ function setRunningUi(running) {
 // authEnabled is false.
 function applyAuthUi(config) {
   authEnabled = Boolean(config?.auth?.enabled);
+  lastAuthState = authEnabled ? (config.auth || {}) : null;
   const user = config?.auth?.username || "";
 
   const chip = $("#user-chip");
@@ -780,9 +784,12 @@ function applyAuthUi(config) {
   chip.hidden = !authEnabled || !user;
   if (user) $("#user-name").textContent = user;
   card.hidden = authEnabled && user !== "";
-  cred.hidden = !authEnabled;
+  // The credentials belong to an account, so the form is only offered to a
+  // logged-in user; an anonymous visitor gets the login card instead.
+  cred.hidden = !authEnabled || !user;
 
   if (authEnabled && config?.auth && user) renderCredStatus(config.auth);
+  renderKeyHint();
 }
 
 // renderCredStatus shows which credential slots are filled without ever
@@ -795,6 +802,32 @@ function renderCredStatus(auth) {
   if (auth.llm_base_url) bits.push(`模型 ${auth.llm_base_url}`);
   bits.push(auth.llm_key ? "Token 已配置" : "Token 未配置");
   $("#cred-status").textContent = bits.join(" · ");
+}
+
+// renderKeyHint connects the 实盘 switch to the credential state: when the box
+// is on the user must know where the keys come from and whether they are in
+// place. Without accounts the historical environment-variable path applies.
+function renderKeyHint() {
+  const host = $("#execute-key-hint");
+  const execute = Boolean($('[name="execute"]')?.checked);
+  if (!execute) { host.hidden = true; host.innerHTML = ""; return; }
+  host.hidden = false;
+  if (!authEnabled) {
+    host.className = "key-hint";
+    host.textContent = "实盘密钥取自环境变量 BINANCE_API_KEY / BINANCE_SECRET_KEY。";
+    return;
+  }
+  const auth = lastAuthState || {};
+  if (!auth.username) {
+    host.className = "key-hint warn";
+    host.textContent = "实盘需要先注册或登录账号，再在「密钥与模型」保存 Binance 密钥。";
+    return;
+  }
+  const ready = auth.binance_api && auth.binance_secret;
+  host.className = `key-hint ${ready ? "ok" : "warn"}`;
+  host.textContent = ready
+    ? "Binance 密钥已在本账号保存，可直接实盘下单。"
+    : "本账号尚未保存 Binance 密钥：到「密钥与模型」填写并保存后才能下单。";
 }
 
 function setAuthTab(mode) {
@@ -846,6 +879,8 @@ function showAuthCard() {
   $("#credentials-fieldset").hidden = true;
   $("#auth-card").hidden = false;
   setAuthTab("login");
+  lastAuthState = null;
+  renderKeyHint();
 }
 
 // saveCredentials posts the four credential fields the user typed. Empty
@@ -860,7 +895,9 @@ async function saveCredentials() {
   button.disabled = true;
   try {
     const view = await api("/api/auth/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+    lastAuthState = view;
     renderCredStatus(view);
+    renderKeyHint();
     // Clear the secret inputs; the status line now reflects the stored state,
     // and the LLM URL stays typed so it can be read at a glance.
     $$("[data-cred]").forEach((input) => { if (input.type !== "url") input.value = ""; });
@@ -938,7 +975,11 @@ $("#strategy-select").addEventListener("change", () => renderStrategyParams());
 // toggle instead of being a permanently visible no-op.
 $('[name="futures"]').addEventListener("change", (event) => {
   $("#leverage-field").hidden = !event.target.checked;
-  if (!event.target.checked) $('[name="leverage"]').value = 1;
+  $("#short-field").hidden = !event.target.checked;
+  if (!event.target.checked) {
+    $('[name="leverage"]').value = 1;
+    $('[name="allow_short"]').checked = false;
+  }
   // The all-pair list is venue-specific, so a venue change re-pulls it.
   loadAllSymbols();
   refreshMarket();
@@ -952,6 +993,7 @@ $("#load-symbols").addEventListener("click", loadAllSymbols);
 $('[name="execute"]').addEventListener("change", (event) => {
   $("#live-confirm").hidden = !event.target.checked;
   if (!event.target.checked) $('[name="confirm"]').value = "";
+  renderKeyHint();
 });
 
 $("#rail-toggle").addEventListener("click", () => setRail(!railOpen()));

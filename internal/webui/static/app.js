@@ -145,7 +145,7 @@ function collectRequest() {
     days: Number($('[name="days"]').value) || 0,
     interval_seconds: Number($('[name="interval_seconds"]').value) || 60,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
-    futures: $('[name="futures"]').checked,
+    futures: true, // terminal is perpetual-only: the spot venue is retired from the UI
     leverage: Number($('[name="leverage"]').value) || 1,
     execute: $('[name="execute"]').checked,
     confirm: $('[name="confirm"]').value,
@@ -195,7 +195,7 @@ const railOpen = () => $("#rail").classList.contains("open");
 // all the coins, don't make me type a ticker I might not know" path: pick a
 // venue, press 全部币种, choose from the market. Manual typing still works.
 async function loadAllSymbols() {
-  const venue = $('[name="futures"]').checked ? "futures" : "spot";
+  const venue = "futures"; // perpetual-only terminal
   const button = $("#load-symbols");
   if (button) { button.disabled = true; button.textContent = "拉取中…"; }
   try {
@@ -221,14 +221,12 @@ function applySettings(settings) {
     const input = $(`[name="${name}"]`);
     if (settings[name] != null) input.value = settings[name];
   }
-  for (const name of ["futures", "execute"]) $(`[name="${name}"]`).checked = Boolean(settings[name]);
+  for (const name of ["execute"]) $(`[name="${name}"]`).checked = Boolean(settings[name]);
   for (const [name, value] of Object.entries(settings.risk || {})) {
     const input = $(`[name="${name}"]`); if (!input) continue;
     if (input.type === "checkbox") input.checked = Boolean(value);
     else input.value = value == null ? "" : name.endsWith("_pct") ? Number((value*100).toFixed(4)) : value;
   }
-  $("#leverage-field").hidden = !settings.futures;
-  $("#short-field").hidden = !settings.futures;
   $("#live-confirm").hidden = !settings.execute;
   renderKeyHint();
   $('[name="confirm"]').value = "";
@@ -239,7 +237,7 @@ async function refreshMarket() {
   clearTimeout(marketTimer);
   if (closing) return;
   const symbol = session?.running ? session.symbol : $('[name="symbol"]').value;
-  const venue = session?.running ? session.venue : $('[name="futures"]').checked ? "futures" : "spot";
+  const venue = session?.running ? (session.venue || "futures") : "futures";
   const key = `${symbol}/${venue}/${marketInterval}`;
   $("#market-state").textContent = "更新行情中";
   try {
@@ -267,7 +265,7 @@ function renderMarket() {
   $("#ticker-delta").className = `quote-delta ${signClass(market.change_pct)}`;
   $("#ticker-time").textContent = fmt.clock(market.updated_at);
   $("#market-symbol").textContent = market.symbol.replace(/(USDT|USDC)$/, " / $1");
-  $("#market-venue").textContent = market.venue === "futures" ? "USDT 永续" : "现货";
+  $("#market-venue").textContent = "USDT 永续";
   $("#market-state").textContent = "行情已连接";
   $("#market-state").className = "market-state";
   $("#market-update").textContent = `更新 ${fmt.clock(market.updated_at)}`;
@@ -994,21 +992,7 @@ async function bootstrap() {
 
 $("#strategy-select").addEventListener("change", () => renderStrategyParams());
 
-// Leverage only exists on a perpetual venue, so the field follows the venue
-// toggle instead of being a permanently visible no-op.
-$('[name="futures"]').addEventListener("change", (event) => {
-  $("#leverage-field").hidden = !event.target.checked;
-  $("#short-field").hidden = !event.target.checked;
-  if (!event.target.checked) {
-    $('[name="leverage"]').value = 1;
-    $('[name="allow_short"]').checked = false;
-  }
-  // The all-pair list is venue-specific, so a venue change re-pulls it.
-  loadAllSymbols();
-  refreshMarket();
-});
-
-// 全部币种: pull the whole market for the current venue into the datalist.
+// 全部币种: pull the whole perpetual market into the datalist.
 $("#load-symbols").addEventListener("click", loadAllSymbols);
 
 // Arming real orders reveals the confirmation box and is deliberately noisy:
@@ -1137,7 +1121,7 @@ function renderPage() {
   $("#setup-shortcut").hidden = strategiesPage;
   $("#nav-market").setAttribute("aria-current", strategiesPage ? "false" : "page");
   $("#nav-strategies").setAttribute("aria-current", strategiesPage ? "page" : "false");
-  $("#strategy-target").textContent = `${$('[name="symbol"]').value} · ${$('[name="futures"]').checked ? "USDT 永续" : "现货"}`;
+  $("#strategy-target").textContent = `${$('[name="symbol"]').value} · USDT 永续`;
   document.title = strategiesPage ? "策略 · trading-agent" : "行情 · trading-agent";
 }
 window.addEventListener("hashchange", () => { renderPage(); window.scrollTo(0, 0); });

@@ -30,9 +30,13 @@ test('settings and trading have separate forms; market inputs retain ownership',
   const rail = html.match(/<aside\b[\s\S]*?<\/aside>/)[0];
   assert.match(rail, /id="credentials-form"/);
   assert.doesNotMatch(rail, /name="(?:symbol|strategy|execute|initial_cash)"/);
-  for(const name of ['symbol','futures','leverage','allow_short']) {
+  for(const name of ['symbol','leverage','allow_short']) {
     assert.match(html, new RegExp(`form="run-form" name="${name}"`));
   }
+  // Perpetual-only terminal: the spot toggle is gone and the form always
+  // submits futures=true.
+  assert.doesNotMatch(html, /name="futures"/);
+  assert.match(script, /futures: true/);
   assert.match(script, /Array\.from\(\$\("#run-form"\)\.elements\)/);
 });
 test('strategy route is distinct and navigation retains form values', () => {

@@ -121,15 +121,11 @@
           </div>
         </label>
         <datalist id="symbol-options"></datalist>
-        <label class="check">
-          <input form="run-form" name="futures" type="checkbox">
-          <span>USDT 永续（可做空 / 杠杆）</span>
-        </label>
-        <label class="field" id="leverage-field" hidden>
+        <label class="field" id="leverage-field">
           <span>杠杆</span>
           <div class="inline"><input form="run-form" name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
         </label>
-        <label class="check" id="short-field" hidden>
+        <label class="check" id="short-field">
           <input form="run-form" name="allow_short" type="checkbox">
           <span>允许做空</span>
         </label>

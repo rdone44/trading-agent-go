@@ -106,6 +106,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 认领：coding（单人重构，含原 muse 地盘）
 - 状态：partial（P2-1 会话状态机拆分 done）
 - P2-1 落地：状态机收进新包 `internal/live/session`（`Session`/`NewSession`/`StartOptions` + 自有 view 类型），webui.go 只留路由适配（`/api/session*` 四 handler + 关停钩子）；旧类型经别名 `webui.Session/livesession.Session` 保留，外部 `webui_test` 不破；`Settings` wire format 由 `session_wire_test.go` byte-equal 守护；无新依赖、无循环 import（`live` 不 import webui）。
+- 「全部币种」落地（commit `44be2d0`，用户诉求："设置不方便，逻辑不通，应获取全部币种而不是单选"）：`marketdata.AllSymbols(venue, limit)` 一次 `/ticker/24hr`（spot）或 `/fapi/v1/ticker/24hr`（futures），只留 USDT/USDC、按 24h 成交额排序；webui `/api/symbols` 带 per-venue 30s 缓存（`symbolsCache`/`symbolsMu`，Server 字段，非全局）；控制台「交易对」挂 `<datalist>` + 「全部币种」按钮（拉全量、可点选、仍可手输），venue 切换自动重拉。离线测试：`symbols_test.go`（过滤/排序/limit/重试/FAPI 端点）+ `regression_test.go`（缓存命中、limit 裁剪、400/405、loader 失败 502）。CLI `scan` 是回测路径、刻意不动。无新依赖、全仓 build/vet/test 绿。
 
 ### T8. 部署
 

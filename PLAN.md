@@ -17,6 +17,7 @@
 ## P0 — 安全（会亏钱的洞，必须最先做）
 
 ### P0-1 交易所侧保护性止损（最高优先）
+- 挂单失败后本地退出子项：**done** — 已确认入场后的保护单挂单失败只设置持久化 halt（阻止新入场），不再把已确认成交标成 OrderUncertain；下一轮 Protect 先确认撤掉可能部分写入的保护腿，再通过 risk halt 平仓，不等止损触发。撤单失败/成交不确定仍要求对账，禁止盲目再次平仓。离线覆盖 engine 后续退出、runner 保存/恢复后退出、撤单超时不重试；engine/live race 通过，gofmt/build/vet/test 全绿。此记录替代下文历史 OrderUncertain 阻断待办；总体仍 partial，仅 spot 保护单与保护单超时按 ID 查单待完成。
 - 逐腿幂等补挂子项：**done** — `PlaceProtective` 写入前查询 `openAlgoOrders`，按类型、方向、BOTH、MARK_PRICE、同源 triggerPrice 与有效 algoId 核验已有腿；只补缺失腿，冲突/重复/查询失败拒绝写入。重启有持仓时始终逐腿检查，不再把“任意一腿存在”误判为完整覆盖。离线覆盖多空、双腿/单腿/空列表、多轮幂等、部分写入失败后恢复、冲突拒绝及 runner 重启补止损。验证：gofmt/build/vet/test 全绿；broker/live race 测试通过。P0-1 总体仍 partial；spot、超时按 ID 查单及 OrderUncertain 阻断本地退出仍待完成。
 - **状态：partial** — 本轮修正合约保护单的 API 契约：POST `/fapi/v1/algoOrder`（`algoType=CONDITIONAL`、两腿均用 `triggerPrice`、`clientAlgoId`）；GET `/fapi/v1/openAlgoOrders` 按 symbol 查询；只对本程序 `tap-` close-all 保护腿逐个 DELETE `/fapi/v1/algoOrder?algoId=...`，不再批量撤掉无关订单。依据 Binance 当前官方 New/Cancel/Open Algo Order 文档，离线 httptest 覆盖多空、参数、归属过滤、坏 JSON/503/缺 ID、写入失败不盲重试；gofmt/build/vet/test 全绿。尚未完成：spot 保护单；超时按 ID 查单幂等（逐腿补挂已在本轮完成，见上）；挂单失败的 OrderUncertain 会阻断后续本地 Protect，不能声称仍有本地 fail-open 保护。独立 MARKET 腿不是 OCO，LIMIT_STOP 不是已核实的 Binance 类型；不将限价单描述为极端行情保证成交。
 - **问题**：开仓只有市价单，无交易所侧止损。进程崩溃/断网/systemd 重启时，持仓裸奔，本地止损失效。

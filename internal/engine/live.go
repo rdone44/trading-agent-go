@@ -292,12 +292,14 @@ func (a *Agent) liveRebalance(now time.Time, target, strategyStop, strategyTarge
 	// Exchange-side protective orders: the position is now open on the venue,
 	// so cover it. stopPrice/targetPrice are the exact levels the risk engine
 	// used for sizing — a single source, never recomputed at the venue.
-	// Fail-open on error: local protective exits still run every cycle, so a
-	// failed placement degrades to (slightly weaker) local-only protection and
-	// flags the uncertainty rather than stalling the loop.
+	// A placement failure does not make the confirmed entry fill uncertain.
+	// Halt new entries and let the next protective pass flatten the position.
+	// closePosition must first confirm cancellation of any partially placed
+	// legs; cancellation or exit uncertainty still requires reconciliation.
 	if a.Protective != nil {
-		if err := a.Protective.Open(fill.Side, stopPrice, targetPrice); err != nil {
-			a.Risk.RequireReconciliation("交易所侧保护单挂单失败：" + err.Error())
+		if err := a.Protective.Open(fill.Side, stopPrice, targetPrice); err != nil && !a.Risk.OrderUncertain {
+			a.Risk.Halted = true
+			a.Risk.HaltReason = "交易所侧保护单挂单失败：" + err.Error()
 		}
 	}
 	res.Entered = true

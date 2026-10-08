@@ -178,10 +178,9 @@ func TestProtectiveCancelFailureIsFailSafe(t *testing.T) {
 	}
 }
 
-// A failing protective open degrades to local-only protection: the entry still
-// completes (the local exits remain active) and the uncertainty is flagged, so
-// a venue hiccup on the protective order never blocks a legitimate trade.
-func TestProtectiveOpenFailureIsFailOpen(t *testing.T) {
+// A failed placement halts entries without labelling the confirmed fill unknown.
+// The next protective pass must flatten, even when the stop has not been hit.
+func TestProtectiveOpenFailureHaltsEntriesButAllowsExit(t *testing.T) {
 	cfg := testConfig()
 	cfg.Backtest.WarmupBars = 2
 	cfg.Execution.MinTradeNotional = 0
@@ -197,8 +196,16 @@ func TestProtectiveOpenFailureIsFailOpen(t *testing.T) {
 	if !res.Entered || !agent.Book.Position(cfg.Agent.Symbol).IsOpen() {
 		t.Fatalf("entry should still complete on a protective-open failure: %+v", res)
 	}
-	if !agent.Risk.OrderUncertain {
-		t.Fatal("a failed protective open must flag the order uncertain")
+	if agent.Risk.OrderUncertain || !agent.Risk.Halted || agent.Risk.CanEnter(0, false).Allowed {
+		t.Fatal("placement failure must halt entries without making the fill uncertain")
+	}
+	res, err = agent.LiveStep(model.Series{}, price, time.Now())
+	if err != nil || !res.Exited || agent.Book.Position(cfg.Agent.Symbol).IsOpen() || rec.cancels != 1 {
+		t.Fatalf("next protective pass must cancel and flatten: %+v err=%v cancels=%d", res, err, rec.cancels)
+	}
+	fills := len(agent.Broker.Fills())
+	if _, err := agent.LiveStep(series, price, time.Now()); err != nil || len(agent.Broker.Fills()) != fills {
+		t.Fatalf("halted agent must neither reopen nor close twice: %v", err)
 	}
 }
 

@@ -79,6 +79,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 本轮子项 done：合约保护单逐腿幂等补挂。broker 写前查单并严格核验已有腿，只补缺失腿；runner 重启时即使仅剩止盈也补止损。离线多空/重复调用/部分失败恢复/冲突拒写/runner 重启测试；gofmt/build/vet/test 全绿，broker/live race 通过。T5/P0-1 仍 partial（spot、超时按 ID 查单、本地保护被 OrderUncertain 阻断尚未解决）。
+
 - 范围：`internal/broker/`（`binance.go`、`futures.go`、`orders.go`、`journal.go`）、`internal/live/`
 - 现状：现货与合约客户端、下单前写 `*.order-pending.json`、超时按 clientOrderId 回查而不是重下、对账不一致拒绝继续
 - 可做：补失败路径测试（超时、部分成交、拒单）、合约单向持仓校验
@@ -149,7 +151,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |
-| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 done) |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (P0-1 逐腿幂等 done；整体未完成) |
 | T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |

@@ -13,6 +13,10 @@ func TestProtectiveAlgoStrictWriteContract(t *testing.T) {
 		t.Run(string(side), func(t *testing.T) {
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/fapi/v1/openAlgoOrders" {
+					_, _ = fmt.Fprint(w, `[]`)
+					return
+				}
 				calls++
 				q := r.URL.Query()
 				if r.Method != http.MethodPost || r.URL.Path != "/fapi/v1/algoOrder" {
@@ -91,6 +95,10 @@ func TestProtectiveAlgoWriteFailureNoBlindRetry(t *testing.T) {
 			writes := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
+					if method == http.MethodPost {
+						_, _ = fmt.Fprint(w, `[]`)
+						return
+					}
 					_, _ = fmt.Fprint(w, `[{"algoId":1,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true}]`)
 					return
 				}

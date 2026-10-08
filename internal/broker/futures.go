@@ -433,14 +433,45 @@ func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) err
 	if b.cfg.DryRun {
 		return nil
 	}
-	if stop > 0 {
-		if err := b.placeClosePosition("STOP_MARKET", side, stop); err != nil {
-			return err
+	if side != Buy && side != Sell {
+		return fmt.Errorf("保护单持仓方向无效: %q", side)
+	}
+	rows, err := b.protectiveOrders()
+	if err != nil {
+		return err // Never write when the exchange state cannot be inspected.
+	}
+	closeSide := "SELL"
+	if side == Sell {
+		closeSide = "BUY"
+	}
+	legs := []struct {
+		orderType string
+		level     float64
+		present   bool
+	}{{"STOP_MARKET", stop, false}, {"TAKE_PROFIT_MARKET", takeProfit, false}}
+	// Validate all existing legs before any write. A stale, duplicate or
+	// malformed owned order requires reconciliation, not another close-all leg.
+	for _, row := range rows {
+		for i := range legs {
+			leg := &legs[i]
+			if row.OrderType != leg.orderType {
+				continue
+			}
+			level, parseErr := strconv.ParseFloat(row.TriggerPrice, 64)
+			if row.AlgoID <= 0 || row.Side != closeSide || row.PositionSide != "BOTH" ||
+				row.WorkingType != "MARK_PRICE" || parseErr != nil ||
+				math.IsNaN(level) || math.IsInf(level, 0) || level != leg.level ||
+				leg.level <= 0 || leg.present {
+				return fmt.Errorf("交易所保护单 %s 与本地持仓不一致，拒绝重复补挂", row.OrderType)
+			}
+			leg.present = true
 		}
 	}
-	if takeProfit > 0 {
-		if err := b.placeClosePosition("TAKE_PROFIT_MARKET", side, takeProfit); err != nil {
-			return err
+	for _, leg := range legs {
+		if leg.level > 0 && !leg.present {
+			if err := b.placeClosePosition(leg.orderType, side, leg.level); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -503,6 +534,10 @@ type protectiveAlgoOrder struct {
 	ClientAlgoID string      `json:"clientAlgoId"`
 	Symbol       string      `json:"symbol"`
 	OrderType    string      `json:"orderType"`
+	Side         string      `json:"side"`
+	PositionSide string      `json:"positionSide"`
+	WorkingType  string      `json:"workingType"`
+	TriggerPrice string      `json:"triggerPrice"`
 	ClosePos     interface{} `json:"closePosition"`
 }
 

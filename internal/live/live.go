@@ -341,9 +341,10 @@ func (r *Runner) reconcileFutures() error {
 	// Reconcile the exchange-side protective orders so a restart can never leave
 	// a position naked, nor a stale protective order dangling:
 	//   - local flat but protective orders still open  -> cancel the strays
-	//   - local open but protective orders are gone     -> re-place them
-	// The re-place is idempotent: Has() inspects openOrders first, so a leg
-	// that survived is never placed twice. The stop/target come straight from
+	//   - local open -> inspect each leg and place only the missing ones
+	// Open() inspects openAlgoOrders and validates surviving legs before writes.
+	// Has() is only an any-leg check for orphan cleanup, not complete coverage.
+	// The stop/target come straight from
 	// the restored position — the same single source the risk engine used.
 	if r.agent.Protective != nil {
 		open := pos.IsOpen()
@@ -357,8 +358,8 @@ func (r *Runner) reconcileFutures() error {
 			if err := r.agent.Protective.Cancel(); err != nil {
 				return fmt.Errorf("撤销残留保护单失败: %w", err)
 			}
-		case open && !has:
-			// The position was restored but its protective orders are gone.
+		case open:
+			// A surviving target must not hide a missing stop (or vice versa).
 			side := broker.Buy
 			if pos.Quantity < 0 {
 				side = broker.Sell

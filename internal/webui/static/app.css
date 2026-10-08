@@ -42,13 +42,34 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .safety-strip.warn { color: #f0cbb1; background: #302626; }
 .safety-strip.warn .safety-dot { background: var(--down); }
 .safety-strip button { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-size: 11px; white-space: nowrap; }
-.board { padding: 20px 24px 24px; margin: auto; max-width: 1800px; display: grid; grid-template-columns: minmax(0, 1fr) 328px; grid-template-areas: "market account" "market position" "log risk"; grid-template-rows: auto minmax(216px, auto) minmax(218px, auto); gap: 12px; align-items: stretch; }
+/* ---------------------------------------------------------------- board layout
+Primary: market data chart spans the full top row — the terminal's anchor.
+Secondary: account + position side by side in the middle row.
+Tertiary: log + risk in the bottom row. Rows are content-sized so the chart
+is never stretched to fill leftover space.
+------------------------------------------------------------------------- */
+
+.board {
+  padding: 20px 24px 24px;
+  margin: auto;
+  max-width: 1800px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  grid-template-areas:
+    "market  market"
+    "account position"
+    "log     risk";
+  gap: 12px;
+  align-items: start;
+}
+
 .panel { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-width: 0; overflow: hidden; }
-.market { grid-area: market; display: flex; flex-direction: column; min-height: 416px; }
+.market  { grid-area: market;  display: flex; flex-direction: column; }
 .account { grid-area: account; }
 .position { grid-area: position; }
-.risk { grid-area: risk; }
-.log { grid-area: log; display: flex; flex-direction: column; }
+.risk    { grid-area: risk; }
+.log     { grid-area: log;     display: flex; flex-direction: column; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line-soft); }
 .panel-head h2 { margin: 0; font-size: 12px; font-weight: 600; }
 .panel-note { font-size: 10px; color: var(--ink-3); text-align: right; max-width: 160px; }
@@ -148,6 +169,15 @@ input:disabled, select:disabled { opacity: .65; }
 .check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 11px; }
 .check input { accent-color: var(--accent); }
 .hint { margin: 5px 0 12px; font-size: 10px; color: var(--ink-3); line-height: 1.7; }
+/* Advanced risk fields are tucked behind a details/summary so the rail is
+   short and scannable; open the group only when the numbers matter. */
+.advanced { margin: 4px 0 12px; border: 1px solid var(--line-soft); border-radius: var(--r); background: var(--panel-2); }
+.advanced summary { padding: 9px 12px; font-size: 11px; font-weight: 600; color: var(--ink-2); cursor: pointer; list-style: none; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary::before { content: "▸ "; color: var(--accent); font: 10px var(--mono); }
+.advanced[open] summary::before { content: "▾ "; }
+.advanced .grid2 { padding: 0 12px; }
+.advanced .check { padding: 4px 12px 0; }
 .danger-zone legend, .check.danger, .hint.warn { color: var(--down); }
 .rail-foot { color: var(--ink-3); font-size: 9px; overflow-wrap: anywhere; }
 .status { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); margin: 0; padding: 12px 18px; background: #1e2c39; color: var(--ink); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; max-width: min(600px, 90vw); z-index: 95; font-size: 12px; box-shadow: 0 8px 32px #0008; }
@@ -161,16 +191,21 @@ input:disabled, select:disabled { opacity: .65; }
 @media (max-width: 1150px) {
   .quote-time, .quote-sym { display: none; }
   .topbar { gap: 14px; padding: 12px 18px; }
-  .board { padding: 16px 18px; grid-template-columns: minmax(0, 1fr) 304px; }
+  .board { padding: 16px 18px; gap: 10px; }
   .market-toolbar { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .account-chart { display: block; }
 }
 @media (max-width: 850px) {
   .topbar { flex-wrap: wrap; gap: 10px; }
   .quote { margin-left: auto; }
   .run-state { margin-left: 0; }
   .controls { margin-left: auto; }
-  .board { grid-template-columns: 1fr 1fr; grid-template-areas: "market market" "account position" "risk risk" "log log"; grid-template-rows: auto; }
-  .market { min-height: 364px; }
+  /* Everything stacks in one column: chart first (primary), then the money,
+     then the position, then risk, then the log at the bottom. */
+  .board {
+    grid-template-columns: 1fr;
+    grid-template-areas: "market" "account" "position" "risk" "log";
+  }
   .risk-rows { display: grid; grid-template-columns: 1fr 1fr; }
   .flags, .alert { grid-column: 1 / -1; }
 }
@@ -187,7 +222,7 @@ input:disabled, select:disabled { opacity: .65; }
   .safety-strip { padding: 8px 12px; align-items: flex-start; font-size: 10px; }
   .safety-dot { flex: none; margin-top: 5px; }
   .safety-strip button { display: none; }
-  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "market" "position" "risk" "account" "log"; }
+  .board { padding: 12px; gap: 10px; grid-template-columns: 1fr; grid-template-areas: "market" "account" "position" "risk" "log"; }
   .market-head { padding: 14px 14px 5px; }
   .market-head h1 { font-size: 19px; }
   .market-toolbar { padding: 8px 14px; }

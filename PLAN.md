@@ -5,6 +5,9 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1 永续撤保护单全批次预检回归子项：**done** — 新增 `TestCancelProtectivePreflightPreservesFirstLeg`，对 BUY/SELL 两种平仓方向验证后续腿缺字段、身份/类型重复、状态变化、方向冲突及非法触发价；每例连续三轮只有 openAlgoOrders GET，零写入，避免坏后续腿导致先撤有效第一腿。只新增离线测试，生产代码及 Leverage:1/CVFolds=0 行为不变。
+- 本轮验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；新增定向 verbose 测试与全部 CancelProtective 定向 race 测试通过。P0-1/T5 总体仍 **partial**：完整保护成交身份/实际手续费自动对账未完成；本子项不证明撤单成功响应或成交竞态已核验，不调用真交易所。
+
 - P0-1 合约保护成交疑点阻断回归子项：**done** — 新增 `TestProtectiveFillGuardPreservesLedgerAcrossRestart`，多空分别覆盖完全/部分退出、额外库存、方向反转、均价变化、NaN 数量及查询失败。每例连续三轮及从保存账本恢复后均拒绝继续，断言零行情调用/零交易所写入/零本地成交，原仓位、开仓手续费及现金不变，halt + OrderUncertain 持久化；只新增测试，不改变 Leverage:1/CVFolds=0 生产行为。
 - 本轮验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；新增定向 verbose 测试及 live 定向 race 测试通过。P0-1/T5 总体仍 **partial**：本轮证明 fail-safe 阻断，不是按保护单成交身份/实际手续费自动对账；不恢复已退役现货代码，未调用真交易所。
 

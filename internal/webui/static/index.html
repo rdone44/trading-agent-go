@@ -61,12 +61,19 @@
     <div class="rail-body">
       <section aria-label="账号状态"><h3>账号与连接</h3><p id="settings-account" class="hint"></p>
         <button type="button" id="settings-login" class="btn">前往登录 / 注册</button>
+        <div id="local-live-switch" hidden>
+          <label class="check danger">
+            <input type="checkbox" id="local-live">
+            <span>允许本机实盘下单</span>
+          </label>
+          <p class="hint" id="local-live-hint"></p>
+        </div>
       </section>
       <form id="credentials-form" autocomplete="off">
         <div class="adv-block" id="creds-adv" hidden>
           <h3>Binance 与 AI 服务</h3>
           <fieldset id="credentials-fieldset">
-            <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。设置按账号保存，留空保留原值。已保存不代表已验证连接；修改不会更新已启动的会话。</p>
+            <p class="hint">实盘下单需要交易所 API Key；AI 决策需要模型服务的 URL 与 Token。留空保留原值，保存不代表已验证连接；修改不会更新已启动的会话。</p>
             <div class="grid2">
               <label class="field">
                 <span>Binance API Key</span>

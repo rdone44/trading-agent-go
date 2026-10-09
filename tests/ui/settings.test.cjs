@@ -20,8 +20,9 @@ function harness() {
       reset() { for(const [key,node] of nodes) if(key.includes('data-cred')) node.value=''; }});
     return nodes.get(key);
   };
-  const ctx = vm.createContext({$:get, authEnabled:false, lastAuthState:null, liveGate:false,
-    renderKeyHint(){}, renderCredStatus(){}, setAuthTab(){}, renderAiPage(){}});
+  const ctx = vm.createContext({$:get, authEnabled:false, localSettings:false, lastAuthState:null,
+    liveGate:false, liveGateEnv:false,
+    renderKeyHint(){}, renderCredStatus(){}, setAuthTab(){}, renderAiPage(){}, localLiveHint(){}});
   vm.runInContext(functionSource('applyAuthUi'), ctx);
   vm.runInContext(functionSource('showAuthCard'), ctx);
   return {ctx,get};
@@ -77,4 +78,58 @@ test('expired login clears connection draft and reopens login entry', () => {
   assert.equal(get('[data-cred="llm_base_url"]').value,'');
   assert.equal(get('#creds-adv').hidden,true);
   assert.equal(get('#settings-login').hidden,false);
+});
+
+// The desktop edition has no administrator and no login: its settings panel
+// must be editable straight away. This is the regression guard for the bug
+// where the credential form was permanently hidden and the page told the user
+// to "ask an administrator" who does not exist.
+test('desktop local mode opens the credential form without a login', () => {
+  const {ctx,get}=harness();
+  ctx.applyAuthUi({desktop:true, local_settings:true, live_gate:false, live_gate_env:false,
+    auth:{enabled:true, local:true, username:'本机', path:'C:/Users/x/credentials.json'}});
+  assert.equal(get('#creds-adv').hidden,false);
+  assert.equal(get('#auth-card').hidden,true);
+  assert.equal(get('#user-chip').hidden,true);
+  assert.equal(get('#local-live-switch').hidden,false);
+  assert.equal(get('#local-live').checked,false);
+  assert.match(get('#settings-account').textContent,/本机/);
+});
+
+// On a networked server the live switch is not offered at all: the
+// environment variable stays the only gate there.
+test('server mode hides the desktop live switch', () => {
+  const {ctx,get}=harness();
+  ctx.applyAuthUi({desktop:false, local_settings:false, live_gate:true, live_gate_env:true,
+    auth:{enabled:true, username:'trader'}});
+  assert.equal(get('#local-live-switch').hidden,true);
+  assert.equal(get('#creds-adv').hidden,false);
+});
+
+// The AI page must not claim a key it does not have. Before this guard the
+// desktop page said "密钥来自本机设置" even with an empty Token field, which
+// reads as "the AI is configured" when it is not.
+test('AI page does not claim a model key that is missing', () => {
+  const src = functionSource('renderAiPage');
+  const nodes = new Map();
+  const get = (key) => {
+    if (!nodes.has(key)) nodes.set(key, {textContent:'', className:'', value:'ma_cross', disabled:false, hidden:false, checked:false});
+    return nodes.get(key);
+  };
+  const ctx = vm.createContext({
+    $:get,
+    session:{running:false},
+    strategyByName:()=>({title:'双均线交叉'}),
+    localSettings:false,
+  });
+  vm.runInContext(src, ctx);
+  ctx.renderAiPage({local_settings:true, auth:{enabled:true, local:true, username:'本机', llm_key:false},
+    llm_model:'gpt-4o-mini'});
+  assert.doesNotMatch(ctx.$("#ai-status").textContent, /密钥来自本机设置/);
+  assert.match(ctx.$("#ai-status").textContent, /设置 → Binance 与 AI 服务/);
+
+  // With a stored token the wording flips to the local file.
+  ctx.renderAiPage({local_settings:true, auth:{enabled:true, local:true, username:'本机', llm_key:true},
+    llm_model:'gpt-4o-mini'});
+  assert.match(ctx.$("#ai-status").textContent, /密钥来自本机设置/);
 });

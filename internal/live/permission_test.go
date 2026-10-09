@@ -58,3 +58,49 @@ func TestProcessOptInDoesNotBypassStateRequirement(t *testing.T) {
 		t.Fatalf("state guard bypassed: runner=%v err=%v", runner, err)
 	}
 }
+
+// The desktop edition's local switch is a second way to open the gate, but
+// only when the environment variable is absent: an operator who explicitly
+// exported TA_ALLOW_LIVE=0 must not be overridden by a checkbox.
+func TestDesktopGateOpensOnlyWhenEnvironmentIsSilent(t *testing.T) {
+	t.Cleanup(func() { live.DesktopGate = nil })
+	cfg := config.Default()
+	strat, err := strategy.New(cfg.Strategy.Name, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	// Desktop switch off, environment unset: still refused.
+	t.Setenv("TA_ALLOW_LIVE", "")
+	if err := os.Unsetenv("TA_ALLOW_LIVE"); err != nil {
+		t.Fatal(err)
+	}
+	live.DesktopGate = func() bool { return false }
+	if runner, err := live.New(cfg, strat, true, state); runner != nil || err == nil {
+		t.Fatalf("closed desktop gate allowed a runner: runner=%v err=%v", runner, err)
+	}
+
+	// Desktop switch on: allowed, and the runner really is in execute mode.
+	live.DesktopGate = func() bool { return true }
+	runner, err := live.New(cfg, strat, true, state)
+	if err != nil || runner == nil || !runner.IsExecuted() {
+		t.Fatalf("open desktop gate refused the runner: runner=%v err=%v", runner, err)
+	}
+
+	// An explicit TA_ALLOW_LIVE=0 wins over the switch.
+	t.Setenv("TA_ALLOW_LIVE", "0")
+	if runner, err := live.New(cfg, strat, true, state); runner != nil || err == nil {
+		t.Fatalf("explicit environment opt-out was ignored: runner=%v err=%v", runner, err)
+	}
+
+	// The server edition never wires the hook; the variable stays the gate.
+	live.DesktopGate = nil
+	t.Setenv("TA_ALLOW_LIVE", "")
+	if err := os.Unsetenv("TA_ALLOW_LIVE"); err != nil {
+		t.Fatal(err)
+	}
+	if runner, err := live.New(cfg, strat, true, state); runner != nil || err == nil {
+		t.Fatalf("server edition built a runner without the variable: runner=%v err=%v", runner, err)
+	}
+}

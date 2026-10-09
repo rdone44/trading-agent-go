@@ -27,6 +27,7 @@ import (
 	"github.com/rdone44/trading-agent-go/internal/engine"
 	livesession "github.com/rdone44/trading-agent-go/internal/live/session"
 	"github.com/rdone44/trading-agent-go/internal/llm"
+	"github.com/rdone44/trading-agent-go/internal/localcreds"
 	"github.com/rdone44/trading-agent-go/internal/marketdata"
 	"github.com/rdone44/trading-agent-go/internal/metrics"
 	"github.com/rdone44/trading-agent-go/internal/model"
@@ -88,7 +89,14 @@ type Server struct {
 	// session/backtest/tune handlers inject into the effective config.
 	// Desktop and server builds without -users leave it nil, which keeps
 	// every historical behaviour byte-for-byte intact.
-	Auth        *auth.Service
+	Auth *auth.Service
+	// LocalCreds, when set, is the desktop edition's single-user credential
+	// file. There is no login on the desktop, so the settings panel writes
+	// straight to it and the stored values are overlaid onto every effective
+	// config. It is nil on the server edition and whenever the desktop build
+	// cannot open the file, in which case the environment variables remain
+	// the only source.
+	LocalCreds  *localcreds.Store
 	marketMu    sync.Mutex
 	marketCache map[string]marketdata.MarketSnapshot
 	// symbolsMu guards symbolsCache: the per-venue all-pair list, cached for
@@ -141,6 +149,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("/api/auth/me", s.handleAuthMe)
 	mux.HandleFunc("/api/auth/credentials", s.handleAuthCredentials)
+	// Desktop single-user mode: the same credential form writes to the local
+	// file instead of a vault. Registered only when the shell set LocalCreds,
+	// so a networked server can never accept an anonymous credential write.
+	if s.LocalCreds != nil {
+		mux.HandleFunc("/api/local/credentials", s.handleLocalCredentials)
+	}
 	protected := http.NewServeMux()
 	protected.HandleFunc("/api/backtest", s.handleBacktest)
 	protected.HandleFunc("/api/tune", s.handleTune)
@@ -666,15 +680,43 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		// process-level kill switch (TA_ALLOW_LIVE=1). The gate itself stays
 		// enforced at session start; this field only shows its state so the
 		// user is not surprised by a rejection they could have seen coming.
-		"live_gate": os.Getenv("TA_ALLOW_LIVE") == "1",
+		// The desktop edition can also arm it locally, from its own settings
+		// file, which is what lets a double-clicked exe trade without the user
+		// learning about environment variables first.
+		"live_gate":      s.liveGateOpen(),
+		"live_gate_env":  liveGateFromEnv(),
+		"local_settings": s.LocalCreds != nil,
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// liveGateFromEnv reports whether the environment variable is present with a
+// non-empty value at all, open or refusing: the desktop page uses it to say
+// that the variable, not the local switch, currently decides.
+func liveGateFromEnv() bool {
+	value, ok := os.LookupEnv("TA_ALLOW_LIVE")
+	return ok && value != ""
+}
+
+// liveGateOpen reports whether the process-level live switch is on, from the
+// environment or (desktop only) from the local settings file.
+func (s *Server) liveGateOpen() bool {
+	if os.Getenv("TA_ALLOW_LIVE") == "1" {
+		return true
+	}
+	if liveGateFromEnv() {
+		return false
+	}
+	return s.LocalCreds != nil && s.LocalCreds.Status().AllowLive
 }
 
 // authStatusForRequest is the /api/config answer about accounts: whether
 // login is enabled, who the session cookie belongs to (if anyone), and which
 // credentials that account has stored. Secrets never appear in the payload.
 func (s *Server) authStatusForRequest(r *http.Request) map[string]any {
+	if s.Auth == nil && s.LocalCreds != nil {
+		return s.localAuthView()
+	}
 	if s.Auth == nil {
 		return map[string]any{"enabled": false}
 	}

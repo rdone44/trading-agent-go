@@ -103,9 +103,15 @@ let formIdentity = "";
 let busy = false;
 let closing = false;
 let authEnabled = false;
+// localSettings is the desktop single-user mode: the credential form is
+// editable without a login and the live switch lives in the same file.
+let localSettings = false;
 let authMode = "login";
 let lastAuthState = null;
 let liveGate = false;
+// liveGateEnv records whether the gate came from TA_ALLOW_LIVE=1, so the
+// desktop switch can explain that the environment overrides the file.
+let liveGateEnv = false;
 let lastConfig = null;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
@@ -814,6 +820,7 @@ function setRunningUi(running) {
 // authEnabled is false.
 function applyAuthUi(config) {
   authEnabled = Boolean(config?.auth?.enabled);
+  localSettings = Boolean(config?.local_settings);
   lastAuthState = authEnabled ? (config.auth || {}) : null;
   const user = config?.auth?.username || "";
 
@@ -823,21 +830,28 @@ function applyAuthUi(config) {
   const previous = $("#user-name").textContent;
   if (previous !== user) $("#credentials-form").reset();
   $("#creds-adv").hidden = !signedIn;
-  chip.hidden = !signedIn;
+  // The desktop's single-user mode has no login, so the account chip (which
+  // exists to log out) stays hidden while the credential form is shown.
+  chip.hidden = !signedIn || localSettings;
   $("#user-name").textContent = user;
   card.hidden = !authEnabled || signedIn;
   $("#settings-login").hidden = !authEnabled || signedIn;
-  $("#settings-account").textContent = signedIn ? `当前账号：${user}`
-    : authEnabled ? "登录后可保存本账号的连接设置。" : "此服务未启用账号设置，请由管理员配置服务环境。";
+  $("#settings-account").textContent = localSettings
+    ? "桌面版本机设置：密钥保存在这台电脑的用户目录，不上传、不入库。"
+    : signedIn ? `当前账号：${user}`
+      : authEnabled ? "登录后可保存本账号的连接设置。" : "此服务未启用账号设置，请由管理员配置服务环境。";
   $("#cred-status").textContent = "";
   liveGate = Boolean(config?.live_gate);
+  liveGateEnv = Boolean(config?.live_gate_env);
   // The generic "use HTTPS" advice is wrong on the desktop build: the page is
   // served over loopback and never leaves the machine.
   const railHint = $("#rail-cred-hint");
   if (railHint) {
-    railHint.textContent = config?.desktop
-      ? "此处只保存连接设置，不启动交易。桌面版服务只监听本机 127.0.0.1，密钥不会离开这台电脑。"
-      : "此处只保存连接设置，不启动交易。请通过 HTTPS 访问管理界面后再填写密钥。";
+    railHint.textContent = localSettings
+      ? `此处只保存连接设置，不启动交易。文件位置：${config?.auth?.path || "本机用户目录"}`
+      : config?.desktop
+        ? "此处只保存连接设置，不启动交易。桌面版服务只监听本机 127.0.0.1，密钥不会离开这台电脑。"
+        : "此处只保存连接设置，不启动交易。请通过 HTTPS 访问管理界面后再填写密钥。";
   }
   if (signedIn) {
     renderCredStatus(config.auth);
@@ -848,6 +862,15 @@ function applyAuthUi(config) {
     const personaField = $("#ai-persona");
     if (personaField) personaField.value = config.auth.llm_prompt || "";
   }
+  // The local live switch only exists on the desktop: on a networked server
+  // the environment variable stays the only gate, so the checkbox is not
+  // offered there at all.
+  const liveSwitch = $("#local-live-switch");
+  if (liveSwitch) {
+    liveSwitch.hidden = !localSettings;
+    $("#local-live").checked = Boolean(config?.auth?.allow_live);
+  }
+  localLiveHint();
 
   renderKeyHint();
   renderAiPage(config);
@@ -874,6 +897,20 @@ function renderKeyHint() {
   const execute = Boolean($('[name="execute"]')?.checked);
   if (!execute) { host.hidden = true; host.innerHTML = ""; return; }
   host.hidden = false;
+  if (localSettings) {
+    const auth = lastAuthState || {};
+    const ready = auth.binance_api && auth.binance_secret;
+    if (!ready) {
+      host.className = "key-hint warn";
+      host.textContent = "尚未保存 Binance 密钥：到「设置 → Binance 与 AI 服务」填写 API Key 与 Secret Key 并保存。";
+      return;
+    }
+    host.className = liveGate ? "key-hint ok" : "key-hint warn";
+    host.textContent = liveGate
+      ? "Binance 密钥已保存（尚未验证连接或权限）。"
+      : "密钥已保存，但实盘开关未打开：到「设置 → Binance 与 AI 服务」打开实盘开关。";
+    return;
+  }
   if (!authEnabled) {
     host.className = "key-hint";
     host.textContent = "实盘密钥取自环境变量 BINANCE_API_KEY / BINANCE_SECRET_KEY。";
@@ -897,6 +934,19 @@ function renderKeyHint() {
   host.textContent = liveGate
     ? "Binance 密钥已保存（尚未验证连接或权限）。"
     : "密钥已保存，但服务端实盘闸门未开：启动服务时加 TA_ALLOW_LIVE=1 后才允许下单。";
+}
+
+// localLiveHint refreshes the line under the desktop live switch. The switch
+// is a convenience over the environment variable, never a replacement for the
+// confirmation phrase, and saying so here keeps the two from being confused.
+function localLiveHint() {
+  const hint = $("#local-live-hint");
+  if (!hint) return;
+  hint.textContent = liveGateEnv
+    ? "当前由环境变量 TA_ALLOW_LIVE=1 打开；取消环境变量后此处开关才会生效。"
+    : liveGate
+      ? "已打开：启动实盘仍须输入「确认实盘」，且只影响本机桌面版。"
+      : "默认关闭。打开后本机桌面版才能启动实盘；服务器版始终只认环境变量。";
 }
 
 function setAuthTab(mode) {
@@ -968,10 +1018,18 @@ async function saveCredentials() {
   const button = $("#cred-save");
   button.disabled = true;
   try {
-    const view = await api("/api/auth/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+    // Desktop single-user mode writes to the local file; account mode writes
+    // to the logged-in user's vault. The response shape is identical.
+    const path = localSettings ? "/api/local/credentials" : "/api/auth/credentials";
+    const view = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
     lastAuthState = view;
     renderCredStatus(view);
     renderKeyHint();
+    if (localSettings) {
+      liveGate = Boolean(view.allow_live) || liveGateEnv;
+      const liveBox = $("#local-live");
+      if (liveBox) liveBox.checked = Boolean(view.allow_live);
+    }
     // Clear the secret inputs; the status line now reflects the stored state,
     // and the LLM URL stays typed so it can be read at a glance.
     $$("[data-cred]").forEach((input) => { if (input.type !== "url") input.value = ""; });
@@ -980,6 +1038,35 @@ async function saveCredentials() {
     $("#cred-status").textContent = `保存失败：${error.message}`;
   } finally {
     button.disabled = false;
+  }
+}
+
+// toggleLocalLive arms or disarms the desktop live gate. It is deliberately a
+// separate request from the credential save so a mis-click on the switch can
+// never rewrite the keys, and so the page can show the gate's state without
+// touching the form.
+async function toggleLocalLive(allow) {
+  const box = $("#local-live");
+  box.disabled = true;
+  try {
+    const view = await api("/api/local/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allow_live: allow }),
+    });
+    lastAuthState = view;
+    liveGate = Boolean(view.allow_live) || liveGateEnv;
+    box.checked = Boolean(view.allow_live);
+    renderKeyHint();
+    localLiveHint();
+    $("#cred-status").textContent = allow
+      ? "实盘开关已打开：仍需输入「确认实盘」才会真正下单。"
+      : "实盘开关已关闭：启动实盘会被拒绝。";
+  } catch (error) {
+    box.checked = !allow;
+    $("#cred-status").textContent = `实盘开关保存失败：${error.message}`;
+  } finally {
+    box.disabled = false;
   }
 }
 
@@ -1064,16 +1151,31 @@ let tuneReport = null; // last /api/tune response, for adopting
 function renderAiPage(config) {
   const auth = config?.auth || {};
   const signedIn = Boolean(auth.enabled && auth.username);
-  const hasKey = signedIn ? Boolean(auth.llm_key) : Boolean(config?.llm_env_key);
+  const local = Boolean(config?.local_settings);
+  const envKey = Boolean(config?.llm_env_key);
+  // Accounts-mode requests never ride on the deployer's environment key, so
+  // only the account's own flag counts there. The desktop is single-user, so
+  // its saved key and the environment fallback are both legitimate.
+  const hasKey = local
+    ? Boolean(auth.llm_key) || envKey
+    : signedIn ? Boolean(auth.llm_key) : envKey;
   const model = auth.llm_model || config?.llm_model || "";
 
   const bits = [];
   if (hasKey) bits.push(`模型已就绪${model ? `：${model}` : ""}`);
   else bits.push("模型未配置：AI 功能会退化为「只回测、不调用模型」");
   if (auth.llm_base_url) bits.push(`服务 ${auth.llm_base_url}`);
-  if (signedIn) bits.push("密钥来自当前账号");
-  else if (auth.enabled) bits.push("登录后可在设置中保存密钥");
-  else bits.push("桌面版从环境变量 LLM_API_KEY / OPENAI_API_KEY 读取密钥");
+  if (hasKey) {
+    if (local) bits.push(auth.llm_key ? "密钥来自本机设置" : "密钥来自环境变量 LLM_API_KEY / OPENAI_API_KEY");
+    else if (signedIn) bits.push("密钥来自当前账号");
+    else bits.push("密钥来自环境变量 LLM_API_KEY / OPENAI_API_KEY");
+  } else if (local) {
+    bits.push("到「设置 → Binance 与 AI 服务」填写 AI 服务 URL、模型名与 Token");
+  } else if (auth.enabled) {
+    bits.push("登录后可在设置中保存密钥");
+  } else {
+    bits.push("从环境变量 LLM_API_KEY / OPENAI_API_KEY 读取密钥");
+  }
 
   const status = $("#ai-status");
   status.textContent = bits.join(" · ");
@@ -1451,6 +1553,9 @@ $("#auth-tab-register").addEventListener("click", () => setAuthTab("register"));
 $("#auth-form").addEventListener("submit", submitAuth);
 $("#logout-button").addEventListener("click", logout);
 $("#credentials-form").addEventListener("submit", event => { event.preventDefault(); saveCredentials(); });
+// The desktop live switch is a separate control from the credential form: the
+// change event fires on click and posts only the flag.
+$("#local-live")?.addEventListener("change", (event) => toggleLocalLive(event.target.checked));
 $("#settings-login").addEventListener("click", () => {
   setRail(false);
   $("#auth-card").scrollIntoView({ block: "start" });

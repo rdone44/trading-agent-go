@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/live"
+	"github.com/rdone44/trading-agent-go/internal/localcreds"
 	"github.com/rdone44/trading-agent-go/internal/shell"
 	"github.com/rdone44/trading-agent-go/internal/webui"
 )
@@ -46,6 +48,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The desktop edition is single-user and has no administrator, so its
+	// connection settings live in a per-user file the settings panel writes.
+	// A broken file is reported but never fatal: the panel can overwrite it.
+	creds, credsErr := localcreds.Load(credentialsPath())
+	if credsErr != nil {
+		fmt.Fprintf(logFile, "credentials: %v\n", credsErr)
+	}
+	creds.Apply(&cfg)
+	// Arm the live switch from the same file. The environment variable still
+	// wins (it is checked first) and the confirmation phrase stays required.
+	live.DesktopGate = func() bool { return creds.Status().AllowLive }
 	// Reports land next to the executable so the folder is self-contained and
 	// easy to find; fall back to the working directory if it is not writable
 	// (e.g. the exe sits in Program Files).
@@ -77,6 +90,7 @@ func run() error {
 
 	server := webui.New(cfg)
 	server.Desktop = true
+	server.LocalCreds = creds
 	server.Log = logFile
 	// The 退出 button in the UI cancels this context. Only the desktop build
 	// wires it, so the endpoint does not exist on the server edition.
@@ -181,6 +195,14 @@ func openLog() (*os.File, error) {
 
 func logFilePath() string {
 	return filepath.Join(configDir(), "desktop.log")
+}
+
+// credentialsPath is the desktop credential file: %APPDATA%\trading-agent\
+// credentials.json on Windows, ~/.config/trading-agent/credentials.json
+// elsewhere. It lives outside the repository on purpose, so a key can never be
+// committed with the project.
+func credentialsPath() string {
+	return filepath.Join(configDir(), "credentials.json")
 }
 
 // configDir is %APPDATA%\trading-agent on Windows and ~/.config/trading-agent

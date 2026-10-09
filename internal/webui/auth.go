@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/rdone44/trading-agent-go/internal/auth"
 	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/localcreds"
 )
 
 // sessionCookie is the HttpOnly cookie carrying the signed user session.
@@ -33,6 +35,12 @@ const sessionCookie = "ta_session"
 // clear "store your keys first" error instead of silently trading someone
 // else's account.
 func (s *Server) applyUserCredentials(cfg *config.Config, username string) {
+	// The desktop edition has no vault and no login: its single user's saved
+	// connection settings are overlaid instead. Values that were never saved
+	// stay empty, so the environment-variable fallback keeps working.
+	if s.LocalCreds != nil {
+		s.LocalCreds.Apply(cfg)
+	}
 	if s.Auth == nil || username == "" {
 		return
 	}
@@ -98,6 +106,84 @@ func (s *Server) userFromRequest(r *http.Request) (*auth.User, bool) {
 }
 
 // ---------------------------------------------------------------- handlers
+
+// localAuthView is the /api/config answer in desktop single-user mode. It has
+// the same shape as authView so the page needs no second code path, but there
+// is no login: the username is a fixed label, "enabled" is true, and "local"
+// tells the UI to hide the account-only controls (logout) and to describe the
+// credential file instead of an account.
+func (s *Server) localAuthView() map[string]any {
+	st := s.LocalCreds.Status()
+	return map[string]any{
+		"enabled":        true,
+		"local":          true,
+		"username":       "本机",
+		"binance_api":    st.BinAPIKey,
+		"binance_secret": st.BinSecretKey,
+		"llm_key":        st.LLMAPIKey,
+		"llm_base_url":   st.LLMBaseURL,
+		"llm_model":      st.LLMModel,
+		"llm_prompt":     st.LLMPrompt,
+		"allow_live":     st.AllowLive,
+		"path":           s.LocalCreds.Path(),
+	}
+}
+
+// handleLocalCredentials stores the desktop user's connection settings. It is
+// registered only when LocalCreds is set (the desktop shell), so the server
+// edition never exposes an unauthenticated credential write.
+func (s *Server) handleLocalCredentials(w http.ResponseWriter, r *http.Request) {
+	if s.LocalCreds == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "本机凭据存储未启用"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	var body struct {
+		BinanceAPIKey    string `json:"binance_api_key"`
+		BinanceSecretKey string `json:"binance_secret_key"`
+		LLMBaseURL       string `json:"llm_base_url"`
+		LLMModel         string `json:"llm_model"`
+		LLMPrompt        string `json:"llm_prompt"`
+		LLMAPIKey        string `json:"llm_api_key"`
+		// AllowLive is a pointer so an omitted field leaves the gate as it is;
+		// the checkbox always sends it, the credential form never does.
+		AllowLive *bool `json:"allow_live"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
+		return
+	}
+	if base := strings.TrimSpace(body.LLMBaseURL); base != "" {
+		parsed, err := url.Parse(base)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("AI 服务 URL 必须以 http:// 或 https:// 开头，例如 https://api.openai.com/v1"))
+			return
+		}
+	}
+	if err := s.LocalCreds.Set(localcreds.Patch{
+		BinanceAPIKey:    body.BinanceAPIKey,
+		BinanceSecretKey: body.BinanceSecretKey,
+		LLMBaseURL:       body.LLMBaseURL,
+		LLMModel:         body.LLMModel,
+		LLMPrompt:        body.LLMPrompt,
+		LLMAPIKey:        body.LLMAPIKey,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("保存本机凭据失败: %w", err))
+		return
+	}
+	if body.AllowLive != nil {
+		if err := s.LocalCreds.SetAllowLive(*body.AllowLive); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("保存实盘开关失败: %w", err))
+			return
+		}
+	}
+	view := s.localAuthView()
+	view["ok"] = true
+	writeJSON(w, http.StatusOK, view)
+}
 
 // handleAuthRegister creates an account and opens a session in one step:
 // registration is only meaningful for a browser that is about to use it.

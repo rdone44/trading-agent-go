@@ -96,6 +96,18 @@ trade the same account behind the first one's back.
 If it fails to start, a dialog box appears with the reason - the same text is
 appended to `%APPDATA%\trading-agent\desktop.log`.
 
+**Connection settings.** The desktop build is single-user: there is no
+administrator and no login, so the settings panel (**设置 → Binance 与 AI 服务**)
+writes your Binance keys and your model URL/token straight to
+`%APPDATA%\trading-agent\credentials.json` (mode 0600 on Unix; on Windows the
+file sits under your per-user `%APPDATA%`, outside the repository, so it can
+never be committed). Nothing is uploaded and no account is needed. The same
+panel has the **允许本机实盘下单** switch, the desktop equivalent of
+`TA_ALLOW_LIVE=1`; it is off by default and the typed `确认实盘` phrase is still
+required on top of it. The environment variables below remain the fallback for
+CLI and scripted use, and an explicitly exported `TA_ALLOW_LIVE=0` still
+refuses real orders no matter what the switch says.
+
 ### Linux server
 
 The server edition binds a network interface, so it **refuses to start without
@@ -154,10 +166,14 @@ no framework, CDN or Node/Python runtime dependency.
   polling, not a websocket or tick-by-tick terminal.
 
 Paper mode is the default. Live orders require the explicit checkbox, the
-phrase `确认实盘`, and both `BINANCE_API_KEY` / `BINANCE_SECRET_KEY`. Real
-capital is read from the exchange during startup; the initial-cash input is
-for paper sessions. Use a dedicated account/strategy balance: the local
-ledger is not an exchange-wide account reconciliation service.
+phrase `确认实盘`, a Binance key pair, and the process-level live gate
+(`TA_ALLOW_LIVE=1`, or the desktop's 允许本机实盘下单 switch). Keys come from
+the settings panel on the desktop, from a per-user vault when the server is
+started with `-users`, or from `BINANCE_API_KEY` / `BINANCE_SECRET_KEY` in the
+environment. Real capital is read from the exchange during startup; the
+initial-cash input is for paper sessions. Use a dedicated account/strategy
+balance: the local ledger is not an exchange-wide account reconciliation
+service.
 
 **Stopping is not liquidation.** Stops and targets are evaluated locally at
 each poll, not submitted as exchange-native protective orders. Stopping,
@@ -395,7 +411,9 @@ The `trade` command is the live loop, already wired to real Binance:
 - **Paper by default.** No `--execute` means fills are simulated locally
   (`DryRun`), so you can run the loop with real market data and zero financial
   risk. `--execute` places real orders and reads the API key/secret from the
-  `BINANCE_API_KEY` / `BINANCE_SECRET_KEY` environment variables only.
+  `BINANCE_API_KEY` / `BINANCE_SECRET_KEY` environment variables (the CLI has
+  no settings panel; the desktop edition stores the same pair in its
+  credentials file).
 - **Safe by default.** `--execute` requires a typed `yes` on stdin unless
   `--yes` is given. On startup the runner reconciles the local book against
   the exchange (balances for spot, the signed position for futures) and
@@ -414,10 +432,19 @@ account (leverage caps, isolation, taxes, regional availability).
 Four model-driven features sit on top of the same agent. They all share one
 `llm` client — a thin OpenAI-compatible REST wrapper on `net/http`, so the
 project still has a single non-stdlib dependency — and they all degrade
-gracefully when the model is unavailable. The API key is read from the
-environment only (`LLM_API_KEY`, falling back to `OPENAI_API_KEY`); it is never
-stored in the config file, so a config can never leak a secret. Any
-OpenAI-compatible endpoint works: set `llm.base_url` and `llm.model`.
+gracefully when the model is unavailable. The API key is never stored in the
+config file, so a config can never leak a secret:
+
+- **Desktop edition** — open **设置 → Binance 与 AI 服务** and fill in
+  **AI 服务 URL** (`https://api.openai.com/v1`), **AI 模型名** (`gpt-4o-mini`)
+  and **AI Token**. That is all the AI page needs; the values are saved to the
+  local credentials file described above.
+- **Server / CLI** — export `LLM_API_KEY` (falling back to `OPENAI_API_KEY`),
+  or set `llm.base_url` / `llm.model` in the YAML config for a non-OpenAI
+  endpoint.
+
+Any OpenAI-compatible endpoint works. The **AI** page states whether a model is
+ready, and when none is configured it says exactly which panel to open.
 
 | Feature | CLI | Web dashboard | Flag / config | Without a key |
 | --- | --- | --- | --- | --- |

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rdone44/trading-agent-go/internal/config"
+	"github.com/rdone44/trading-agent-go/internal/marketdata"
 	"github.com/rdone44/trading-agent-go/internal/model"
 	"github.com/rdone44/trading-agent-go/internal/strategy"
 	"github.com/rdone44/trading-agent-go/internal/testfx"
@@ -38,6 +39,12 @@ func newTestServer(t *testing.T) (*webui.Server, string) {
 	cfg.Live.StateFile = filepath.Join(dir, "trade-state.json")
 	server := webui.New(cfg)
 	server.SeriesLoader = fxLoader
+	// /api/symbols is public (the login card and the symbol picker need it
+	// before sign-in), so every test server must answer it offline instead of
+	// calling Binance — CI has no network and would see a 502.
+	server.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+		return []marketdata.SymbolInfo{{Symbol: "TESTUSDT", Price: 1, Volume24h: 1}}, nil
+	}
 	return server, dir
 }
 

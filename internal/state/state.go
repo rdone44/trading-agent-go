@@ -31,6 +31,12 @@ type State struct {
 	Venue      string         `json:"venue,omitempty"`
 	Leverage   int            `json:"leverage,omitempty"`
 	Accounting string         `json:"accounting,omitempty"`
+	// Owner is the account that created the file. In accounts mode a session
+	// refuses to resume a ledger that belongs to a different account, so a
+	// copied or misdirected state file cannot move one user's position into
+	// another user's book. Empty in the single-user desktop / CLI builds,
+	// where the historical behaviour is unchanged.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Open is the persisted open position.

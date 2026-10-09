@@ -88,6 +88,14 @@ type Live struct {
 	// BINANCE_API_KEY / BINANCE_SECRET_KEY environment variables.
 	ExchangeAPIKey    string `yaml:"-"`
 	ExchangeSecretKey string `yaml:"-"`
+	// NoEnvKeys disables that environment fallback. The webui sets it for
+	// accounts-mode sessions: the exchange credentials must come from the
+	// logged-in user's own vault, never from the deployer's BINANCE_API_KEY /
+	// BINANCE_SECRET_KEY. Without it, any registered user who stored no keys
+	// could start a live session that traded the deployer's account. The CLI
+	// and desktop builds (no vault) leave it false and keep the historical
+	// environment behaviour. yaml:"-" so a config file cannot toggle it.
+	NoEnvKeys bool `yaml:"-"`
 }
 
 // LLM configures the OpenAI-compatible model used by the AI features

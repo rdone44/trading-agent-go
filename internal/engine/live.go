@@ -120,7 +120,17 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 	var target, stop, takeProfit float64
 	var reason string
 	if ld, ok := a.Strategy.(strategy.LiveDecision); ok {
-		target, stop, takeProfit, reason = ld.LastDecision(series, a.Config)
+		var decided bool
+		target, stop, takeProfit, reason, decided = ld.LastDecision(series, a.Config)
+		if !decided {
+			// The strategy could not answer (model missing, unreachable or
+			// unparseable). Holding the current position is the only safe
+			// reading: treating it as a flat target would liquidate a
+			// healthy position on an outage. Protective exits already ran.
+			res = a.liveResult(res, price)
+			res.Action = "ai_unavailable"
+			return res, nil
+		}
 	} else {
 		signals, err := a.Strategy.Generate(series, a.Config)
 		if err != nil {

@@ -74,8 +74,8 @@ func (entryLong) Generate(s model.Series, cfg config.Config) (strategy.Signals, 
 	}, nil
 }
 
-func (entryLong) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string) {
-	return 1, math.NaN(), math.NaN(), "" // long; let the risk engine pick the levels
+func (entryLong) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string, bool) {
+	return 1, math.NaN(), math.NaN(), "", true // long; let the risk engine pick the levels
 }
 
 // newAgentWithBroker wires a caller-supplied broker, a fake Protective and a

@@ -234,6 +234,10 @@ type StartOptions struct {
 	StatePath string
 	// Confirm must equal liveConfirmPhrase when Execute is true.
 	Confirm string
+	// Owner is the account the ledger belongs to ("" in the single-user
+	// desktop / CLI builds). It is persisted with the state so a different
+	// account can never resume this position.
+	Owner string
 }
 
 // Start builds a runner and begins polling in the background. It refuses to
@@ -269,7 +273,7 @@ func (s *Session) Start(opts StartOptions) error {
 	if err != nil {
 		return err
 	}
-	runner, err := live.New(opts.Config, strat, opts.Execute, opts.StatePath)
+	runner, err := live.NewForOwner(opts.Config, strat, opts.Execute, opts.StatePath, opts.Owner)
 	if err != nil {
 		return err
 	}
@@ -663,14 +667,15 @@ func sideFromQuantity(quantity float64) string {
 
 // hasExchangeKeys reports whether the Binance credentials are available: the
 // per-user vault values injected by the webui (cfg.Live.Exchange*) first,
-// then the environment. Secrets are never read from a config file.
+// then the environment unless accounts mode disabled that fallback. Secrets
+// are never read from a config file.
 func hasExchangeKeys(cfg config.Config) bool {
 	apiKey := cfg.Live.ExchangeAPIKey
-	if apiKey == "" {
+	if apiKey == "" && !cfg.Live.NoEnvKeys {
 		apiKey = os.Getenv("BINANCE_API_KEY")
 	}
 	secretKey := cfg.Live.ExchangeSecretKey
-	if secretKey == "" {
+	if secretKey == "" && !cfg.Live.NoEnvKeys {
 		secretKey = os.Getenv("BINANCE_SECRET_KEY")
 	}
 	return apiKey != "" && secretKey != ""

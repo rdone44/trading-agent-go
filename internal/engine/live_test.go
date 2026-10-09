@@ -253,9 +253,9 @@ func (c *countStrat) Generate(s model.Series, cfg config.Config) (strategy.Signa
 	return strategy.Signals{Signal: make([]float64, s.Len())}, nil
 }
 
-func (c *countStrat) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string) {
+func (c *countStrat) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string, bool) {
 	c.lastCalls++
-	return 0, math.NaN(), math.NaN(), c.reason
+	return 0, math.NaN(), math.NaN(), c.reason, true
 }
 
 // TestLiveStepUsesSingleDecisionForExpensiveStrategy locks the P0 guarantee:

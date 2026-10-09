@@ -26,11 +26,18 @@ const sessionCookie = "ta_session"
 // who pointed BaseURL at their own endpoint (or simply generated traffic on
 // the deployer's budget) would ride on the deployer's key. The CLI /
 // desktop path (no vault) keeps the historical env fallback.
+//
+// Live.NoEnvKeys applies the same rule to the exchange credentials: an
+// account with no stored Binance keys must not trade the deployer's
+// BINANCE_API_KEY / BINANCE_SECRET_KEY. The session layer turns that into a
+// clear "store your keys first" error instead of silently trading someone
+// else's account.
 func (s *Server) applyUserCredentials(cfg *config.Config, username string) {
 	if s.Auth == nil || username == "" {
 		return
 	}
 	cfg.LLM.NoEnvKey = true
+	cfg.Live.NoEnvKeys = true
 	user, ok := s.Auth.Get(username)
 	if !ok {
 		return

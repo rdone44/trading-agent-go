@@ -32,6 +32,10 @@ type Runner struct {
 	futures    bool
 	leverage   int
 	marginMode string
+	// owner is the account this runner's ledger belongs to. It is empty in
+	// the single-user desktop / CLI builds and set in accounts mode, where a
+	// state file must not be resumed by a different account.
+	owner string
 
 	// SeriesLoader and PriceLoader are the market-data edges of the loop. They
 	// default to the public Binance endpoints; tests replace them so the suite
@@ -61,7 +65,10 @@ func (p *futuresProtective) Has() (bool, error) { return p.b.HasProtective() }
 
 // spotProtective adapts quantity-bound spot stops to the engine contract.
 // It reads the book after ApplyFill, so base-asset fees are already deducted.
-// Wiring it into New requires cycle-level protective-fill reconciliation first.
+// The cycle-level inventory guard (checkInventory) and the restart re-hang in
+// reconcile() are both in place; production wiring is still held back because
+// the spot stop contract has only been verified offline, never against the
+// live exchange. Install it in New only after that verification.
 type spotProtective struct {
 	b      *broker.BinanceBroker
 	book   *portfolio.Portfolio
@@ -118,8 +125,16 @@ func (p *spotProtective) Cancel() error {
 // New builds a runner. execute=true places real orders on Binance (keys come
 // from the environment); execute=false simulates fills locally. The venue
 // (spot vs USDT-margined perpetual) and the leverage multiplier come from the
-// config; either way the same agent and risk logic run.
+// config; either way the same agent and risk logic run. owner is the account
+// the ledger belongs to ("" in the single-user desktop / CLI builds).
 func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath string) (*Runner, error) {
+	return NewForOwner(cfg, strat, execute, statePath, "")
+}
+
+// NewForOwner is New with an explicit ledger owner. Accounts-mode callers
+// pass the logged-in username so a state file can never be resumed by, or
+// shared with, a different account.
+func NewForOwner(cfg config.Config, strat strategy.Strategy, execute bool, statePath, owner string) (*Runner, error) {
 	if err := CheckExecutionAllowed(execute); err != nil {
 		return nil, err
 	}
@@ -129,14 +144,17 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	}
 	// Credentials: the per-user vault values the webui injected win; when
 	// they are empty (CLI, desktop, or a paper session) the environment is
-	// the fallback, preserving the existing behaviour. Absence of both is a
-	// runtime concern the session layer checks, not a construction failure.
+	// the fallback, preserving the existing behaviour. In accounts mode
+	// (cfg.Live.NoEnvKeys) that fallback is off: an account with no stored
+	// keys must never trade the deployer's environment credentials. Absence
+	// of both is a runtime concern the session layer checks, not a
+	// construction failure.
 	apiKey := cfg.Live.ExchangeAPIKey
-	if apiKey == "" {
+	if apiKey == "" && !cfg.Live.NoEnvKeys {
 		apiKey = os.Getenv("BINANCE_API_KEY")
 	}
 	secretKey := cfg.Live.ExchangeSecretKey
-	if secretKey == "" {
+	if secretKey == "" && !cfg.Live.NoEnvKeys {
 		secretKey = os.Getenv("BINANCE_SECRET_KEY")
 	}
 	book := portfolio.New(cfg.Risk.InitialCash)
@@ -214,6 +232,7 @@ func New(cfg config.Config, strat strategy.Strategy, execute bool, statePath str
 	return &Runner{
 		cfg: cfg, agent: agent, broker: bk, statePath: statePath,
 		executed: execute, futures: futures, leverage: leverage, marginMode: marginMode,
+		owner: owner,
 	}, nil
 }
 
@@ -289,6 +308,13 @@ func (r *Runner) Init() error {
 			return err
 		}
 		if ok {
+			// Accounts mode: a ledger is private to the account that created
+			// it. Refuse to adopt another user's file (copied, guessed or
+			// left behind by a previous deployment) instead of loading their
+			// position into this account's book.
+			if r.owner != "" && saved.Owner != "" && saved.Owner != r.owner {
+				return fmt.Errorf("状态文件属于账号 %q，当前账号 %q 无权使用", saved.Owner, r.owner)
+			}
 			if marketdata.BinanceSymbol(saved.Symbol) != marketdata.BinanceSymbol(r.cfg.Agent.Symbol) {
 				return fmt.Errorf("状态文件属于 %s，不能用于 %s；请使用独立状态文件", saved.Symbol, r.cfg.Agent.Symbol)
 			}
@@ -475,6 +501,16 @@ func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
 	if r.agent.Risk.OrderUncertain {
 		return engine.StepResult{}, fmt.Errorf("订单状态待核对：%s", r.agent.Risk.HaltReason)
 	}
+	// Exchange-side protection can fill between polls without any local
+	// fill, leaving the book describing a position that no longer exists.
+	// Verify the venue's position before price, strategy or orders; never
+	// infer an execution price/fee from a position delta, and never keep
+	// trading a phantom position.
+	if r.executed && r.futures {
+		if err := r.checkFuturesInventory(); err != nil {
+			return r.requireReconciliation(err)
+		}
+	}
 	// Quantity-bound spot stops can fill between polls without a local fill.
 	// Check total inventory before history, strategy or local exits; never
 	// infer execution price/fees from a balance delta or sell the stale book.
@@ -482,11 +518,7 @@ func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
 	if !r.futures {
 		if p, ok := r.agent.Protective.(*spotProtective); ok {
 			if err := p.checkInventory(); err != nil {
-				r.agent.Risk.RequireReconciliation(err.Error())
-				if saveErr := r.Save(); saveErr != nil {
-					return engine.StepResult{}, fmt.Errorf("%v；保存失败：%w", err, saveErr)
-				}
-				return engine.StepResult{}, err
+				return r.requireReconciliation(err)
 			}
 		}
 	}
@@ -522,6 +554,57 @@ func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
 	return res, nil
 }
 
+// requireReconciliation persists the halt and returns the error, so a
+// detected inconsistency survives a restart instead of being forgotten.
+func (r *Runner) requireReconciliation(err error) (engine.StepResult, error) {
+	r.agent.Risk.RequireReconciliation(err.Error())
+	if saveErr := r.Save(); saveErr != nil {
+		return engine.StepResult{}, fmt.Errorf("%v；保存失败：%w", err, saveErr)
+	}
+	return engine.StepResult{}, err
+}
+
+// checkFuturesInventory compares the local signed position with the
+// exchange's. A disagreement means a protective leg filled (or an order was
+// placed outside this process) since the last cycle. There is no safe way to
+// reconstruct the fill from the position delta alone — the entry/exit price
+// and fees would be invented — so the session halts for reconciliation
+// instead of trading a book that no longer matches the venue.
+func (r *Runner) checkFuturesInventory() error {
+	b, ok := r.broker.(*broker.FuturesBroker)
+	if !ok {
+		return nil
+	}
+	if r.statePath != "" {
+		if _, err := os.Stat(r.statePath + ".order-pending.json"); err == nil {
+			return fmt.Errorf("存在未核对的订单日志，需先在交易所确认成交状态")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	side, quantity, _, err := b.OpenPosition()
+	if err != nil {
+		return fmt.Errorf("合约周期持仓查询失败，需对账: %w", err)
+	}
+	var exchangeSigned float64
+	switch side {
+	case broker.Buy:
+		exchangeSigned = quantity
+	case broker.Sell:
+		exchangeSigned = -quantity
+	}
+	local := r.agent.Book.Position(r.agent.Symbol).Quantity
+	if math.IsNaN(local) || math.IsInf(local, 0) || math.IsNaN(exchangeSigned) || math.IsInf(exchangeSigned, 0) {
+		return fmt.Errorf("合约周期持仓数值无效，需对账")
+	}
+	if math.Abs(local-exchangeSigned) > 1e-6 {
+		return fmt.Errorf(
+			"交易所持仓与本地账本不一致（本地 %.6f，交易所 %.6f），可能已有保护单成交，需人工对账后重启会话",
+			local, exchangeSigned)
+	}
+	return nil
+}
+
 // Save persists the current session state.
 func (r *Runner) Save() error {
 	if r.statePath == "" {
@@ -543,6 +626,7 @@ func (r *Runner) Save() error {
 		s.Accounting = "futures-margin-v1"
 	}
 	s.Leverage = r.leverage
+	s.Owner = r.owner
 	if dir := filepath.Dir(r.statePath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			r.agent.Risk.RequireReconciliation("持仓目录不可写：" + err.Error())

@@ -83,10 +83,13 @@ func TestLastDecisionDelegatesToModelOnce(t *testing.T) {
 	cfg := cfgFor(map[string]float64{"llm_window": 10, "llm_step": 1})
 
 	s := stratOf(t, f, true)
-	sig, stop, target, reason := s.LastDecision(series, cfg)
+	sig, stop, target, reason, ok := s.LastDecision(series, cfg)
 
 	if f.calls != 1 {
 		t.Fatalf("LastDecision made %d model calls, want exactly 1 (single-decision path)", f.calls)
+	}
+	if !ok {
+		t.Fatal("LastDecision with a valid model answer must report ok=true")
 	}
 	if sig != 1 {
 		t.Fatalf("LastDecision signal = %v, want 1", sig)
@@ -104,9 +107,12 @@ func TestLastDecisionDegradesFlatOnModelError(t *testing.T) {
 	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
 	s := stratOf(t, f, true)
 
-	sig, stop, target, reason := s.LastDecision(series, cfgFor(nil))
+	sig, stop, target, reason, ok := s.LastDecision(series, cfgFor(nil))
+	if ok {
+		t.Fatal("a model error must report ok=false so the live loop holds the position")
+	}
 	if sig != 0 || !math.IsNaN(stop) || !math.IsNaN(target) {
-		t.Fatalf("LastDecision on model error = (%v,%v,%v), want flat (0,NaN,NaN) — fail-open", sig, stop, target)
+		t.Fatalf("LastDecision on model error = (%v,%v,%v), want neutral (0,NaN,NaN)", sig, stop, target)
 	}
 	if reason != "" {
 		t.Fatalf("LastDecision on model error reason = %q, want empty", reason)
@@ -118,7 +124,10 @@ func TestLastDecisionDegradesFlatWhenDisabled(t *testing.T) {
 	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
 	s := stratOf(t, f, false) // model present but disabled
 
-	sig, _, _, reason := s.LastDecision(series, cfgFor(nil))
+	sig, _, _, reason, ok := s.LastDecision(series, cfgFor(nil))
+	if ok {
+		t.Fatal("a disabled strategy must report ok=false")
+	}
 	if sig != 0 {
 		t.Fatalf("LastDecision disabled = %v, want 0", sig)
 	}

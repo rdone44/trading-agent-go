@@ -32,6 +32,21 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ## 任务
 
+### T0. 账号隔离与实盘对账重构（2026-10-09）
+
+- 背景：对 `5e0cd75` 的只读审查确认 5 个 P1 缺陷，均会在多账号部署或 AI/网络异常时造成实际损失。
+- 范围：`internal/webui/`、`internal/live/`、`internal/strategy/`、`internal/engine/`、`internal/config/`、`internal/state/`、`internal/auth/`。
+- 状态：done（5 项 P1 全部修复 + CI 红灯修复 + Windows 权限测试修复）
+- 落地：
+  1. **账号密钥隔离**：`config.Live.NoEnvKeys`（yaml:"-"）在账号模式下关闭 Binance 环境变量回退；`live.New` 与 `session.hasExchangeKeys` 同时遵守。无密钥账号不再能借用部署者的 `BINANCE_API_KEY` 开实盘，改为明确报错。
+  2. **账本隔离**：账号模式禁止自定义 `state_path`，路径改为 `reports/accounts/<user>/sessions/<mode>-<venue>-<symbol>.json`；`state.State.Owner` 记录归属，`live.NewForOwner` 拒绝恢复他人账本。
+  3. **报告隔离**：`/runs/` 不再直挂共享目录；新增 `reportFileHandler` 按登录账号重新根目录，匿名与跨账号读取被拒；`/api/runs`、`/api/run`、`report.Write` 全部走 `accountDir(username)`。
+  4. **合约保护成交对账**：`Runner.Cycle` 在执行中的合约会话先核验交易所持仓；不一致时持久化 `OrderUncertain` 并 halt，绝不按持仓差猜成交价/手续费，也不再用过期账本下单。
+  5. **AI 故障语义**：`strategy.LiveDecision.LastDecision` 增加 `ok` 返回值；模型缺失/超时/无法解析时引擎维持原仓并标记 `ai_unavailable`，不再误判为 `signal_exit` 清仓。回测路径行为不变（仍 forward-fill）。
+  6. **附带修复**：`/api/backtest` 的 review 改用账号自己的 LLM 配置；`webui_test` 注入离线 `SymbolList` 修掉 CI 上 `/api/symbols` 打真网导致的 502；`auth` vault 写入显式 `Chmod(0600)` 且 Windows 上跳过 Unix 权限位断言。
+- 验证：`gofmt -l .` 空、`go build ./...`、`go vet ./...`、`go test -count=1 ./...` 19 包全绿；`node --test tests/ui/settings.test.cjs` 5 项通过；Windows desktop 与 Linux server 交叉构建成功。
+- 未完成：`spotProtective` 仍未在 `New` 中启用（spot 保护单只做过离线契约验证，未对真交易所验证）；race 检测因本机无 gcc 未跑。
+
 ### T1. 构建与测试基线
 
 - 范围：在本机（Linux）跑通 `go test ./...` 和 server 构建

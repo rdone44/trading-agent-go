@@ -149,25 +149,26 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 // strategy take right now, given the most recent bar? It is a single model
 // call — not a full per-bar regeneration — so a poll bills the model once.
 //
-// A model error or a missing key degrades to flat (0, NaN, NaN) rather than
-// erroring: the live loop must stay alive when the model is down, exactly the
-// fail-open philosophy the entry veto uses. A flat answer is always a safe
-// no-op for the engine.
-func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string) {
+// ok is false when the model is missing, unreachable or answering
+// unparseable text. The live loop then holds the current position instead of
+// acting on a default: an outage must never be read as "go flat" and
+// liquidate a healthy position. This matches Generate, which forward-fills
+// the previous target on a failed call.
+func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool) {
 	ask, enabled := s.resolver(cfg)
 	if !enabled || series.Len() == 0 {
-		return 0, math.NaN(), math.NaN(), ""
+		return 0, math.NaN(), math.NaN(), "", false
 	}
 	ind := buildIndicators(series, cfg)
 	window := cfg.IntParam("llm_window", 30)
 	if window < 5 {
 		window = 5
 	}
-	pos, sp, tp, why, ok := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
-	if !ok {
-		return 0, math.NaN(), math.NaN(), ""
+	pos, sp, tp, why, decided := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
+	if !decided {
+		return 0, math.NaN(), math.NaN(), "", false
 	}
-	return pos, sp, tp, why
+	return pos, sp, tp, why, true
 }
 
 // decideAt asks the model for one target-position decision on bar i and

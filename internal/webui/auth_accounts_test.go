@@ -168,10 +168,8 @@ func TestStoredCredentialsPassKeyGate(t *testing.T) {
 		t.Fatalf("set credentials = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	stateDir := server.OutputDir
 	rec := postJSONCookie(t, server, "/api/session/start", map[string]any{
 		"symbol": "TEST", "execute": true, "confirm": "确认实盘",
-		"state_path": filepath.Join(stateDir, "state.json"),
 	}, cookie)
 	out := rec.Body.String()
 	if strings.Contains(out, "BINANCE_API_KEY 与 BINANCE_SECRET_KEY") {
@@ -182,10 +180,35 @@ func TestStoredCredentialsPassKeyGate(t *testing.T) {
 	cookie2 := register(t, server, "nokeys", "s3cret-pass")
 	rec2 := postJSONCookie(t, server, "/api/session/start", map[string]any{
 		"symbol": "TEST", "execute": true, "confirm": "确认实盘",
-		"state_path": filepath.Join(stateDir, "state2.json"),
 	}, cookie2)
 	if !strings.Contains(rec2.Body.String(), "密钥") {
 		t.Errorf("expected the key-gate message for a keyless user, got: %s", rec2.Body.String())
+	}
+}
+
+// Accounts mode must not let a caller choose the ledger path: an arbitrary
+// path could point a session at another account's state file. The server
+// assigns the path itself, under the account's own directory.
+func TestAccountsRejectCustomStatePath(t *testing.T) {
+	server, _ := newAuthServer(t)
+	cookie := register(t, server, "paths", "s3cret-pass")
+
+	rec := postJSONCookie(t, server, "/api/session/start", map[string]any{
+		"symbol": "TEST", "state_path": filepath.Join(server.OutputDir, "other-user.json"),
+	}, cookie)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "状态文件路径") {
+		t.Fatalf("custom state_path = %d %s, want a 400 rejection", rec.Code, rec.Body.String())
+	}
+
+	// Without the override the server assigns an account-scoped path.
+	if rec := postJSONCookie(t, server, "/api/session/start",
+		map[string]any{"symbol": "TEST", "interval_seconds": 3600}, cookie); rec.Code != http.StatusOK {
+		t.Fatalf("start without state_path = %d: %s", rec.Code, rec.Body.String())
+	}
+	defer server.Session("paths").Stop()
+	want := filepath.Join(server.OutputDir, "accounts", "paths", "sessions", "paper-spot-TEST.json")
+	if got := getSessionAs(t, server, cookie).StatePath; got != want {
+		t.Fatalf("state path = %q, want the account-scoped %q", got, want)
 	}
 }
 

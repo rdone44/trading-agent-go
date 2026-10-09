@@ -45,6 +45,17 @@
 
 ## P1 — 稳健 / 实用
 
+### P1-3 账号隔离与实盘对账（2026-10-09 done）
+- **状态：done** — 针对 `5e0cd75` 审查确认的 5 个 P1 缺陷全部修复，详见 `TASKS.md` T0。
+  - 账号无密钥时不再回退部署者的 Binance 环境密钥（`Live.NoEnvKeys`）。
+  - 账号账本按用户分目录并记录 owner，禁止自定义 `state_path`，拒绝恢复他人账本。
+  - `/runs/` 报告按账号隔离，匿名/跨账号读取被拒。
+  - 合约 cycle 先核验交易所持仓，保护单成交后持久化 halt，不按差值猜成交。
+  - AI 故障不再被当成平仓信号，`LastDecision` 增加 `ok`，失败时维持原仓。
+  - 附带：review 用账号自己的模型配置；CI 的 `/api/symbols` 真网调用修复；vault 写入显式 0600。
+- **验证**：gofmt 空、build/vet/`go test -count=1 ./...` 19 包全绿、前端 5 项通过、双端交叉构建成功。
+- **剩余风险**：`spotProtective` 生产接入仍待真交易所验证；race 检测本机缺 gcc 未跑。
+
 ### P1-1 调参多窗口交叉验证（防单窗口过拟合）
 - **状态：done** — `CVFolds` / CLI `--cv` / Web `cv_folds` 已贯通；首窗口独立训练、K 个不重叠验证窗口、末尾独立 holdout。严格多数验证窗口不劣于基线且 holdout 通过才保留 winner，否则恢复基线；undefined 指标拒绝。Report/CLI 输出逐窗口摘要；CVFolds=0 不新增 JSON 字段，旧测试保持不变。验证：离线 httptest、拒绝过拟合 winner/恢复基线、零值 JSON 字节一致性、窗口边界/余数/非法值回归，以及全量 gofmt/build/vet/test。
 - `tune.Options` 加 `CVFolds int`（0=关闭，向后兼容）；数据切 K 个不重叠子窗口（末尾留 holdout），基线与 winner 在每个窗口回测，**多数窗口上 objective 不低于基线**才认 winner；Report 加逐窗口摘要；CLI `--cv N` + web `cv_folds` 透传。

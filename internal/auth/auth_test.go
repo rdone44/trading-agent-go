@@ -3,6 +3,7 @@ package auth
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -49,8 +50,15 @@ func TestVaultFileIsPrivateAndUnhashed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info, _ := os.Stat(s.path); info.Mode().Perm() != 0o600 {
-		t.Errorf("vault mode = %v, want 0600", info.Mode())
+	// Windows has no POSIX permission bits: Go reports 0666 for any writable
+	// file regardless of the mode passed to WriteFile/Chmod. The 0600
+	// guarantee is enforced and asserted on the Unix editions (Linux server,
+	// CI); on Windows the vault's confidentiality comes from the ACL of the
+	// directory the operator chose.
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(s.path); info.Mode().Perm() != 0o600 {
+			t.Errorf("vault mode = %v, want 0600", info.Mode())
+		}
 	}
 	// The password must not appear anywhere in the file.
 	if containsBytes(raw, []byte("hunter2secret")) {

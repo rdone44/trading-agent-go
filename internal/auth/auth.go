@@ -167,6 +167,14 @@ func (s *Service) saveLocked() error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
+	// WriteFile only applies the mode when it creates the file, so a stale
+	// temp file left by an earlier crash could keep looser permissions.
+	// Enforce them explicitly before the rename. On Windows Go maps the mode
+	// to the read-only attribute; the file's confidentiality there comes
+	// from the ACL of the directory the operator chose for the vault.
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
 	return os.Rename(tmp, s.path)
 }
 

@@ -30,6 +30,7 @@ const reasonLabel = {
   signal_exit: "信号离场",
   stop_loss: "止损",
   take_profit: "止盈",
+  ai_unavailable: "AI 不可用 · 维持原仓",
   "end of backtest": "回测结束平仓",
   hold: "持仓观望",
   flat: "空仓观望",

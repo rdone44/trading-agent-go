@@ -127,8 +127,10 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("/", noCache(http.FileServer(http.FS(assets))))
 	// Saved reports live outside the embedded assets, so serve them explicitly.
-	// http.Dir plus the traversal guard below keeps requests inside outputDir.
-	mux.Handle("/runs/", noCache(http.StripPrefix("/runs/", http.FileServer(http.Dir(s.OutputDir)))))
+	// The handler resolves the run directory through the same ownership check
+	// as /api/run: with accounts enabled, an anonymous visitor or another
+	// account must not read someone else's report (or list their runs).
+	mux.Handle("/runs/", noCache(http.StripPrefix("/runs/", s.reportFileHandler())))
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/strategies", s.handleStrategies)
 	// Account routes are public by design: registration and login cannot
@@ -324,23 +326,19 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statePath := req.StatePath
-	if statePath == "" {
-		mode, venue := "paper", "spot"
-		if req.Execute {
-			mode = "live"
-		}
-		if req.Futures {
-			venue = "futures"
-		}
-		statePath = filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", mode+"-"+venue+"-"+cfg.Agent.Symbol+".json")
+	statePath, err := s.sessionStatePath(cfg, req, req.AuthUser)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 
-	err := s.Session(req.AuthUser).Start(livesession.StartOptions{
+	err = s.Session(req.AuthUser).Start(livesession.StartOptions{
 		Config:    cfg,
 		Interval:  time.Duration(req.IntervalSeconds) * time.Second,
 		Execute:   req.Execute,
 		StatePath: statePath,
 		Confirm:   req.Confirm,
+		Owner:     req.AuthUser,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -644,12 +642,47 @@ func (s *Server) authStatusForRequest(r *http.Request) map[string]any {
 	return view
 }
 
+// ------------------------------------------------------- account isolation
+
+// accountDir is the report root a request may read or write. Without accounts
+// there is one shared root (the historical desktop / CLI behaviour). With
+// accounts enabled every account gets its own subtree, so a run written by
+// one user is never listed by, or served to, another.
+func (s *Server) accountDir(username string) string {
+	if s.Auth == nil || username == "" {
+		return s.OutputDir
+	}
+	return filepath.Join(s.OutputDir, "accounts", username)
+}
+
+// sessionStatePath resolves the ledger path for a start request. In accounts
+// mode a caller-supplied state_path is rejected outright: an arbitrary path
+// would let one account point its session at another account's ledger (or at
+// an arbitrary file the process can write). The server picks the path instead.
+func (s *Server) sessionStatePath(cfg config.Config, req StartSessionRequest, username string) (string, error) {
+	if username != "" && strings.TrimSpace(req.StatePath) != "" {
+		return "", fmt.Errorf("账号模式不支持自定义状态文件路径，请留空使用系统分配的位置")
+	}
+	mode, venue := "paper", "spot"
+	if req.Execute {
+		mode = "live"
+	}
+	if req.Futures {
+		venue = "futures"
+	}
+	name := mode + "-" + venue + "-" + cfg.Agent.Symbol + ".json"
+	if username == "" {
+		return filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", name), nil
+	}
+	return filepath.Join(s.accountDir(username), "sessions", name), nil
+}
+
 func (s *Server) handleStrategies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, strategy.Specs())
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := report.ListRuns(s.OutputDir)
+	runs, err := report.ListRuns(s.accountDir(s.requestUsername(r)))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -669,7 +702,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := filepath.Join(s.OutputDir, name)
+	dir := filepath.Join(s.accountDir(s.requestUsername(r)), name)
 	raw, err := os.ReadFile(filepath.Join(dir, "run.json"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Errorf("找不到回测 %q", name))
@@ -714,6 +747,41 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// reportFileHandler serves one run's files out of the requesting account's
+// own report root. Without accounts it is the historical plain file server;
+// with accounts enabled the first path segment is validated as a directory
+// the account actually owns, so /runs/<someone-else-run>/report.html is a
+// 404 rather than a data leak.
+func (s *Server) reportFileHandler() http.Handler {
+	if s.Auth == nil {
+		return http.FileServer(http.Dir(s.OutputDir))
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username := s.requestUsername(r)
+		if username == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "需要登录：请先注册或登录"})
+			return
+		}
+		// StripPrefix leaves a relative path; normalise so the segment
+		// arithmetic below has one shape to reason about.
+		path := r.URL.Path
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		run := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)[0]
+		if run == "" || run == "." || run == ".." || run != filepath.Base(run) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "回测名称不合法"})
+			return
+		}
+		// Re-root the request at the account's own subtree. The file server
+		// keeps its own traversal protection on top of this rewrite.
+		rest := strings.TrimPrefix(path, "/"+run)
+		clone := r.Clone(r.Context())
+		clone.URL.Path = "/" + run + rest
+		http.FileServer(http.Dir(s.accountDir(username))).ServeHTTP(w, clone)
+	})
+}
+
 func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
@@ -750,7 +818,10 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	// Optionally ask the model for a post-mortem. A missing key or a model
 	// error is not fatal to the backtest: we surface it in a note instead.
 	if req.Review {
-		text, err := llm.Review(s.Config.LLM, engine.ReviewFacts(result, 5))
+		// Use the effective config, not s.Config: in accounts mode the
+		// review must run on the account's own model credential, never the
+		// deployer's environment key.
+		text, err := llm.Review(s.applyRequest(req).LLM, engine.ReviewFacts(result, 5))
 		if err != nil {
 			response.ReviewUnavailable = err.Error()
 		} else {
@@ -920,7 +991,7 @@ func (s *Server) Run(req BacktestRequest) (engine.Result, string, error) {
 	runName := fmt.Sprintf("%s-%s-%s",
 		strings.ToLower(result.Symbol), strings.Split(result.Strategy, "(")[0],
 		time.Now().Format("20060102-150405"))
-	if _, err := report.Write(result, s.OutputDir, runName); err != nil {
+	if _, err := report.Write(result, s.accountDir(req.AuthUser), runName); err != nil {
 		return engine.Result{}, "", err
 	}
 	return result, runName, nil

@@ -63,7 +63,12 @@ type Strategy interface {
 // implementations) so the console can show what the AI is thinking instead of
 // a bare position number.
 type LiveDecision interface {
-	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string)
+	// LastDecision returns ok=false when the strategy could not produce a
+	// usable decision (model missing, unreachable, timed out or answering
+	// unparseable text). The live loop must treat that as "no new
+	// instruction" and keep the current position — never as a flat target,
+	// which would liquidate a healthy position on a model outage.
+	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool)
 }
 
 // New builds a strategy by name.

@@ -203,11 +203,8 @@ type Settings struct {
 	IntervalSeconds int                `json:"interval_seconds"`
 	Execute         bool               `json:"execute"`
 	Confirm         string             `json:"confirm"`
-	// Futures is kept in the wire shape for a console build that still sends
-	// it; every session is a perpetual one, so the value is ignored.
-	Futures   bool   `json:"futures"`
-	Leverage  int    `json:"leverage"`
-	StatePath string `json:"state_path"`
+	Leverage        int                `json:"leverage"`
+	StatePath       string             `json:"state_path"`
 	// Veto is the per-session entry-veto switch (cfg.LLM.VetoEnabled).
 	Veto bool `json:"veto"`
 }
@@ -1056,7 +1053,7 @@ func sessionSettings(cfg config.Config, interval int, execute bool) *Settings {
 			StopLossPct: cfg.Risk.StopLossPct, TakeProfitPct: cfg.Risk.TakeProfitPct, MaxDrawdownPct: cfg.Risk.MaxDrawdownPct,
 			MaxDailyLossPct: cfg.Risk.MaxDailyLossPct, AllowShort: &cfg.Risk.AllowShort,
 			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps},
-		IntervalSeconds: interval, Execute: execute, Futures: true, Leverage: cfg.Risk.Leverage,
+		IntervalSeconds: interval, Execute: execute, Leverage: cfg.Risk.Leverage,
 		Veto: cfg.LLM.VetoEnabled,
 	}
 }

@@ -159,7 +159,6 @@ function collectRequest() {
     days: Number($('[name="days"]').value) || 0,
     interval_seconds: Number($('[name="interval_seconds"]').value) || 60,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
-    futures: true,
     leverage: Number($('[name="leverage"]').value) || 1,
     // The entry veto lives on the AI page but belongs to the session request.
     veto: Boolean($("#ai-veto")?.checked),

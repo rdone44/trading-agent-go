@@ -297,9 +297,6 @@ type StartSessionRequest struct {
 	// confirmation phrase and the exchange keys to be in the environment.
 	Execute bool   `json:"execute"`
 	Confirm string `json:"confirm"`
-	// Futures is accepted for backwards compatibility with a console build
-	// that still sends it, and ignored: every session is a perpetual one.
-	Futures bool `json:"futures"`
 	// Leverage is the perpetual margin multiplier.
 	Leverage int `json:"leverage"`
 	// StatePath persists the session so a restart resumes the position.

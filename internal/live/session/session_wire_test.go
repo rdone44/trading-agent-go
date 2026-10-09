@@ -40,7 +40,6 @@ type legacySettings struct {
 	IntervalSeconds int    `json:"interval_seconds"`
 	Execute         bool   `json:"execute"`
 	Confirm         string `json:"confirm"`
-	Futures         bool   `json:"futures"`
 	Leverage        int    `json:"leverage"`
 	StatePath       string `json:"state_path"`
 	Veto            bool   `json:"veto"`
@@ -69,7 +68,7 @@ func TestSettingsWireFormatIsStable(t *testing.T) {
 		},
 		Review:          true,
 		IntervalSeconds: 60, Execute: true, Confirm: "确认实盘",
-		Futures: true, Leverage: 3, StatePath: "trade-state.json", Veto: true,
+		Leverage: 3, StatePath: "trade-state.json", Veto: true,
 	}
 
 	legacy := legacySettings{
@@ -85,7 +84,7 @@ func TestSettingsWireFormatIsStable(t *testing.T) {
 			Review: true,
 		},
 		IntervalSeconds: 60, Execute: true, Confirm: "确认实盘",
-		Futures: true, Leverage: 3, StatePath: "trade-state.json", Veto: true,
+		Leverage: 3, StatePath: "trade-state.json", Veto: true,
 	}
 
 	m, err := json.Marshal(modern)

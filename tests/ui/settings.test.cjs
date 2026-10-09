@@ -21,7 +21,7 @@ function harness() {
     return nodes.get(key);
   };
   const ctx = vm.createContext({$:get, authEnabled:false, lastAuthState:null, liveGate:false,
-    renderKeyHint(){}, renderCredStatus(){}, setAuthTab(){}});
+    renderKeyHint(){}, renderCredStatus(){}, setAuthTab(){}, renderAiPage(){}});
   vm.runInContext(functionSource('applyAuthUi'), ctx);
   vm.runInContext(functionSource('showAuthCard'), ctx);
   return {ctx,get};
@@ -46,7 +46,7 @@ test('strategy route is distinct and navigation retains form values', () => {
   ctx.document={title:''};
   ctx.$$=()=>panels;
   get('.board').classList={toggle(){}};
-  for(const id of ['#nav-market','#nav-strategies']) get(id).setAttribute=()=>{};
+  for(const id of ['#nav-market','#nav-strategies','#nav-ai']) get(id).setAttribute=()=>{};
   get('[name="initial_cash"]').value='12345';
   vm.runInContext(functionSource('renderPage'),ctx);
   ctx.renderPage();

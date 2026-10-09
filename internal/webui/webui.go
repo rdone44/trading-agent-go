@@ -152,6 +152,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/api/session/start", s.handleSessionStart)
 	protected.HandleFunc("/api/session/stop", s.handleSessionStop)
 	protected.HandleFunc("/api/session/step", s.handleSessionStep)
+	protected.HandleFunc("/api/session/review", s.handleSessionReview)
 	protected.HandleFunc("/api/market", s.handleMarket)
 	protected.HandleFunc("/api/symbols", s.handleSymbols)
 	mux.Handle("/api/", s.requireUserSession(protected))
@@ -268,6 +269,10 @@ type StartSessionRequest struct {
 	Leverage int  `json:"leverage"`
 	// StatePath persists the session so a restart resumes the position.
 	StatePath string `json:"state_path"`
+	// Veto arms the LLM second-opinion gate on new live entries for this
+	// session (cfg.LLM.VetoEnabled). It is fail-open: a missing key or a model
+	// error lets the entry through, so the hard risk limits still decide.
+	Veto bool `json:"veto"`
 }
 
 // handleSession reports the current session state. The console polls it.
@@ -295,6 +300,9 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	cfg := s.applyRequest(req.BacktestRequest)
 	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
 	cfg.Live.Futures = req.Futures
+	// The entry veto is per-session: the form's switch overrides whatever the
+	// config file said, and the session echoes it back in Settings.
+	cfg.LLM.VetoEnabled = req.Veto
 	if req.Leverage < 0 || req.Leverage > 125 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("杠杆必须在 1–125 之间"))
 		return
@@ -374,6 +382,33 @@ func (s *Server) handleSessionStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess.Status())
+}
+
+// handleSessionReview asks the model for a post-mortem of the trades this live
+// session actually made — the console counterpart of `trade --review`. Unlike
+// the backtest review there is no report file to append to, so the text goes
+// straight back to the caller. It runs on the account's own model credential
+// and degrades with a note instead of an error, so a missing key never looks
+// like a broken session.
+func (s *Server) handleSessionReview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	sess := s.Session(s.requestUsername(r))
+	facts, ok := sess.ReviewFacts(5)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("还没有交易会话：先启动一次策略，复盘才有内容"))
+		return
+	}
+	cfg := s.applyUserConfig(r)
+	text, err := llm.Review(cfg.LLM, facts)
+	if err != nil {
+		// Same shape as the backtest review: the run is not the problem.
+		writeJSON(w, http.StatusOK, map[string]string{"review_unavailable": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"review": text})
 }
 
 // handleShutdown stops the process. It is registered only when the desktop
@@ -620,7 +655,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"settings":   settingsView(cfg, cfg.Live.PollSeconds, false),
 		"strategies": strategy.Specs(),
-		"auth":       s.authStatusForRequest(r),
+		// llm_env_key tells the AI page whether the process itself has a model
+		// credential (desktop / CLI builds read LLM_API_KEY). Accounts-mode
+		// pages use their own vault flag instead, so this is informational
+		// only and never a secret.
+		"llm_env_key": config.LLMAPIKey() != "",
+		"llm_model":   cfg.LLM.Model,
+		"auth":        s.authStatusForRequest(r),
 		// live_gate tells the page whether the server was started with the
 		// process-level kill switch (TA_ALLOW_LIVE=1). The gate itself stays
 		// enforced at session start; this field only shows its state so the
@@ -861,6 +902,16 @@ func (s *Server) applyRequest(req BacktestRequest) config.Config {
 		applyRiskOverrides(&cfg, *req.Risk)
 	}
 	s.applyUserCredentials(&cfg, req.AuthUser)
+	return cfg
+}
+
+// applyUserConfig returns the server's base config with the request's account
+// credentials injected. It is the request-less counterpart of applyRequest for
+// routes that need the account's model credential but carry no run overrides
+// (the live-session review).
+func (s *Server) applyUserConfig(r *http.Request) config.Config {
+	cfg := s.Config
+	s.applyUserCredentials(&cfg, s.requestUsername(r))
 	return cfg
 }
 

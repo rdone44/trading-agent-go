@@ -194,11 +194,13 @@ The HTTP API behind it is small enough to script against:
 | `GET` | `/api/config` | effective config plus strategy metadata |
 | `GET` | `/api/session` | effective session settings, equity, position, risk, fills and logs |
 | `GET` | `/api/market?symbol=BTCUSDT&venue=spot&interval=1h` | public Binance quote and candles, independent of trading |
-| `POST` | `/api/session/start` | start the trading loop (`interval_seconds`, `execute`, `confirm`, `futures`, `leverage`, `state_path`) |
+| `POST` | `/api/session/start` | start the trading loop (`interval_seconds`, `execute`, `confirm`, `futures`, `leverage`, `state_path`, `veto`) |
 | `POST` | `/api/session/stop` | stop the loop and persist state |
 | `POST` | `/api/session/step` | run exactly one cycle now |
+| `POST` | `/api/session/review` | LLM post-mortem of the fills this session actually made |
 | `POST` | `/api/backtest` | run a backtest, persist it, return metrics and curves (add `"review": true` for an LLM post-mortem) |
 | `POST` | `/api/tune` | run the LLM parameter-tuning loop, return the round-by-round report |
+| `POST` | `/api/tune-prompt` | run the prompt-iteration loop, return the winning persona |
 | `GET` | `/api/runs` | list saved runs, newest first |
 | `GET` | `/api/run?name=...` | reopen a saved run's curves, trades and orders |
 | `GET` | `/runs/<name>/report.html` | the static report of a saved run |
@@ -209,9 +211,8 @@ The HTTP API behind it is small enough to script against:
 function, so a dashboard reachable over a network can never be stopped by an
 HTTP request.
 
-The LLM features stay available from the CLI and from the JSON API; the console
-itself is focused on trading. `POST /api/backtest` still accepts `"review": true`
-for a post-mortem, and `POST /api/tune` still runs the tuning loop.
+The LLM features are reachable from the CLI, from the JSON API, and from the
+console's **AI** page (`#/ai`).
 
 ```powershell
 # paper session: simulate fills, no orders leave the machine
@@ -420,10 +421,17 @@ OpenAI-compatible endpoint works: set `llm.base_url` and `llm.model`.
 
 | Feature | CLI | Web dashboard | Flag / config | Without a key |
 | --- | --- | --- | --- | --- |
-| LLM strategy | `--strategy llm` | strategy picker | `llm.*` | backtest still runs; the strategy emits an all-flat (hold) curve |
-| LLM entry veto | `trade --veto` | — (live only) | `live.veto_enabled` | fail-open: entries pass, protective stops are never blocked |
-| LLM post-mortem | `backtest --review`, `trade --review` | **LLM 复盘** checkbox on `/api/backtest` | `llm.*` | the report/UI notes "LLM review unavailable" |
-| LLM tuning loop | `tune` | **LLM 调参** button → `/api/tune` | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
+| LLM strategy | `--strategy llm` | **AI** page → 使用 AI 策略 | `llm.*` | backtest still runs; the strategy emits an all-flat (hold) curve |
+| LLM entry veto | `trade --veto` | **AI** page → 入场否决 | `live.veto_enabled` | fail-open: entries pass, protective stops are never blocked |
+| LLM post-mortem | `backtest --review`, `trade --review` | **AI** page → 回测复盘 / 实盘复盘 | `llm.*` | the page notes "模型不可用" instead of failing |
+| LLM tuning loop | `tune` | **AI** page → 调优策略参数 | `llm.*` | runs the baseline, skips proposal rounds, saves the baseline |
+| LLM prompt tuning | `tune-prompt` | **AI** page → 迭代交易人设 | `llm.prompt` | runs the baseline, keeps the current persona |
+
+The dashboard gives the model a page of its own (`#/ai`): 决策, 否决, 复盘 and
+自我迭代 in one place, so none of it hides behind a strategy dropdown. Every
+control there describes the *next* session; a running loop is never rewritten.
+Live post-mortems (`POST /api/session/review`) review the fills the session
+actually made, rather than a hypothetical backtest.
 
 The tuning loop and the post-mortem are single reusable implementations
 (`internal/tune` and `llm.Review`): the CLI command and the web endpoint run

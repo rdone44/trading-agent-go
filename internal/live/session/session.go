@@ -104,6 +104,10 @@ type SessionStatus struct {
 	// explanation of the latest call. Empty for non-LLM strategies.
 	AIModel  string `json:"ai_model,omitempty"`
 	AIReason string `json:"ai_reason,omitempty"`
+	// VetoEnabled mirrors cfg.LLM.VetoEnabled for the running session, so the
+	// console can show whether a new entry would actually face a second
+	// opinion instead of guessing from the form.
+	VetoEnabled bool `json:"veto_enabled"`
 
 	Equity         float64 `json:"equity"`
 	Cash           float64 `json:"cash"`
@@ -185,6 +189,8 @@ type Settings struct {
 	Futures         bool               `json:"futures"`
 	Leverage        int                `json:"leverage"`
 	StatePath       string             `json:"state_path"`
+	// Veto is the per-session entry-veto switch (cfg.LLM.VetoEnabled).
+	Veto bool `json:"veto"`
 }
 
 // Session owns the one live trading loop the dashboard can run. The agent
@@ -460,6 +466,20 @@ func (s *Session) Running() bool {
 	return s.running
 }
 
+// ReviewFacts renders the trades this session actually made into the compact
+// fact blob llm.Review consumes. It answers the live question ("how is my real
+// position doing and why?") instead of the backtest one. The second return is
+// false when no runner has ever started, so the caller can say so instead of
+// sending the model an empty run.
+func (s *Session) ReviewFacts(topN int) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runner == nil {
+		return "", false
+	}
+	return engine.ReviewFacts(s.runner.Agent().ResultSnapshot(), topN), true
+}
+
 // Status builds the JSON view the console polls.
 func (s *Session) Status() SessionStatus {
 	s.mu.Lock()
@@ -478,6 +498,7 @@ func (s *Session) Status() SessionStatus {
 		LastError:   s.lastError,
 		AIModel:     s.cfg.LLM.Model,
 		AIReason:    s.lastReason,
+		VetoEnabled: s.cfg.LLM.VetoEnabled,
 		InitialCash: s.cfg.Risk.InitialCash,
 		Leverage:    s.cfg.Risk.Leverage,
 		Log:         append([]CycleRecord(nil), s.log...),
@@ -716,5 +737,6 @@ func sessionSettings(cfg config.Config, interval int, execute bool) *Settings {
 			MaxDailyLossPct: cfg.Risk.MaxDailyLossPct, AllowShort: &cfg.Risk.AllowShort,
 			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps},
 		IntervalSeconds: interval, Execute: execute, Futures: cfg.Live.Futures, Leverage: cfg.Risk.Leverage,
+		Veto: cfg.LLM.VetoEnabled,
 	}
 }

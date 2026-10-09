@@ -197,7 +197,7 @@ input:disabled, select:disabled { opacity: .65; }
 .check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 11px; }
 .check input { accent-color: var(--accent); }
 .hint { margin: 5px 0 12px; font-size: 10px; color: var(--ink-3); line-height: 1.7; }
-.prompt-tune textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; }
+.prompt-tune textarea, #ai-persona { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; }
 .prompt-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .prompt-log { margin: 10px 0 0; padding: 10px; background: var(--bg-0); border: 1px solid var(--line); border-radius: 8px; font: 10px/1.7 var(--mono); color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
 /* Advanced risk fields are tucked behind a details/summary so the rail is
@@ -296,3 +296,21 @@ fieldset#credentials-fieldset { border-top: 0; padding-top: 0; margin-bottom: 0;
 
 .board.strategy-page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "auth" "trade"; max-width: 1100px; }
 .trade-note a { color: var(--accent); }
+
+/* ---------------------------------------------------------------- AI page
+   The model is the product, so it gets a page of its own rather than one
+   fieldset buried in the strategy form. Cards mirror the rail's fieldset
+   rhythm so the page still reads as the same terminal. */
+.ai-page { grid-area: trade; }
+.ai-body { padding: 16px 20px 22px; }
+.ai-lede { margin-top: 0; font-size: 11px; color: var(--ink-2); }
+.ai-lede strong { color: var(--accent); }
+.ai-status { padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--ink-3); border-radius: 4px; font-size: 11px; color: var(--ink-2); margin-bottom: 16px; line-height: 1.7; }
+.ai-status.ok { border-left-color: var(--up); background: var(--up-dim); color: #bfe8d9; }
+.ai-status.warn { border-left-color: var(--accent); background: var(--accent-dim); color: #f0dcb2; }
+.ai-card { padding: 14px 0 10px; }
+.ai-card:first-of-type { border-top: 1px solid var(--line); }
+.ai-card .hint { margin-bottom: 10px; }
+.ai-actions { display: flex; align-items: center; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.ai-actions .hint { margin: 0; }
+.board.ai-page-active { grid-template-columns: minmax(0, 1fr); grid-template-areas: "auth" "trade"; max-width: 1100px; }

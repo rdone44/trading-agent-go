@@ -47,6 +47,21 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 验证：`gofmt -l .` 空、`go build ./...`、`go vet ./...`、`go test -count=1 ./...` 19 包全绿；`node --test tests/ui/settings.test.cjs` 5 项通过；Windows desktop 与 Linux server 交叉构建成功。
 - 未完成：`spotProtective` 仍未在 `New` 中启用（spot 保护单只做过离线契约验证，未对真交易所验证）；race 检测因本机无 gcc 未跑。
 
+### T2. AI 功能可见性重构（2026-10-09）
+
+- 背景：用户反馈「这个项目的核心是 AI，让我去哪里找 AI 呢」。代码里 AI 有五条能力，但 UI 里只有一条（提示词迭代）能看到，而且还要求先把策略下拉切到 `llm` 才显示；入场否决、复盘、调参在页面上根本没有入口。
+- 范围：`internal/webui/static/`（`index.html`/`app.js`/`app.css`）、`internal/webui/webui.go`、`internal/live/session/session.go`。
+- 状态：done
+- 落地：
+  1. **AI 升为一级页面**：导航新增「AI」(`#/ai`)，页面含四张卡片 —— AI 决策、AI 复盘、AI 自我迭代、以及提示词人设。原先藏在策略表单里的 `#prompt-tune` fieldset 整体迁到该页，不再依赖策略下拉。
+  2. **入场否决开关**：`ai-veto` → `StartSessionRequest.Veto` → `cfg.LLM.VetoEnabled`，会话状态回显 `veto_enabled` 与 `settings.veto`，所以表单能预填。此前该闸门只能改 YAML 或走 CLI `--veto`。
+  3. **AI 复盘两个入口**：回测复盘（`/api/backtest` 带 `review:true`，此前前端从不发送该字段）与实盘复盘（新增 `POST /api/session/review`，用 `Session.ReviewFacts` 把本会话真实成交渲染成事实串交给 `llm.Review`）。无密钥时返回 `review_unavailable` 提示，不报错、不影响交易。
+  4. **调参入口**：`ai-tune-run` → `/api/tune`（服务端路由早已存在，前端从未调用），并新增「采纳参数」把获胜参数写回策略表单。
+  5. **不再因缺密钥而整体置灰**：所有 AI 控件保持可点，缺密钥时由后端降级并在日志里说明，避免重现「找不到 AI」的观感。
+  6. **文案修正**：`/api/config` 新增 `llm_env_key` 与 `llm_model`（只报是否配置，绝不含密钥），AI 页据此显示模型就绪状态；侧栏「请通过 HTTPS 配置密钥」改为按 `desktop` 区分，桌面版说明只监听 127.0.0.1。
+- 验证：`gofmt -l .` 空、`go vet ./...`、`go test -count=1 ./...` 19 包全绿；新增 8 项回归测试（`internal/webui/ai_page_test.go`）覆盖 AI 页路由、`/api/config` 就绪字段、实盘复盘无会话/无密钥/正常路径、否决开关开与关；`node --test tests/ui/settings.test.cjs` 5 项通过；Windows desktop 与 Linux server 交叉构建成功；桌面版实机启动并在浏览器中逐屏核对。
+- 未完成：AI 页目前不展示「本次会话是否触发过否决」的历史记录，只在运行日志里体现。
+
 ### T1. 构建与测试基线
 
 - 范围：在本机（Linux）跑通 `go test ./...` 和 server 构建

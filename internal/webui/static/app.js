@@ -106,6 +106,7 @@ let authEnabled = false;
 let authMode = "login";
 let lastAuthState = null;
 let liveGate = false;
+let lastConfig = null;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
 
@@ -148,6 +149,8 @@ function collectRequest() {
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
     futures: true, // terminal is perpetual-only: the spot venue is retired from the UI
     leverage: Number($('[name="leverage"]').value) || 1,
+    // The entry veto lives on the AI page but belongs to the session request.
+    veto: Boolean($("#ai-veto")?.checked),
     execute: $('[name="execute"]').checked,
     confirm: $('[name="confirm"]').value,
     risk: {
@@ -229,6 +232,7 @@ function applySettings(settings) {
     else input.value = value == null ? "" : name.endsWith("_pct") ? Number((value*100).toFixed(4)) : value;
   }
   $("#live-confirm").hidden = !settings.execute;
+  if (settings.veto != null) $("#ai-veto").checked = Boolean(settings.veto);
   renderKeyHint();
   $('[name="confirm"]').value = "";
   renderStrategyParams(settings.params || {});
@@ -796,6 +800,9 @@ function setRunningUi(running) {
   $("#rail-run").textContent = label;
   $("#step-button").disabled = !running || busy;
   $("#stop-button").disabled = !running || busy;
+  // The AI page's controls all describe the NEXT session, so a live loop must
+  // not let them look editable.
+  renderAiPage(lastConfig || {});
 }
 
 // ------------------------------------------------------------------- auth
@@ -824,17 +831,26 @@ function applyAuthUi(config) {
     : authEnabled ? "登录后可保存本账号的连接设置。" : "此服务未启用账号设置，请由管理员配置服务环境。";
   $("#cred-status").textContent = "";
   liveGate = Boolean(config?.live_gate);
+  // The generic "use HTTPS" advice is wrong on the desktop build: the page is
+  // served over loopback and never leaves the machine.
+  const railHint = $("#rail-cred-hint");
+  if (railHint) {
+    railHint.textContent = config?.desktop
+      ? "此处只保存连接设置，不启动交易。桌面版服务只监听本机 127.0.0.1，密钥不会离开这台电脑。"
+      : "此处只保存连接设置，不启动交易。请通过 HTTPS 访问管理界面后再填写密钥。";
+  }
   if (signedIn) {
     renderCredStatus(config.auth);
     $('[data-cred="llm_base_url"]').value = config.auth.llm_base_url || "";
     $('[data-cred="llm_model"]').value = config.auth.llm_model || "";
     // Show the account's saved trading persona in the prompt-tune block so a
     // previous L2 winner is visible and editable (empty = built-in persona).
-    const personaField = $('[name="llm_prompt"]');
+    const personaField = $("#ai-persona");
     if (personaField) personaField.value = config.auth.llm_prompt || "";
   }
 
   renderKeyHint();
+  renderAiPage(config);
 }
 
 // renderCredStatus shows which credential slots are filled without ever
@@ -971,6 +987,7 @@ async function saveCredentials() {
 
 async function bootstrap() {
   const config = await api("/api/config");
+  lastConfig = config;
   strategies = config.strategies || [];
 
   $("#strategy-select").innerHTML = strategies
@@ -1019,7 +1036,7 @@ async function bootstrap() {
   $('[name="allow_short"]').checked = Boolean(risk.allow_short);
 
   renderStrategyParams();
-  togglePromptTune();
+  renderAiPage(config);
   if (config.settings) applySettings(config.settings);
   liveGate = Boolean(config.live_gate);
   applyAuthUi(config);
@@ -1030,35 +1047,96 @@ async function bootstrap() {
 
 // ------------------------------------------------------------------- wiring
 
-$("#strategy-select").addEventListener("change", () => { renderStrategyParams(); togglePromptTune(); });
+$("#strategy-select").addEventListener("change", () => {
+  renderStrategyParams();
+  renderAiPage(lastConfig || {});
+});
 
-// ----- AI prompt tuning (L2): the model rewrites its own trading persona and
-// the backtest judges each rewrite. Only meaningful for the llm strategy.
+// ------------------------------------------------------------- AI page (L1-L3)
+// The model is the core of this project, so it owns a page instead of hiding
+// behind one strategy option. Everything here only affects the NEXT session:
+// the running one keeps the settings it started with.
 let promptTuneReport = null; // last /api/tune-prompt response, for adopting
+let tuneReport = null; // last /api/tune response, for adopting
 
-function togglePromptTune() {
-  const isLLM = $("#strategy-select").value === "llm";
-  const block = $("#prompt-tune");
-  if (block) block.hidden = !isLLM;
+// aiState summarizes what the model can currently do, so the page never looks
+// broken when the key is simply missing.
+function renderAiPage(config) {
+  const auth = config?.auth || {};
+  const signedIn = Boolean(auth.enabled && auth.username);
+  const hasKey = signedIn ? Boolean(auth.llm_key) : Boolean(config?.llm_env_key);
+  const model = auth.llm_model || config?.llm_model || "";
+
+  const bits = [];
+  if (hasKey) bits.push(`模型已就绪${model ? `：${model}` : ""}`);
+  else bits.push("模型未配置：AI 功能会退化为「只回测、不调用模型」");
+  if (auth.llm_base_url) bits.push(`服务 ${auth.llm_base_url}`);
+  if (signedIn) bits.push("密钥来自当前账号");
+  else if (auth.enabled) bits.push("登录后可在设置中保存密钥");
+  else bits.push("桌面版从环境变量 LLM_API_KEY / OPENAI_API_KEY 读取密钥");
+
+  const status = $("#ai-status");
+  status.textContent = bits.join(" · ");
+  status.className = `ai-status ${hasKey ? "ok" : "warn"}`;
+
+  const strategy = $("#strategy-select").value;
+  const isLLM = strategy === "llm";
+  const running = Boolean(session?.running);
+  $("#ai-strategy-state").textContent = isLLM
+    ? "当前策略：LLM 目标仓位（模型正在决定仓位）"
+    : `当前策略：${strategyByName(strategy)?.title || strategy}（模型只做否决与复盘）`;
+  $("#ai-use-llm").disabled = isLLM || running;
+  $("#ai-use-llm").textContent = isLLM ? "已是 AI 策略" : "使用 AI 策略";
+
+  // Nothing here is hidden or disabled just because the key is missing: every
+  // path degrades safely (veto is fail-open, the loops run the baseline and
+  // say the model was skipped). Greying the whole page out would reproduce the
+  // "where is the AI?" problem this page exists to fix.
+  $("#ai-veto").disabled = running;
+  $("#ai-prompt-note").textContent = hasKey
+    ? "迭代会多次调用模型并回测，耗时随轮数增长。"
+    : "模型未配置：迭代只会跑基线回测，不会改写人设。";
+  $("#ai-prompt-run").disabled = running;
+  $("#ai-tune-run").disabled = running;
+  $("#ai-review-backtest").disabled = running;
+}
+
+// aiRequest is the run description the AI endpoints share with the form.
+function aiRequest() {
+  const request = collectRequest();
+  const objective = $("#ai-objective").value;
+  const rounds = Number($("#ai-rounds").value) || 1;
+  const stall = Number($("#ai-stall").value) || 0;
+  const cv = Number($("#ai-cv").value) || 0;
+  return { request, objective, rounds, stall, cv };
+}
+
+function aiLog(text) {
+  const log = $("#ai-tune-log");
+  log.hidden = false;
+  log.textContent = text;
+}
+
+function reviewLog(text) {
+  const log = $("#ai-review-log");
+  log.hidden = false;
+  log.textContent = text;
 }
 
 async function runPromptTune() {
   if (session?.running || busy) return;
-  const form = $("#prompt-tune");
-  const request = collectRequest();
+  const { request, objective, rounds, stall, cv } = aiRequest();
   request.strategy = "llm"; // the loop only exists for the llm strategy
-  request.objective = form.querySelector('[name="prompt_objective"]').value;
-  request.rounds = Number(form.querySelector('[name="prompt_rounds"]').value) || 1;
-  request.stall = Number(form.querySelector('[name="prompt_stall"]').value) || 0;
-  request.cv_folds = Number(form.querySelector('[name="prompt_cv"]').value) || 0;
-  request.prompt = form.querySelector('[name="llm_prompt"]').value.trim();
+  request.objective = objective;
+  request.rounds = rounds;
+  request.stall = stall;
+  request.cv_folds = cv;
+  request.prompt = $("#ai-persona").value.trim();
 
-  const runButton = $("#prompt-tune-run");
-  const log = $("#prompt-tune-log");
+  const runButton = $("#ai-prompt-run");
   runButton.disabled = true;
   runButton.textContent = "迭代中（回测会多次调用模型）…";
-  log.hidden = false;
-  log.textContent = `目标 ${request.objective} · ${request.rounds} 轮 · 交叉验证 ${request.cv_folds} 窗口\n正在回测基线，随后由模型改写人设…\n`;
+  aiLog(`目标 ${request.objective} · ${request.rounds} 轮 · 交叉验证 ${request.cv_folds} 窗口\n正在回测基线，随后由模型改写人设…\n`);
   try {
     const report = await api("/api/tune-prompt", {
       method: "POST",
@@ -1068,11 +1146,11 @@ async function runPromptTune() {
     promptTuneReport = report;
     renderPromptTuneReport(report);
     if (report.best_prompt) {
-      form.querySelector('[name="llm_prompt"]').value = report.best_prompt;
-      $("#prompt-tune-adopt").hidden = false;
+      $("#ai-persona").value = report.best_prompt;
+      $("#ai-prompt-adopt").hidden = false;
     }
   } catch (error) {
-    log.textContent += `\n失败：${error.message}`;
+    $("#ai-tune-log").textContent += `\n失败：${error.message}`;
   } finally {
     runButton.disabled = false;
     runButton.textContent = "开始迭代";
@@ -1080,7 +1158,7 @@ async function runPromptTune() {
 }
 
 function renderPromptTuneReport(report) {
-  const log = $("#prompt-tune-log");
+  const log = $("#ai-tune-log");
   const lines = [];
   if (!report.llm_enabled) lines.push("模型未配置（缺 LLM 密钥/URL）：只回测了基线，没有进行改写。请先在设置里保存 AI 服务。");
   for (const round of report.rounds || []) {
@@ -1114,8 +1192,7 @@ async function adoptPromptTune() {
   if (!promptTuneReport?.best_prompt) return;
   const persona = promptTuneReport.best_prompt;
   if (!authEnabled) {
-    const block = $("#prompt-tune");
-    block.querySelector('[name="llm_prompt"]').value = persona;
+    $("#ai-persona").value = persona;
     alert("匿名模式没有账号可保存：人设已填入上方文本框，请登录后在设置中保存。");
     return;
   }
@@ -1127,16 +1204,145 @@ async function adoptPromptTune() {
     });
     lastAuthState = view;
     renderCredStatus(view);
-    $("#prompt-tune-adopt").hidden = true;
-    const log = $("#prompt-tune-log");
+    $("#ai-prompt-adopt").hidden = true;
+    const log = $("#ai-tune-log");
     if (!log.hidden) log.textContent += "\n\n已保存为账号人设：下次启动会话与回测都会使用它。";
   } catch (error) {
     alert(`保存失败：${error.message}`);
   }
 }
 
-$("#prompt-tune-run").addEventListener("click", runPromptTune);
-$("#prompt-tune-adopt").addEventListener("click", adoptPromptTune);
+$("#ai-prompt-run").addEventListener("click", runPromptTune);
+$("#ai-prompt-adopt").addEventListener("click", adoptPromptTune);
+
+// ----- AI parameter tuning (L1): the model proposes parameter sets for the
+// strategy currently selected in the form and the backtest ranks them.
+async function runTune() {
+  if (session?.running || busy) return;
+  const { request, objective, rounds, stall, cv } = aiRequest();
+  request.objective = objective;
+  request.rounds = rounds;
+  request.stall = stall;
+  request.cv_folds = cv;
+
+  const runButton = $("#ai-tune-run");
+  runButton.disabled = true;
+  runButton.textContent = "调优中（每轮都会回测）…";
+  aiLog(`策略 ${strategyByName(request.strategy)?.title || request.strategy} · 目标 ${objective} · ${rounds} 轮\n正在回测基线，随后由模型提出参数…\n`);
+  try {
+    const report = await api("/api/tune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    tuneReport = report;
+    renderTuneReport(report);
+    if (report.best_params && Object.keys(report.best_params).length) {
+      $("#ai-tune-adopt").hidden = false;
+    }
+  } catch (error) {
+    $("#ai-tune-log").textContent += `\n失败：${error.message}`;
+  } finally {
+    runButton.disabled = false;
+    runButton.textContent = "调优策略参数";
+  }
+}
+
+function renderTuneReport(report) {
+  const lines = [];
+  if (!report.llm_enabled) lines.push("模型未配置（缺 LLM 密钥/URL）：只回测了基线，没有提出新参数。请先在设置里保存 AI 服务。");
+  for (const round of report.rounds || []) {
+    const head = round.index === 0 ? "基线" : `第 ${round.index} 轮`;
+    lines.push(`[${head}] ${report.objective} = ${round.objective_value}`);
+    if (round.improved) lines.push("  ↑ 改进，采纳");
+    if (round.note) lines.push(`  ${round.note}`);
+    if (round.params) lines.push(`  参数：${formatParams(round.params)}`);
+    if (round.rationale) lines.push(`  理由：${truncateLine(round.rationale, 90)}`);
+  }
+  const delta = (report.best_value - report.baseline).toFixed(4);
+  lines.push(`\n基线 ${report.baseline} → 最佳 ${report.best_value}（Δ ${delta}）${report.early_stopped ? " · 连续无改进，已早停" : ""}`);
+  if (report.best_params) lines.push(`最佳参数：${formatParams(report.best_params)}`);
+  $("#ai-tune-log").textContent = lines.join("\n");
+}
+
+function formatParams(params) {
+  return Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${params[key]}`)
+    .join("  ");
+}
+
+// Adopting tuned parameters writes them into the strategy form, so the next
+// session start (and the next tune) begins from the winning set.
+function adoptTune() {
+  if (!tuneReport?.best_params) return;
+  const spec = strategyByName($("#strategy-select").value);
+  if (!spec) return;
+  const values = {};
+  for (const param of spec.params) {
+    const value = tuneReport.best_params[param.key];
+    if (value != null) values[param.key] = value;
+  }
+  renderStrategyParams(values);
+  $("#ai-tune-adopt").hidden = true;
+  $("#ai-tune-log").textContent += "\n\n已写入上方「策略」表单：下次启动会使用这组参数。";
+}
+
+$("#ai-tune-run").addEventListener("click", runTune);
+$("#ai-tune-adopt").addEventListener("click", adoptTune);
+
+// ----- AI reviews (L3): the model explains a finished backtest or the trades
+// the live session actually made.
+async function reviewBacktest() {
+  if (busy) return;
+  const button = $("#ai-review-backtest");
+  button.disabled = true;
+  reviewLog("正在回测并请求模型复盘…\n");
+  try {
+    const request = collectRequest();
+    request.review = true;
+    const report = await api("/api/backtest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    const head = `回测 ${report.symbol} · ${report.strategy} · ${report.bars} 根K线\n`;
+    reviewLog(report.review
+      ? `${head}\n${report.review}`
+      : `${head}\n模型不可用：${report.review_unavailable || "未返回复盘"}`);
+  } catch (error) {
+    reviewLog(`复盘失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function reviewLive() {
+  if (busy) return;
+  const button = $("#ai-review-live");
+  button.disabled = true;
+  reviewLog("正在汇总本次会话的成交并请求模型复盘…\n");
+  try {
+    const report = await api("/api/session/review", { method: "POST" });
+    reviewLog(report.review || `模型不可用：${report.review_unavailable || "未返回复盘"}`);
+  } catch (error) {
+    reviewLog(`复盘失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("#ai-review-backtest").addEventListener("click", reviewBacktest);
+$("#ai-review-live").addEventListener("click", reviewLive);
+
+// 使用 AI 策略: switch the strategy picker to the model-driven strategy and
+// send the user to the strategy page to confirm the rest of the parameters.
+$("#ai-use-llm").addEventListener("click", () => {
+  $("#strategy-select").value = "llm";
+  renderStrategyParams();
+  renderAiPage(lastConfig || {});
+  window.location.hash = "/strategies";
+});
 
 
 // 全部币种: pull the whole perpetual market into the datalist.
@@ -1260,16 +1466,22 @@ document.addEventListener("invalid", event => {
 
 // Hash routes keep one form instance: navigation never discards a draft.
 function renderPage() {
-  const strategiesPage = window.location.hash === "#/strategies";
-  $(".board").classList.toggle("strategy-page", strategiesPage);
+  const page = window.location.hash === "#/strategies" ? "strategies"
+    : window.location.hash === "#/ai" ? "ai" : "market";
+  const strategiesPage = page === "strategies";
+  const aiPage = page === "ai";
+  $(".board").classList.toggle("strategy-page", strategiesPage || aiPage);
+  $(".board").classList.toggle("ai-page-active", aiPage);
   $("#trade-config").hidden = !strategiesPage;
-  $$(".board > .market, .board > .account, .board > .position, .board > .log, .board > .risk").forEach(el => { el.hidden = strategiesPage; });
+  $("#ai-page").hidden = !aiPage;
+  $$(".board > .market, .board > .account, .board > .position, .board > .log, .board > .risk").forEach(el => { el.hidden = page !== "market"; });
   $("#run-button").hidden = !strategiesPage;
-  $("#setup-shortcut").hidden = strategiesPage;
-  $("#nav-market").setAttribute("aria-current", strategiesPage ? "false" : "page");
+  $("#setup-shortcut").hidden = page !== "market";
+  $("#nav-market").setAttribute("aria-current", page === "market" ? "page" : "false");
   $("#nav-strategies").setAttribute("aria-current", strategiesPage ? "page" : "false");
+  $("#nav-ai").setAttribute("aria-current", aiPage ? "page" : "false");
   $("#strategy-target").textContent = `${$('[name="symbol"]').value} · USDT 永续`;
-  document.title = strategiesPage ? "策略 · trading-agent" : "行情 · trading-agent";
+  document.title = aiPage ? "AI · trading-agent" : strategiesPage ? "策略 · trading-agent" : "行情 · trading-agent";
 }
 window.addEventListener("hashchange", () => { renderPage(); window.scrollTo(0, 0); });
 renderPage();

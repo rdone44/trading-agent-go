@@ -692,7 +692,7 @@ function renderCycles(log) {
       `<td class="num">${fmt.money(c.equity)}</td>`,
       `<td class="num">${fmt.money(c.cash)}</td>`,
       `<td class="tag">${escape(c.position || "空仓")}</td>`,
-      `<td class="tag">${note}</td>`,
+      `<td class="note">${note}</td>`,
     ];
   });
   return table(

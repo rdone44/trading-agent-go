@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -44,6 +45,9 @@ type BinanceBroker struct {
 	Trades  []Fill
 	StepSz  float64
 	usedIDs map[string]bool
+	// clock corrects the host clock against the exchange's, so a machine with
+	// a drifting clock can still sign valid requests.
+	clock exchangeClock
 	// BaseAsset and QuoteAsset come from exchangeInfo and are set by Init.
 	// Balances uses them to identify the pair in the account, so any symbol
 	// shape (LINKUSD, DOGUSDC, ...) is handled without string guessing.
@@ -80,6 +84,10 @@ func (b *BinanceBroker) Init() error {
 	if b.cfg.DryRun && b.StepSz > 0 {
 		return nil
 	}
+	// Align with the exchange before the first signed call. Init's own
+	// leverage/filter setup is the first thing that needs a valid timestamp,
+	// so a drifting host clock would otherwise fail here with -1021.
+	b.trySyncClock()
 	symbolRaw, err := b.exchangeInfo(b.cfg.Symbol)
 	if err != nil {
 		return err
@@ -91,6 +99,19 @@ func (b *BinanceBroker) Init() error {
 		return fmt.Errorf("exchangeInfo 没有 %s 的 baseAsset/quoteAsset", b.cfg.Symbol)
 	}
 	return nil
+}
+
+// syncClock measures the offset between the host clock and the exchange's.
+func (b *BinanceBroker) syncClock() error {
+	return b.clock.measure(b.client, b.cfg.BaseURL+"/api/v3/time")
+}
+
+// trySyncClock aligns the clock, tolerating a failure. A host whose clock is
+// already correct must not be stopped from trading because /api/v3/time was
+// unreachable; if the clock really is wrong, the signed path answers the
+// exchange's -1021 by syncing again and reporting the failure then.
+func (b *BinanceBroker) trySyncClock() {
+	_ = b.syncClock()
 }
 
 // Balances fetches the account balances for the trading pair, used to
@@ -392,24 +413,26 @@ func (b *BinanceBroker) getPublic(path string) ([]byte, error) {
 // These endpoints require both the API key header and an HMAC signature; a
 // key header without a signature is a 400 from the exchange.
 func (b *BinanceBroker) getSigned(path string, query url.Values) ([]byte, error) {
-	if err := signQuery(b.cfg.SecretKey, query); err != nil {
-		return nil, err
-	}
-	u := b.cfg.BaseURL + path + "?" + query.Encode()
-	response, err := b.do(http.MethodGet, u, &b.cfg.APIKey, false)
-	if err != nil {
-		return nil, err
-	}
-	return b.readBody(response)
+	return b.signedRequest(http.MethodGet, path, query)
 }
 
 // postSigned signs and posts a trading request.
 func (b *BinanceBroker) postSigned(path string, query url.Values) ([]byte, error) {
-	if err := signQuery(b.cfg.SecretKey, query); err != nil {
-		return nil, err
-	}
-	u := b.cfg.BaseURL + path + "?" + query.Encode()
-	response, err := b.do(http.MethodPost, u, &b.cfg.APIKey, false)
+	return b.signedRequest(http.MethodPost, path, query)
+}
+
+// signedRequest signs and sends one private request, re-syncing the clock and
+// retrying once when the exchange rejects the timestamp.
+func (b *BinanceBroker) signedRequest(method, path string, query url.Values) ([]byte, error) {
+	return signAndRetry(b.syncClock, func() ([]byte, error) {
+		return b.signedOnce(method, path, query)
+	})
+}
+
+// signedOnce performs a single signed attempt with the current clock offset.
+func (b *BinanceBroker) signedOnce(method, path string, query url.Values) ([]byte, error) {
+	signed := signedQuery(b.cfg.SecretKey, b.clock.timestamp(), query)
+	response, err := b.do(method, b.cfg.BaseURL+path+"?"+signed, &b.cfg.APIKey, false)
 	if err != nil {
 		return nil, err
 	}
@@ -445,20 +468,37 @@ func (b *BinanceBroker) readBody(response *http.Response) ([]byte, error) {
 	return body, nil
 }
 
-// signQuery appends timestamp and signature to a query, the way the spot
-// API expects them on every private request.
-func signQuery(secret string, query url.Values) error {
-	query.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	signature := sign(secret, query.Encode())
-	query.Set("signature", signature)
-	return nil
-}
-
 // sign produces the HMAC-SHA256 signature for a query string.
 func sign(secret, query string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(query))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// binanceError is a non-200 response from the exchange. The code is kept as a
+// field, not just text, so the timestamp failure (-1021) can be recognised and
+// answered with a clock re-sync instead of a guess at the message wording.
+type binanceError struct {
+	Status int
+	Code   int32
+	Msg    string
+}
+
+func (e *binanceError) Error() string {
+	if e.Msg != "" {
+		return fmt.Sprintf("Binance HTTP %d (code %d): %s", e.Status, e.Code, e.Msg)
+	}
+	return fmt.Sprintf("Binance HTTP %d", e.Status)
+}
+
+// isTimestampError reports whether the exchange rejected the request because
+// its timestamp fell outside the accepted window.
+func isTimestampError(err error) bool {
+	var exchangeErr *binanceError
+	if errors.As(err, &exchangeErr) {
+		return exchangeErr.Code == -1021
+	}
+	return false
 }
 
 // httpError extracts the exchange message from a failed response.
@@ -468,10 +508,7 @@ func httpError(status int, body []byte) error {
 		Msg  string `json:"msg"`
 	}
 	_ = json.Unmarshal(body, &payload)
-	if payload.Msg != "" {
-		return fmt.Errorf("Binance HTTP %d (code %d): %s", status, payload.Code, payload.Msg)
-	}
-	return fmt.Errorf("Binance HTTP %d", status)
+	return &binanceError{Status: status, Code: payload.Code, Msg: payload.Msg}
 }
 
 func formatQty(qty float64) string {

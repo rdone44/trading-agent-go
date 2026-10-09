@@ -436,6 +436,16 @@ The `trade` command is the live loop, already wired to real Binance:
 - **Restart-safe.** Each cycle persists the open position, equity
   high-water mark and risk-manager state to `--state`. A restart resumes
   rather than re-entering.
+- **Clock-corrected signing.** Every private request is stamped with the
+  exchange's clock, measured from `/api/v3/time` (spot) or `/fapi/v1/time`
+  (futures) with the round trip halved so ordinary latency is not read as
+  skew. A host clock more than a second off would otherwise make every signed
+  call fail with `code -1021`, starting with leverage setup during startup —
+  which looks like a permissions problem but is only the clock. If a request
+  is still refused on its timestamp the broker re-syncs and retries exactly
+  once; `-1021` is rejected before the matching engine sees the request, so
+  the refused attempt cannot have created an order. Other errors are never
+  retried. On Windows, `w32tm /resync` fixes the host clock for good.
 
 Before real money: run the paper loop against a broker testnet or demo
 account for a meaningful period, size `max_risk_per_trade_pct` for the

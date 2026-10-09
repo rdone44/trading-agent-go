@@ -138,14 +138,7 @@ func (b *BinanceBroker) CancelSpotStops() error {
 	}
 	for _, row := range rows {
 		q := url.Values{"symbol": {strings.ToUpper(b.cfg.Symbol)}, "orderId": {strconv.FormatInt(row.OrderID, 10)}}
-		if err := signQuery(b.cfg.SecretKey, q); err != nil {
-			return err
-		}
-		response, err := b.do(http.MethodDelete, b.cfg.BaseURL+"/api/v3/order?"+q.Encode(), &b.cfg.APIKey, false)
-		if err != nil {
-			return err
-		}
-		body, err := b.readBody(response)
+		body, err := b.signedRequest(http.MethodDelete, "/api/v3/order", q)
 		if err != nil {
 			return err
 		}

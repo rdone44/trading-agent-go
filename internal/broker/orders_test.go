@@ -79,6 +79,9 @@ func TestAdverseExecutedFillIsNotDiscarded(t *testing.T) {
 func TestFuturesUsesSymbolFiltersAndReduceOnlyExit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/fapi/v1/time":
+			// Init syncs the clock before its first signed call.
+			fmt.Fprintf(w, `{"serverTime":%d}`, time.Now().UnixMilli())
 		case "/fapi/v1/leverage":
 			fmt.Fprint(w, `{}`)
 		case "/fapi/v1/marginType":

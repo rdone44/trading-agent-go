@@ -47,6 +47,8 @@ type FuturesBroker struct {
 	Trades  []Fill
 	StepSz  float64
 	usedIDs map[string]bool
+	// clock corrects the host clock against the exchange's; see clock.go.
+	clock exchangeClock
 	// Resolved by Init from the exchange contract info.
 	QuantityPrecision int
 }
@@ -93,6 +95,9 @@ func (b *FuturesBroker) Init() error {
 	if b.cfg.DryRun && b.StepSz > 0 {
 		return nil
 	}
+	// Align with the exchange before setLeverage, the first signed call: a host
+	// clock more than a second off makes every signed request fail with -1021.
+	b.trySyncClock()
 	if err := b.setLeverage(); err != nil {
 		return err
 	}
@@ -104,6 +109,16 @@ func (b *FuturesBroker) Init() error {
 		return err
 	}
 	return b.applyContract(contract)
+}
+
+// syncClock measures the offset between the host clock and the exchange's.
+func (b *FuturesBroker) syncClock() error {
+	return b.clock.measure(b.http, b.cfg.BaseURL+"/fapi/v1/time")
+}
+
+// trySyncClock aligns the clock, tolerating a failure; see BinanceBroker.
+func (b *FuturesBroker) trySyncClock() {
+	_ = b.syncClock()
 }
 
 func (b *FuturesBroker) setLeverage() error {
@@ -604,26 +619,8 @@ func protectiveFlag(v interface{}) bool {
 // cancelAlgoOrder deletes one identified conditional leg, never all orders.
 func (b *FuturesBroker) cancelAlgoOrder(id int64) error {
 	query := url.Values{"algoId": {strconv.FormatInt(id, 10)}}
-	if err := signQuery(b.cfg.SecretKey, query); err != nil {
-		return err
-	}
-	request, err := http.NewRequest(http.MethodDelete,
-		b.cfg.BaseURL+"/fapi/v1/algoOrder"+"?"+query.Encode(), nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("X-MBX-APIKEY", b.cfg.APIKey)
-	response, err := b.http.Do(request)
-	if err != nil {
+	if _, err := b.signedRequest(http.MethodDelete, "/fapi/v1/algoOrder", query); err != nil {
 		return fmt.Errorf("撤销保护单失败: %w", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return err
-	}
-	if response.StatusCode != http.StatusOK {
-		return httpError(response.StatusCode, body)
 	}
 	return nil
 }
@@ -653,37 +650,27 @@ func (b *FuturesBroker) getPublic(path string) ([]byte, error) {
 
 // getSigned performs a signed read-only futures request.
 func (b *FuturesBroker) getSigned(path string, query url.Values) ([]byte, error) {
-	if err := signQuery(b.cfg.SecretKey, query); err != nil {
-		return nil, err
-	}
-	request, err := http.NewRequest(http.MethodGet,
-		b.cfg.BaseURL+path+"?"+query.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("X-MBX-APIKEY", b.cfg.APIKey)
-	response, err := b.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("请求 Binance futures 失败: %w", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, httpError(response.StatusCode, body)
-	}
-	return body, nil
+	return b.signedRequest(http.MethodGet, path, query)
 }
 
 // postSigned signs and posts a futures trading request.
 func (b *FuturesBroker) postSigned(path string, query url.Values) ([]byte, error) {
-	if err := signQuery(b.cfg.SecretKey, query); err != nil {
-		return nil, err
-	}
-	request, err := http.NewRequest(http.MethodPost,
-		b.cfg.BaseURL+path+"?"+query.Encode(), nil)
+	return b.signedRequest(http.MethodPost, path, query)
+}
+
+// signedRequest signs and sends one private futures request, re-syncing the
+// clock and retrying once when the exchange rejects the timestamp.
+func (b *FuturesBroker) signedRequest(method, path string, query url.Values) ([]byte, error) {
+	return signAndRetry(b.syncClock, func() ([]byte, error) {
+		return b.signedOnce(method, path, query)
+	})
+}
+
+// signedOnce performs a single signed attempt with the current clock offset.
+func (b *FuturesBroker) signedOnce(method, path string, query url.Values) ([]byte, error) {
+	signed := signedQuery(b.cfg.SecretKey, b.clock.timestamp(), query)
+	request, err := http.NewRequest(method,
+		b.cfg.BaseURL+path+"?"+signed, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -76,6 +76,18 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 验证：`gofmt -l .` 空、`go vet ./...`、`go test -count=1 ./...` 24 包全绿；新增 10 项回归测试（`journal_test.go` 的跨重启恢复/截断行跳过/空路径不落盘/写失败上报/压缩/路径推导/冷启动恢复/最新 journal 选择，`llm_test.go` 的解析失败原因与缺密钥原因，`ai_outage_test.go` 的原因透传，`webui/session_test.go` 的重启后日志仍在）；`node --test tests/ui/settings.test.cjs` 10 项通过；Windows desktop 与 Linux server 交叉构建成功；桌面版实机重启验证：日志行显示 `请求 LLM 失败: Post ".../chat/completions": context deadline exceeded`，重启后两行历史仍在。
 - 未完成：日志按账本分文件，没有集中查询接口；`log_error` 只在轮询状态里体现，没有独立的告警通道。
 
+### T4. 交易所时钟同步与签名顺序（2026-10-09）
+
+- 背景：用户实盘启动报 `初始化 futures broker 失败: 设置杠杆失败: Binance HTTP 400 (code -1021): Timestamp for this request was 1000ms ahead of the server's time.`。实测本机时钟比 Binance 慢约 8.5 秒，且 `-1021` 的文案在「快」和「慢」两个方向都写 ahead，容易误判成密钥或权限问题。
+- 范围：`internal/broker/`（`clock.go` 新增，`binance.go`、`futures.go`、`spot_protective.go`）。
+- 状态：done
+- 落地：
+  1. **时钟对齐**：新增 `exchangeClock`，从 `/api/v3/time`（现货）与 `/fapi/v1/time`（合约）读取交易所时间，按往返时间折半计算偏移（不折半会把普通网络延迟误读成时钟偏差，慢链路上足以把时间戳推出 1 秒窗口），签名时使用校正后的时间。`Init` 在第一次签名调用（设置杠杆）之前先对齐；`/time` 不可达时不阻断 `Init`，避免本机时钟本来就正确却被网络问题挡住交易。
+  2. **按错误码重试一次**：`httpError` 改为返回带 `Code` 字段的 `*binanceError`，用 `isTimestampError` 按码判断而不是匹配文案。收到 `-1021` 时重新校时并**只重试一次**；`-1021` 在撮合前就被拒，不可能产生订单，所以重试安全，其他错误一律不重试（订单路径仍走 client order id 对账）。
+  3. **签名参数顺序（连带发现的更严重缺陷）**：Binance 校验的是 `signature` 之前的 HMAC 载荷，因此 `signature` 必须位于查询串末尾，但 `url.Values.Encode()` 按字母序排序，会把 `signature` 排在 `timestamp` 前面。现货接口容忍该顺序，合约接口直接返回 `code -1022: Signature for this request is not valid`——与「密钥错误」完全无法区分。`signedQuery` 改为拼接字符串，把 `signature` 固定在末尾。仅修时钟会让报错从 `-1021` 变成 `-1022`，两者都修才能下单。
+- 验证：`gofmt -l .` 空、`go vet ./...`、`go test -count=1 ./...` 24 包全绿；新增 `internal/broker/clock_test.go` 9 项回归（偏移 2 小时/3 小时的时钟仍能签名、往返延迟不被误读、`-1021` 重试恰好一次、其他错误不重试、重试失败同时报告两个错误、`/time` 不可达不阻断 `Init`、按码识别 `-1021`、`signature` 必须在末尾、nil query 不 panic）；实机对真实 Binance 用桌面版已存密钥做过只读验证：现货 `Init` + 签名读取成功，合约 `getSigned` 与 `setLeverage`（正是报错的那次调用）成功。
+- 未完成：未做长期漂移监控（当前只在 `Init` 与收到 `-1021` 时校时）；Windows 上仍建议 `w32tm /resync` 把本机时钟本身修好。
+
 ### T1. 构建与测试基线
 
 - 范围：在本机（Linux）跑通 `go test ./...` 和 server 构建

@@ -121,10 +121,20 @@ func (b *BinanceBroker) CancelSpotStops() error {
 	if err != nil {
 		return err
 	}
+	// Validate the entire snapshot before removing any protection. A malformed
+	// later row must not cause earlier stops to be canceled first.
+	orderIDs := make(map[int64]bool, len(rows))
+	clientIDs := make(map[string]bool, len(rows))
 	for _, row := range rows {
-		if row.OrderID <= 0 || row.Side != "SELL" || row.ListID != -1 || !spotNumber(row.Executed, 0) {
+		qty, qtyErr := strconv.ParseFloat(row.Quantity, 64)
+		stop, stopErr := strconv.ParseFloat(row.Stop, 64)
+		if qtyErr != nil || stopErr != nil || qty <= 0 || stop <= 0 ||
+			math.IsNaN(qty) || math.IsInf(qty, 0) || math.IsNaN(stop) || math.IsInf(stop, 0) ||
+			!b.validSpotStop(row, row.ClientID, qty, stop) || orderIDs[row.OrderID] || clientIDs[row.ClientID] {
 			return fmt.Errorf("现货保护单状态不安全，需对账")
 		}
+		orderIDs[row.OrderID] = true
+		clientIDs[row.ClientID] = true
 	}
 	for _, row := range rows {
 		q := url.Values{"symbol": {strings.ToUpper(b.cfg.Symbol)}, "orderId": {strconv.FormatInt(row.OrderID, 10)}}

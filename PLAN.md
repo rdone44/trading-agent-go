@@ -17,6 +17,7 @@
 ## P0 — 安全（会亏钱的洞，必须最先做）
 
 ### P0-1 交易所侧保护性止损（最高优先）
+- 现货撤单全批次预检子项：**done** — 撤任何止损前，先验证全部同源订单的 NEW/零成交、正有限数量/触发价及唯一 orderId/clientOrderId；后续行缺字段、非法数值或身份重复时零 DELETE，避免先撤有效保护后才发现坏数据。新增离线 15 场景拒写及双有效订单精撤正例；先复现旧代码 writes=2，再修复为零写入。Go 1.23.4 gofmt/build/vet/test 全绿，broker/live race 通过。**总体仍 partial**：保护成交按身份入账与生产接入未做；New 未启用 spotProtective，Leverage:1/CVFolds=0 历史路径未改。
 - 现货撤单响应严格确认子项：**done** — CancelSpotStops 核验原 orderId/clientOrderId/symbol、SELL/STOP_LOSS、独立订单、原数量/触发价、CANCELED 与零成交；缺字段或不一致拒绝确认，防止错误响应放行本地平仓。新增离线 15 场景 broker 测试及 live 身份冲突阻断回归；修正重启/撤单 stub 为完整响应。Go 1.23.4 gofmt/build/vet/test 全绿，broker/live race 通过。**总体仍 partial**：保护成交按身份入账与生产接入未做，New 未启用 spotProtective，Leverage:1/CVFolds=0 历史路径未改。
 - 现货 cycle 库存差异阻断子项：**done** — 显式安装 spotProtective 时，每周期先核验含冻结量的总库存；疑似完全/部分保护成交、额外库存、微差、非有限余额或查询失败均持久化 OrderUncertain + halt，阻断行情/策略/本地卖出及后续重试，账本不靠余额差猜成交。离线 8 场景三轮及恢复验证通过；gofmt/build/vet/test 与 broker/live race 全绿。**总体仍 partial**：这是 fail-safe 检测，不是自动成交对账；待按保护单身份核验成交价/手续费并安全入账后，再生产接入。New 尚未启用现货适配器，Leverage:1/CVFolds=0 历史路径不变。
 - 现货重启保护恢复子项：**done** — 在显式安装 spotProtective 的 runner 对账路径中，以含冻结量的总库存核验净持仓，再校验/幂等补挂同源止损；空仓仅精撤本程序残留止损。数量微差、部分/完全成交、额外库存、订单不确定、查询错误或已有单字段冲突均拒绝恢复写入，不猜成交、不改账本。离线 12 场景各跑三轮，验证补挂/撤单只写一次；gofmt/build/vet/test 与 broker/live race 全绿。**总体仍 partial**：New 尚未启用现货适配器，剩 cycle 保护成交对账与生产接入；Leverage:1/CVFolds=0 现有路径不变。

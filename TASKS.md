@@ -79,6 +79,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 现货撤单全批次预检子项 done：任何 DELETE 前验证全批次订单 NEW/零成交、正有限数量/触发价及唯一 orderId/clientOrderId；后续坏行不会导致先撤有效保护。新增离线 15 场景拒写与双有效订单正例；旧代码回归复现 writes=2，修复后零写入。验证：Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1、broker/live race 全绿。T5/P0-1 仍 partial：保护成交身份入账与生产接入待完成；New 未启用现货适配器，Leverage:1/CVFolds=0 原路径未变。
+
 - 现货撤单响应严格确认子项 done：核验完整原订单身份、类型/方向/独立订单、数量/触发价、CANCELED/零成交，缺失或冲突拒绝确认；新增 broker 离线 15 场景及 live 身份冲突回归，修正旧 stub 的不完整响应。验证：Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1、broker/live race 全绿。T5/P0-1 仍 partial：保护成交身份对账入账与生产接入待完成；New 未启用适配器，Leverage:1/CVFolds=0 原路径未变。
 
 - 现货 cycle 库存差异阻断子项 done：显式安装 spotProtective 后，每周期先核验总库存（含冻结量）；完全/部分成交疑点、额外库存、微差、非有限余额及查询失败均保存 OrderUncertain + halt，行情/策略/本地卖出不执行，重复周期及恢复后不重试；不猜成交价/手续费、不改账本。离线 8 场景三轮与状态恢复验证通过，gofmt/build/vet/test、broker/live race 全绿。T5/P0-1 仍 partial：缺按保护单身份自动成交入账与生产接入，New 未启用适配器；Leverage:1/CVFolds=0 原路径未变。本轮另独立格式提交修复已有 CLI/tune/webui 的 gofmt 漂移，以恢复全仓提交门禁。

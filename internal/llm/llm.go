@@ -71,7 +71,7 @@ func New(cfg config.LLM) *Client {
 		maxTokens: maxTokens,
 		temp:      temp,
 		APIKey:    apiKey,
-		http:      &http.Client{Timeout: timeout},
+		http:      newClient(timeout),
 	}
 }
 
@@ -112,16 +112,17 @@ func (c *Client) Complete(system, user string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	resp, err := doWithRetry(c.http, func() (*http.Request, error) {
+		httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+		return httpReq, nil
+	})
 	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("请求 LLM 失败: %w", err)
+		return "", fmt.Errorf("请求 LLM 失败: %s", describeTransportError(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

@@ -104,9 +104,16 @@ type Live struct {
 // from the LLM_API_KEY (or OPENAI_API_KEY) environment variable at call
 // time, so a config file can never leak a secret.
 type LLM struct {
-	BaseURL     string  `yaml:"base_url"` // default https://api.openai.com/v1
-	Model       string  `yaml:"model"`    // default gpt-4o-mini
-	TimeoutSec  int     `yaml:"timeout_sec"`
+	BaseURL string `yaml:"base_url"` // default https://api.openai.com/v1
+	Model   string `yaml:"model"`    // default gpt-4o-mini
+	// TimeoutSec bounds one chat completion. The default is generous because
+	// a trading prompt carries the indicator snapshot and asks for a JSON
+	// answer, and a reasoning model can take well over a minute to produce
+	// it: a 30s budget turned healthy calls into "context deadline exceeded"
+	// on the first real model. The live loop polls on its own interval and
+	// keeps the current position when a call times out, so a slow answer
+	// delays a decision rather than corrupting one.
+	TimeoutSec  int     `yaml:"timeout_sec"` // default 180
 	MaxTokens   int     `yaml:"max_tokens"`
 	Temperature float64 `yaml:"temperature"`
 	// VetoEnabled gates new live entries with an LLM second opinion.
@@ -158,7 +165,7 @@ func Default() Config {
 		LLM: LLM{
 			BaseURL:      "https://api.openai.com/v1",
 			Model:        "gpt-4o-mini",
-			TimeoutSec:   30,
+			TimeoutSec:   180,
 			MaxTokens:    1024,
 			VetoCacheSec: 900,
 		},

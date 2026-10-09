@@ -29,17 +29,18 @@ func ListModels(baseURL, apiKey string) ([]string, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("获取模型列表需要 AI Token：先填写 Token 再获取，或直接手写模型名")
 	}
-	request, err := http.NewRequest(http.MethodGet, base+"/models", nil)
+	client := newClient(20 * time.Second)
+	response, err := doWithRetry(client, func() (*http.Request, error) {
+		request, err := http.NewRequest(http.MethodGet, base+"/models", nil)
+		if err != nil {
+			return nil, fmt.Errorf("构造模型列表请求失败: %w", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+		request.Header.Set("Accept", "application/json")
+		return request, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("构造模型列表请求失败: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+apiKey)
-	request.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("连接模型服务失败: %w", err)
+		return nil, fmt.Errorf("连接模型服务失败: %s", describeTransportError(err))
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))

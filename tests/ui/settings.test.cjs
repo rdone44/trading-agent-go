@@ -133,3 +133,35 @@ test('AI page does not claim a model key that is missing', () => {
     llm_model:'gpt-4o-mini'});
   assert.match(ctx.$("#ai-status").textContent, /密钥来自本机设置/);
 });
+
+// The model name must be pickable, not only typeable: the field carries a
+// datalist fed by /api/models, and the button that fills it exists in the
+// panel next to the URL it queries.
+test('model field offers a fetched list instead of only free text', () => {
+  const rail = html.match(/<aside\b[\s\S]*?<\/aside>/)[0];
+  assert.match(rail, /id="load-models"/);
+  assert.match(rail, /id="model-options"/);
+  assert.match(rail, /data-cred="llm_model"[^>]*list="model-options"/);
+  assert.match(script, /api\("\/api\/models"/);
+  assert.match(script, /document\.getElementById\("model-options"\)/);
+});
+
+// The automatic fetch on load must not spam the provider: a config refresh
+// (session poll re-render, login, etc.) may call applyAuthUi many times, and
+// only the first may query.
+test('model list is fetched at most once per page load', () => {
+  const {ctx,get}=harness();
+  let calls = 0;
+  ctx.modelsLoaded = false;
+  ctx.loadModels = () => { calls += 1; };
+  const cfg = {local_settings:true, auth:{enabled:true, local:true, username:'本机', llm_key:true}};
+  ctx.applyAuthUi(cfg);
+  ctx.applyAuthUi(cfg);
+  ctx.applyAuthUi(cfg);
+  assert.equal(calls, 1);
+  // Without a stored key there is nothing to query with.
+  ctx.modelsLoaded = false;
+  calls = 0;
+  ctx.applyAuthUi({local_settings:true, auth:{enabled:true, local:true, username:'本机', llm_key:false}});
+  assert.equal(calls, 0);
+});

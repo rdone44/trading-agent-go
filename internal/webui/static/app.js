@@ -112,6 +112,10 @@ let liveGate = false;
 // liveGateEnv records whether the gate came from TA_ALLOW_LIVE=1, so the
 // desktop switch can explain that the environment overrides the file.
 let liveGateEnv = false;
+// modelsLoaded guards the one automatic /api/models call per page load: a
+// stored key should populate the model picker without the user asking, but a
+// repeated config refresh must not re-query the provider.
+let modelsLoaded = false;
 let lastConfig = null;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
@@ -861,6 +865,13 @@ function applyAuthUi(config) {
     // previous L2 winner is visible and editable (empty = built-in persona).
     const personaField = $("#ai-persona");
     if (personaField) personaField.value = config.auth.llm_prompt || "";
+    // A stored key means the model list can be fetched without the user
+    // typing anything: offer the picker up front instead of an empty box.
+    // Once per page load, and never while a request is already in flight.
+    if (config.auth.llm_key && !modelsLoaded) {
+      modelsLoaded = true;
+      loadModels({ quiet: true });
+    }
   }
   // The local live switch only exists on the desktop: on a networked server
   // the environment variable stays the only gate, so the checkbox is not
@@ -1038,6 +1049,59 @@ async function saveCredentials() {
     $("#cred-status").textContent = `保存失败：${error.message}`;
   } finally {
     button.disabled = false;
+  }
+}
+
+// loadModels asks the configured endpoint which models it serves and offers
+// them as a datalist behind the 模型名 field. The token typed in the form is
+// used when present so a model can be picked before the first save; otherwise
+// the server falls back to whatever is already stored. This is the model-side
+// counterpart of 全部币种: choose from what exists instead of typing a name
+// from memory.
+async function loadModels(options = {}) {
+  const quiet = Boolean(options.quiet);
+  const button = $("#load-models");
+  if (button) { button.disabled = true; button.textContent = "获取中…"; }
+  const hint = $("#model-status");
+  if (hint) { hint.textContent = ""; hint.className = "hint"; }
+  try {
+    const payload = {
+      llm_base_url: $('[data-cred="llm_base_url"]')?.value.trim() || "",
+      llm_api_key: $('[data-cred="llm_api_key"]')?.value.trim() || "",
+    };
+    const data = await api("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const models = data.models || [];
+    const options = document.getElementById("model-options");
+    if (options) {
+      options.innerHTML = models.map((m) => `<option value="${escape(m)}"></option>`).join("");
+    }
+    const input = $('[data-cred="llm_model"]');
+    // The list is offered, never auto-applied: silently writing the first
+    // entry into an empty field would mean a later 保存密钥 (for, say, the
+    // Binance key) also commits a model the user never picked. Focus moves
+    // only when the user asked for the list, so the automatic call on page
+    // load does not yank the cursor out of whatever they were doing.
+    if (input && models.length && !quiet) input.focus();
+    if (hint) {
+      hint.textContent = input && input.value.trim()
+        ? `已获取 ${models.length} 个模型，点模型名输入框可改选；也可以直接手写。`
+        : `已获取 ${models.length} 个模型，点模型名输入框选择；也可以直接手写。`;
+      hint.className = "hint";
+    }
+  } catch (error) {
+    // The automatic call on page load stays silent on failure: a gateway that
+    // simply has no /models route is not an error the user needs to see
+    // before they have asked for anything. Pressing 获取模型 always reports.
+    if (hint && !quiet) {
+      hint.textContent = `获取失败：${error.message}`;
+      hint.className = "hint warn";
+    }
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "获取模型"; }
   }
 }
 
@@ -1556,6 +1620,7 @@ $("#credentials-form").addEventListener("submit", event => { event.preventDefaul
 // The desktop live switch is a separate control from the credential form: the
 // change event fires on click and posts only the flag.
 $("#local-live")?.addEventListener("change", (event) => toggleLocalLive(event.target.checked));
+$("#load-models")?.addEventListener("click", loadModels);
 $("#settings-login").addEventListener("click", () => {
   setRail(false);
   $("#auth-card").scrollIntoView({ block: "start" });

@@ -84,13 +84,18 @@
                 <input type="password" autocomplete="off" spellcheck="false" data-cred="binance_secret_key" placeholder="填入后保存">
               </label>
               <label class="field">
-                <span>AI 模型名</span>
-                <input type="text" spellcheck="false" data-cred="llm_model" placeholder="如 gpt-5.4">
-              </label>
-              <label class="field">
                 <span>AI 服务 URL</span>
                 <input type="url" spellcheck="false" data-cred="llm_base_url" placeholder="https://…/v1">
               </label>
+              <label class="field">
+                <span>AI 模型名</span>
+                <div class="inline">
+                  <input type="text" spellcheck="false" data-cred="llm_model" list="model-options" placeholder="点「获取模型」选择">
+                  <button type="button" id="load-models" class="btn ghost" title="向该服务查询可用模型">获取模型</button>
+                </div>
+              </label>
+              <datalist id="model-options"></datalist>
+              <p class="hint" id="model-status"></p>
               <label class="field">
                 <span>AI Token</span>
                 <input type="password" autocomplete="off" spellcheck="false" data-cred="llm_api_key" placeholder="填入后保存">

@@ -83,6 +83,11 @@ type Server struct {
 	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
 	// the /api/symbols handler stays offline.
 	SymbolList func(venue string, limit int) ([]marketdata.SymbolInfo, error)
+	// ModelList asks an OpenAI-compatible endpoint which models it serves, so
+	// the settings panel can offer a picker instead of a blank text box. It
+	// defaults to llm.ListModels; tests inject a stub so /api/models stays
+	// offline.
+	ModelList func(baseURL, apiKey string) ([]string, error)
 	// Auth, when set, enables account login: /api/auth/* routes plus a
 	// session middleware on the credential-bearing routes. The credential
 	// vault also carries each user's Binance and LLM keys, which the
@@ -169,6 +174,10 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/api/session/review", s.handleSessionReview)
 	protected.HandleFunc("/api/market", s.handleMarket)
 	protected.HandleFunc("/api/symbols", s.handleSymbols)
+	// /api/models asks the configured model endpoint which models it serves;
+	// it carries a credential, so it sits behind the same session guard as
+	// the other credential-bearing routes.
+	protected.HandleFunc("/api/models", s.handleModels)
 	mux.Handle("/api/", s.requireUserSession(protected))
 	// /healthz is what a systemd unit, a container probe or a load balancer
 	// polls; it touches no disk and no network, so it stays cheap.

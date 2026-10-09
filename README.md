@@ -436,15 +436,24 @@ gracefully when the model is unavailable. The API key is never stored in the
 config file, so a config can never leak a secret:
 
 - **Desktop edition** — open **设置 → Binance 与 AI 服务** and fill in
-  **AI 服务 URL** (`https://api.openai.com/v1`), **AI 模型名** (`gpt-4o-mini`)
-  and **AI Token**. That is all the AI page needs; the values are saved to the
-  local credentials file described above.
+  **AI 服务 URL** (`https://api.openai.com/v1`) and **AI Token**. Then press
+  **获取模型**: the console asks that endpoint which models it serves and
+  offers them as a picker on the **AI 模型名** field, so the name never has to
+  be typed from memory. (Once a token is stored, the list is fetched
+  automatically when the page opens.) The values are saved to the local
+  credentials file described above.
 - **Server / CLI** — export `LLM_API_KEY` (falling back to `OPENAI_API_KEY`),
   or set `llm.base_url` / `llm.model` in the YAML config for a non-OpenAI
   endpoint.
 
 Any OpenAI-compatible endpoint works. The **AI** page states whether a model is
 ready, and when none is configured it says exactly which panel to open.
+
+`POST /api/models` backs the picker. It reads the `data[].id` envelope used by
+OpenAI and most gateways, Ollama's `models[].name`, and a bare string array, so
+a self-hosted endpoint is not shut out; chat-capable models are listed first
+and embedding/audio/image entries last. Manual entry stays possible — a
+gateway with no `/models` route reports why instead of leaving an empty list.
 
 | Feature | CLI | Web dashboard | Flag / config | Without a key |
 | --- | --- | --- | --- | --- |

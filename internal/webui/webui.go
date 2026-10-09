@@ -260,6 +260,10 @@ func (s *Server) Session(username string) *livesession.Session {
 		return sess
 	}
 	sess := livesession.NewSession()
+	// Show the previous run's history as soon as the page opens. Without this
+	// a freshly launched console reports an empty log, which is exactly what
+	// lost history looks like.
+	sess.RecoverLog(s.sessionDir(username))
 	s.sessions[username] = sess
 	return sess
 }
@@ -767,6 +771,16 @@ func (s *Server) sessionStatePath(cfg config.Config, req StartSessionRequest, us
 		return filepath.Join(filepath.Dir(cfg.Live.StateFile), "sessions", name), nil
 	}
 	return filepath.Join(s.accountDir(username), "sessions", name), nil
+}
+
+// sessionDir is the directory sessionStatePath puts ledgers in. The console
+// reads it to show the previous run's log before a session exists, so the two
+// must stay in step: a ledger and its journal always live side by side.
+func (s *Server) sessionDir(username string) string {
+	if username == "" {
+		return filepath.Join(filepath.Dir(s.Config.Live.StateFile), "sessions")
+	}
+	return filepath.Join(s.accountDir(username), "sessions")
 }
 
 func (s *Server) handleStrategies(w http.ResponseWriter, r *http.Request) {

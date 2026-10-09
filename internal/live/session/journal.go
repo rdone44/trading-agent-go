@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // The cycle log used to live only in memory and was cleared by every Start,
@@ -31,6 +32,46 @@ func journalPathFor(statePath string) string {
 		return ""
 	}
 	return strings.TrimSuffix(statePath, filepath.Ext(statePath)) + journalSuffix
+}
+
+// latestJournal returns the most recently written journal in a sessions
+// directory, newest first by modification time. It answers the question the
+// console faces on a cold start — "what did the last run do?" — without the
+// operator having to restart a session just to read its history.
+func latestJournal(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	newest, newestAt := "", time.Time{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), journalSuffix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newestAt) {
+			newest, newestAt = filepath.Join(dir, entry.Name()), info.ModTime()
+		}
+	}
+	return newest
+}
+
+// LatestLog returns the newest persisted run log in a sessions directory along
+// with its path. It lets a freshly opened console show the previous run's
+// history before any session has been started, instead of an empty table that
+// looks like the log was lost.
+func LatestLog(dir string) (string, []CycleRecord) {
+	path := latestJournal(dir)
+	if path == "" {
+		return "", nil
+	}
+	return path, loadJournal(path, cycleLogLimit)
 }
 
 // loadJournal reads the tail of a journal, newest last. A missing file is not

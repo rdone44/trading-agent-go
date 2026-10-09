@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The regression this file exists for: the cycle log was in-memory only and
@@ -130,5 +131,63 @@ func TestJournalPathFollowsTheLedger(t *testing.T) {
 		if got := journalPathFor(statePath); got != want {
 			t.Errorf("journalPathFor(%q) = %q, want %q", statePath, got, want)
 		}
+	}
+}
+
+// A freshly opened console must show the last run's history without the
+// operator having to start a session just to read it. RecoverLog is that path;
+// once a session owns a ledger it must not be overwritten by it.
+func TestRecoverLogShowsThePreviousRun(t *testing.T) {
+	dir := t.TempDir()
+	if err := appendJournal(filepath.Join(dir, "paper-spot-BTCUSDT.log.jsonl"),
+		CycleRecord{Time: "09:00:00", Action: "ai_unavailable", Reason: "网关超时"}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewSession()
+	s.RecoverLog(dir)
+	s.mu.Lock()
+	rows, path := len(s.log), s.journalPath
+	s.mu.Unlock()
+
+	if rows != 1 || path == "" {
+		t.Fatalf("recovered rows=%d path=%q, want the previous run's single row", rows, path)
+	}
+
+	// A session already bound to its own ledger keeps that ledger's log.
+	bound := NewSession()
+	bound.journalPath = filepath.Join(dir, "paper-spot-ETHUSDT.log.jsonl")
+	bound.RecoverLog(dir)
+	bound.mu.Lock()
+	got := bound.journalPath
+	bound.mu.Unlock()
+	if got == path {
+		t.Fatalf("RecoverLog replaced a bound session's journal with %q", got)
+	}
+}
+
+// The newest journal wins, so the console shows the most recent run rather
+// than an arbitrary older one.
+func TestLatestLogPicksTheNewestJournal(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.log.jsonl")
+	newest := filepath.Join(dir, "new.log.jsonl")
+	if err := appendJournal(old, CycleRecord{Time: "08:00:00", Action: "flat"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJournal(newest, CycleRecord{Time: "09:00:00", Action: "hold"}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	path, records := LatestLog(dir)
+	if path != newest {
+		t.Fatalf("LatestLog picked %q, want the newest %q", path, newest)
+	}
+	if len(records) != 1 || records[0].Action != "hold" {
+		t.Fatalf("records = %+v, want the newest journal's row", records)
 	}
 }

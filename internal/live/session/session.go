@@ -251,6 +251,25 @@ type Session struct {
 // NewSession returns an idle session. It holds no runner until Start.
 func NewSession() *Session { return &Session{} }
 
+// RecoverLog loads the newest persisted run log in dir as this session's
+// starting history. The console calls it when it creates a session so a freshly
+// opened page shows what the previous run did, instead of an empty table that
+// is indistinguishable from lost history. It is a no-op once a session has
+// started, since Start then owns the log for its own ledger.
+func (s *Session) RecoverLog(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runner != nil || s.journalPath != "" {
+		return
+	}
+	path, records := LatestLog(dir)
+	if path == "" {
+		return
+	}
+	s.journalPath = path
+	s.log = records
+}
+
 // StartOptions describes a session start request.
 type StartOptions struct {
 	Config    config.Config

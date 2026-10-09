@@ -207,6 +207,9 @@ log tabs, and reports a write failure there rather than silently dropping
 history. A journal that cannot be written never stops the session: the log
 observes the trading loop, it does not participate in it.
 
+Opening the console shows the most recent run's log immediately, before any
+session is started, so a fresh launch does not look like lost history.
+
 Live orders write a durable `*.order-pending.json` intent before submission.
 A timeout looks up the same client ID rather than blindly submitting another
 order. Uncertain exchange results or failed ledger persistence halt automated

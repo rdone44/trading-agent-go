@@ -209,9 +209,23 @@ type Settings struct {
 // underneath is not safe for concurrent use, so every touch of it — a cycle,
 // a status read — goes through this mutex.
 type Session struct {
-	mu     sync.Mutex
-	runner *live.Runner
-	cfg    config.Config
+	// mu guards the bookkeeping fields below. It is deliberately NEVER held
+	// across a cycle: one cycle calls the model and the exchange, which can
+	// take minutes, and a status poll that waited on it would look to the
+	// browser like the server had died ("无法读取会话状态：Failed to fetch").
+	mu sync.Mutex
+	// cycleMu serializes cycles so only one goroutine ever touches the runner
+	// (the loop and the 立即执行 button both start them). Status does not take
+	// it, which is what keeps polling responsive during a slow model call.
+	cycleMu sync.Mutex
+	runner  *live.Runner
+	cfg     config.Config
+	// snapshot is the runner-derived part of SessionStatus, published at the
+	// end of every cycle. Status serves it instead of reading the live agent,
+	// so a poll never races a running cycle and never blocks on one. The data
+	// is exactly as fresh as the last completed cycle, which is the only time
+	// the runner changes anyway.
+	snapshot SessionStatus
 	// statePath and interval are kept even after a stop so the console can
 	// show where the session was persisted.
 	statePath string
@@ -357,6 +371,11 @@ func (s *Session) Start(opts StartOptions) error {
 	if len(s.log) == 0 {
 		s.log = nil
 	}
+	// Publish the starting book immediately: the console's first poll arrives
+	// before the first cycle finishes (which can take minutes with a slow
+	// model), and it should show the session's opening state rather than a row
+	// of zeroes that looks like a failed start.
+	s.captureLocked()
 
 	go s.loop(ctx)
 	return nil
@@ -383,22 +402,42 @@ func (s *Session) loop(ctx context.Context) {
 // cycleOnce runs one decision cycle and records the outcome. Errors are
 // captured rather than fatal: a transient network failure should not kill a
 // session that is managing a position.
+//
+// The cycle deliberately runs WITHOUT s.mu. A cycle calls the model and the
+// exchange, which can take minutes, and holding the status lock across it
+// froze every /api/session poll for that whole time — the browser gave up and
+// the console showed "无法读取会话状态：Failed to fetch" while the session was
+// in fact healthy and trading. cycleMu serializes the cycles themselves (the
+// loop and the 立即执行 button both start one, and the runner is not safe for
+// concurrent use); s.mu is then taken only for the bookkeeping at the end.
 func (s *Session) cycleOnce() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cycleLocked()
-}
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
 
-func (s *Session) cycleLocked() {
-	if s.runner == nil {
+	s.mu.Lock()
+	if s.runner == nil || !s.running || s.stopping {
+		s.mu.Unlock()
 		return
 	}
+	runner := s.runner
+	s.mu.Unlock()
+
 	now := time.Now()
-	result, err := s.runner.Cycle(now)
+	result, err := runner.Cycle(now)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A new session may have replaced the runner while this cycle was in
+	// flight (stop, then start again). The result then describes a run that is
+	// no longer current, so it must not be written into the new session's
+	// state.
+	if s.runner != runner {
+		return
+	}
 	s.cycles++
 	s.lastTick = now
 
-	agent := s.runner.Agent()
+	agent := runner.Agent()
 	if result.MarkPrice > 0 {
 		s.lastPrice = result.MarkPrice
 	}
@@ -414,6 +453,7 @@ func (s *Session) cycleLocked() {
 			Price:    s.lastPrice,
 			Position: positionSummary(agent.OpenTrade()),
 		})
+		s.captureLocked()
 		return
 	}
 
@@ -436,16 +476,66 @@ func (s *Session) cycleLocked() {
 		// action is a degradation such as ai_unavailable.
 		Reason: result.Reason,
 	})
+	s.captureLocked()
+}
+
+// captureLocked refreshes the runner-derived part of the status so Status can
+// answer without touching the runner. The caller must hold mu AND must
+// guarantee that no cycle is running (hold cycleMu, or be inside Start/Stop
+// where the runner is not being cycled).
+//
+// Every slice is rebuilt rather than mutated, so a caller that is already
+// holding a previously returned SessionStatus keeps reading a consistent
+// snapshot instead of watching it change underneath.
+func (s *Session) captureLocked() {
+	view := SessionStatus{}
+	if s.runner != nil {
+		agent := s.runner.Agent()
+		view.Equity = s.currentEquityLocked()
+		view.Cash = agent.Book.AvailableCash()
+		view.Wallet = agent.Book.Cash
+		view.MarginUsed = agent.Book.MarginUsed()
+		view.InitialCash = agent.Book.InitialCash
+		view.PeakEquity = agent.PeakEquity
+		view.Position = s.positionLocked()
+		view.Risk = s.riskLocked(view.Equity)
+		view.Trades = tradeViews(agent.Trades())
+		if view.InitialCash > 0 {
+			view.TotalReturnPct = (view.Equity/view.InitialCash - 1) * 100
+		}
+		interval := int(s.interval.Seconds())
+		if interval == 0 {
+			interval = 60
+		}
+		view.Settings = sessionSettings(s.cfg, interval, s.execute)
+		fills := agent.Broker.Fills()
+		if len(fills) > 200 {
+			fills = fills[len(fills)-200:]
+		}
+		for _, f := range fills {
+			view.Orders = append(view.Orders, ExecutionView{
+				Time: f.Time.Format(time.RFC3339), Side: string(f.Side),
+				Quantity: f.Quantity, Price: f.Price, Fee: f.Commission,
+				Status: f.Status, Reason: f.Reason, OrderID: f.OrderID,
+				ClientOrderID: f.ClientOrderID, Uncertain: f.Uncertain,
+			})
+		}
+	}
+	s.snapshot = view
 }
 
 // Step runs one cycle on demand, which is what the 立即执行 button uses.
+// It runs synchronously — the caller asked for the result and waits for it —
+// but it does not hold the status lock, so the console keeps polling normally
+// while a slow model is thinking.
 func (s *Session) Step() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running || s.stopping || s.runner == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("没有正在运行的交易会话")
 	}
-	s.cycleLocked()
+	s.mu.Unlock()
+	s.cycleOnce()
 	return nil
 }
 
@@ -475,6 +565,11 @@ func (s *Session) Stop() error {
 	cancel()
 	<-done
 
+	// Wait out an in-flight on-demand cycle so the final save cannot race it.
+	// A cycle started by the loop has already returned when done closed.
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
+
 	// Persist the final state so a restart resumes this session exactly.
 	var saveErr error
 	s.mu.Lock()
@@ -500,6 +595,7 @@ func (s *Session) Stop() error {
 		record.Position = positionSummary(agent.OpenTrade())
 	}
 	s.appendLocked(record)
+	s.captureLocked()
 	s.stopErr = saveErr
 	close(s.stopDone)
 	s.mu.Unlock()
@@ -523,6 +619,12 @@ func (s *Session) Running() bool {
 // false when no runner has ever started, so the caller can say so instead of
 // sending the model an empty run.
 func (s *Session) ReviewFacts(topN int) (string, bool) {
+	// Serialize against a running cycle: the runner is not safe for concurrent
+	// use, and this reads its whole result snapshot. The wait is bounded by the
+	// model timeout, and the console calls this from an explicit button press
+	// rather than a poll, so blocking here is acceptable.
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.runner == nil {
@@ -532,6 +634,11 @@ func (s *Session) ReviewFacts(topN int) (string, bool) {
 }
 
 // Status builds the JSON view the console polls.
+//
+// It never touches the runner and never waits for a cycle: everything that
+// comes from the runner is read from the snapshot published at the end of the
+// last cycle. That is what lets the console keep polling while the model is
+// thinking for a minute, instead of freezing until the cycle finishes.
 func (s *Session) Status() SessionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -556,6 +663,21 @@ func (s *Session) Status() SessionStatus {
 		StatePath:   s.statePath,
 		LogPath:     s.journalPath,
 		LogError:    s.journalErr,
+
+		// The last cycle's runner-derived figures, published under this same
+		// lock, so reading them cannot race a running cycle.
+		Equity:           s.snapshot.Equity,
+		Cash:             s.snapshot.Cash,
+		Wallet:           s.snapshot.Wallet,
+		MarginUsed:       s.snapshot.MarginUsed,
+		PeakEquity:       s.snapshot.PeakEquity,
+		TotalReturnPct:   s.snapshot.TotalReturnPct,
+		Position:         s.snapshot.Position,
+		Risk:             s.snapshot.Risk,
+		Trades:           s.snapshot.Trades,
+		Orders:           s.snapshot.Orders,
+		Settings:         s.snapshot.Settings,
+		ProtectionActive: s.running && !s.stopping && !s.snapshot.Risk.OrderUncertain,
 	}
 	if status.Interval == 0 {
 		status.Interval = 60
@@ -579,29 +701,10 @@ func (s *Session) Status() SessionStatus {
 		status.LastTick = s.lastTick.Format(time.RFC3339)
 	}
 
-	if s.runner != nil {
-		agent := s.runner.Agent()
-		status.Equity = s.currentEquityLocked()
-		status.Cash = agent.Book.AvailableCash()
-		status.Wallet = agent.Book.Cash
-		status.MarginUsed = agent.Book.MarginUsed()
-		status.InitialCash = agent.Book.InitialCash
-		status.PeakEquity = agent.PeakEquity
-		status.Position = s.positionLocked()
-		status.Risk = s.riskLocked(status.Equity)
-		status.Trades = tradeViews(agent.Trades())
-		if status.InitialCash > 0 {
-			status.TotalReturnPct = (status.Equity/status.InitialCash - 1) * 100
-		}
-		status.ProtectionActive = s.running && !s.stopping && !status.Risk.OrderUncertain
-		status.Settings = sessionSettings(s.cfg, status.Interval, s.execute)
-		fills := agent.Broker.Fills()
-		if len(fills) > 200 {
-			fills = fills[len(fills)-200:]
-		}
-		for _, f := range fills {
-			status.Orders = append(status.Orders, ExecutionView{Time: f.Time.Format(time.RFC3339), Side: string(f.Side), Quantity: f.Quantity, Price: f.Price, Fee: f.Commission, Status: f.Status, Reason: f.Reason, OrderID: f.OrderID, ClientOrderID: f.ClientOrderID, Uncertain: f.Uncertain})
-		}
+	// InitialCash is the session's own setting and stays authoritative even
+	// before the first cycle has published a book.
+	if s.snapshot.InitialCash > 0 {
+		status.InitialCash = s.snapshot.InitialCash
 	}
 	return status
 }

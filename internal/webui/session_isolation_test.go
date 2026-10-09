@@ -55,6 +55,30 @@ func getSessionAs(t *testing.T, server *webui.Server, cookie string) webui.Sessi
 	return status
 }
 
+// waitForFirstCycle blocks until a session has completed at least one decision
+// cycle, and returns that settled status.
+//
+// The loop runs its first cycle immediately but in the background, and
+// /api/session deliberately reports the last published snapshot instead of
+// waiting for the cycle (that is what keeps the console responsive during a
+// slow model call). A test that compares equity across an action therefore has
+// to let the session's own first cycle finish first, or it would measure that
+// cycle instead of the action under test.
+func waitForFirstCycle(t *testing.T, server *webui.Server, cookie string) webui.SessionStatus {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status := getSessionAs(t, server, cookie)
+		if status.Cycles >= 1 {
+			return status
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session never completed its first cycle")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // With the vault enabled, accounts must not be able to see, drive or stop
 // each other's trading loops. Regression test for the shared-session audit
 // finding: a single global session let any account read or kill another
@@ -89,7 +113,7 @@ func TestSessionsAreIsolatedPerAccount(t *testing.T) {
 	}
 	defer server.Session("bob").Stop()
 
-	before := getSessionAs(t, server, alice)
+	before := waitForFirstCycle(t, server, alice)
 	if rec := postJSONAs(t, server, "/api/session/step", `{}`, bob); rec.Code != http.StatusOK {
 		t.Fatalf("bob step = %d: %s", rec.Code, rec.Body.String())
 	}

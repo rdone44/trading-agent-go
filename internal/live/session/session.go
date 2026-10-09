@@ -39,6 +39,13 @@ type CycleRecord struct {
 	Cash     float64 `json:"cash"`
 	Position string  `json:"position"`
 	Error    string  `json:"error,omitempty"`
+	// Reason is why the cycle did what it did: the model's own one-line
+	// explanation on an LLM strategy, the protective exit's trigger, or the
+	// failure detail when the action is a degradation such as ai_unavailable.
+	// Without it the log says "AI 不可用" and leaves the user to guess whether
+	// the key is wrong, the endpoint is unreachable or the answer did not
+	// parse — which is exactly the question the log exists to answer.
+	Reason string `json:"reason,omitempty"`
 }
 
 // PositionView describes the open position, if any.
@@ -125,6 +132,11 @@ type SessionStatus struct {
 	Wallet           float64         `json:"wallet"`
 	MarginUsed       float64         `json:"margin_used"`
 	StatePath        string          `json:"state_path,omitempty"`
+	// LogPath is where the run log is persisted, and LogError is set when the
+	// last append failed. The console shows both so "the history is empty"
+	// can be told apart from "the history could not be written".
+	LogPath  string `json:"log_path,omitempty"`
+	LogError string `json:"log_error,omitempty"`
 }
 
 // ExecutionView is one fill as the console's order blotter displays it.
@@ -222,6 +234,13 @@ type Session struct {
 	lastError  string
 	lastReason string // the LLM's explanation of the latest decision
 	log        []CycleRecord
+	// journalPath is where the log is persisted, derived from the ledger path.
+	// journalAppends counts rows written since the last compaction and
+	// journalErr is the last write failure, reported on the status so a
+	// read-only or full disk is visible instead of silently losing history.
+	journalPath    string
+	journalAppends int
+	journalErr     string
 
 	// SeriesLoader and PriceLoader are injected by tests so the suite stays
 	// offline; production leaves them nil and the runner uses Binance.
@@ -308,7 +327,17 @@ func (s *Session) Start(opts StartOptions) error {
 	s.lastAction = "启动"
 	s.lastPrice = 0
 	s.lastReason = ""
-	s.log = nil
+	// Resume the previous run's log instead of wiping it: the rows that
+	// explain why the last run stopped are the first thing an operator needs
+	// after a restart. A journal that cannot be read degrades to an empty log
+	// rather than blocking the start.
+	s.journalPath = journalPathFor(opts.StatePath)
+	s.journalErr = ""
+	s.journalAppends = 0
+	s.log = loadJournal(s.journalPath, cycleLogLimit)
+	if len(s.log) == 0 {
+		s.log = nil
+	}
 
 	go s.loop(ctx)
 	return nil
@@ -384,6 +413,9 @@ func (s *Session) cycleLocked() {
 		Equity:   result.Equity,
 		Cash:     result.Cash,
 		Position: positionSummary(result.Open),
+		// The strategy's explanation, including the failure detail when the
+		// action is a degradation such as ai_unavailable.
+		Reason: result.Reason,
 	})
 }
 
@@ -503,6 +535,8 @@ func (s *Session) Status() SessionStatus {
 		Leverage:    s.cfg.Risk.Leverage,
 		Log:         append([]CycleRecord(nil), s.log...),
 		StatePath:   s.statePath,
+		LogPath:     s.journalPath,
+		LogError:    s.journalErr,
 	}
 	if status.Interval == 0 {
 		status.Interval = 60
@@ -660,6 +694,32 @@ func (s *Session) appendLocked(record CycleRecord) {
 	if len(s.log) > cycleLogLimit {
 		s.log = s.log[len(s.log)-cycleLogLimit:]
 	}
+	s.persistLogLocked(record)
+}
+
+// persistLogLocked appends one record to the on-disk journal. A failure is
+// recorded on the status and never propagated: losing a log line must not stop
+// a session that is managing a live position.
+func (s *Session) persistLogLocked(record CycleRecord) {
+	if s.journalPath == "" {
+		return
+	}
+	if err := appendJournal(s.journalPath, record); err != nil {
+		s.journalErr = err.Error()
+		return
+	}
+	s.journalAppends++
+	// Past the size cap, rewrite the file from the tail. The append above
+	// already dropped that one row; compaction makes the loss permanent and
+	// bounded instead of letting the file grow forever.
+	if s.journalAppends >= cycleLogLimit {
+		s.journalAppends = 0
+		if err := rewriteJournal(s.journalPath, s.log); err != nil {
+			s.journalErr = err.Error()
+			return
+		}
+	}
+	s.journalErr = ""
 }
 
 // positionSummary is the one-line position text in a cycle row.

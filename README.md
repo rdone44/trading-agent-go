@@ -195,6 +195,18 @@ files are not silently imported or overwritten. Back them up and reconcile
 positions before migrating. An explicit `state_path` must match the saved
 symbol and mode. Old futures accounting files require manual reconciliation.
 
+The run log is persisted next to its ledger as
+`sessions/paper-spot-BTCUSDT.log.jsonl` (one JSON object per decision cycle,
+appended), so restarting the console resumes the history instead of erasing
+it. Each row carries the strategy's own explanation in the 说明 column —
+the model's one-line reason on a normal cycle, and the failure detail on a
+degradation such as `ai_unavailable`. That is what makes a wrong key, an
+unreachable endpoint and an unparseable answer distinguishable instead of
+eight identical "AI 不可用" rows. The console shows the journal path under the
+log tabs, and reports a write failure there rather than silently dropping
+history. A journal that cannot be written never stops the session: the log
+observes the trading loop, it does not participate in it.
+
 Live orders write a durable `*.order-pending.json` intent before submission.
 A timeout looks up the same client ID rather than blindly submitting another
 order. Uncertain exchange results or failed ledger persistence halt automated

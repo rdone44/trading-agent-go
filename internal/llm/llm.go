@@ -180,6 +180,12 @@ func extractJSON(s string) string {
 	return s[start:]
 }
 
+// Truncate shortens a model answer for display in an error or a log line. It
+// slices on a rune boundary so a multi-byte character is never split.
+func Truncate(s string, n int) string {
+	return truncate(s, n)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

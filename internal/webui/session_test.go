@@ -258,3 +258,45 @@ func TestSessionStopKeepsPositionInTheLog(t *testing.T) {
 		t.Errorf("stop row equity = %v, want the marked equity", last.Equity)
 	}
 }
+
+// Restarting used to wipe the run log, so the rows explaining why the previous
+// run behaved as it did vanished exactly when the operator came back to look
+// for them. The console must show the earlier session's history after a
+// restart, not an empty table.
+func TestSessionLogSurvivesRestart(t *testing.T) {
+	server := newLiveTestServer(t)
+	body := `{"symbol":"TEST","strategy":"ma_cross","days":300,"interval_seconds":3600}`
+
+	if start := postJSON(t, server, "/api/session/start", body); start.Code != http.StatusOK {
+		t.Fatalf("start = %d: %s", start.Code, start.Body.String())
+	}
+	if recorder := postJSON(t, server, "/api/session/step", ""); recorder.Code != http.StatusOK {
+		t.Fatalf("step = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := postJSON(t, server, "/api/session/stop", ""); recorder.Code != http.StatusOK {
+		t.Fatalf("stop = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	before := getSession(t, server)
+	if len(before.Log) == 0 {
+		t.Fatal("precondition: the first run should have logged rows")
+	}
+	if before.LogPath == "" {
+		t.Fatal("the status must name where the run log is persisted")
+	}
+
+	// Second start: the history is read back from disk.
+	if start := postJSON(t, server, "/api/session/start", body); start.Code != http.StatusOK {
+		t.Fatalf("restart = %d: %s", start.Code, start.Body.String())
+	}
+	defer postJSON(t, server, "/api/session/stop", "")
+
+	after := getSession(t, server)
+	if len(after.Log) < len(before.Log) {
+		t.Fatalf("log has %d rows after the restart, want at least the %d from before",
+			len(after.Log), len(before.Log))
+	}
+	if after.Log[0].Action != before.Log[0].Action || after.Log[0].Time != before.Log[0].Time {
+		t.Fatalf("oldest row after restart = %+v, want the previous run's first row %+v",
+			after.Log[0], before.Log[0])
+	}
+}

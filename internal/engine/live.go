@@ -129,6 +129,9 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 			// healthy position on an outage. Protective exits already ran.
 			res = a.liveResult(res, price)
 			res.Action = "ai_unavailable"
+			// Carry the failure detail: "AI 不可用" alone leaves the operator
+			// unable to tell a wrong key from an unreachable endpoint.
+			res.Reason = reason
 			return res, nil
 		}
 	} else {

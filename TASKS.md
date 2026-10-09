@@ -62,6 +62,19 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 - 验证：`gofmt -l .` 空、`go vet ./...`、`go test -count=1 ./...` 19 包全绿；新增 8 项回归测试（`internal/webui/ai_page_test.go`）覆盖 AI 页路由、`/api/config` 就绪字段、实盘复盘无会话/无密钥/正常路径、否决开关开与关；`node --test tests/ui/settings.test.cjs` 5 项通过；Windows desktop 与 Linux server 交叉构建成功；桌面版实机启动并在浏览器中逐屏核对。
 - 未完成：AI 页目前不展示「本次会话是否触发过否决」的历史记录，只在运行日志里体现。
 
+### T3. 运行日志可用性重构（2026-10-09）
+
+- 背景：用户反馈「没有日志功能吗」。日志页（`#tab-body` 的 `data-tab="cycles"`）确实存在，但三个缺陷让它基本没用：用户那次会话留下 8 行一模一样的 `ai_unavailable`，`error` 列为空，看不出是密钥错、网关不通还是回答解析失败；而且 `Session.Start` 里的 `s.log = nil` 让每次重启都清空历史。
+- 范围：`internal/strategy/`、`internal/engine/live.go`、`internal/llm/llm.go`、`internal/live/session/`、`internal/webui/static/`。
+- 状态：done
+- 落地：
+  1. **失败原因不再被丢弃**：`strategy.LLM.decideAt` 由 `bool` 改为 `error`，`LastDecision` 在 `ok=false` 时也返回具体原因 —— 未配密钥写明「未配置模型密钥（设置 → Binance 与 AI 服务 填写 AI Token）」，行情为空写明「行情数据为空，无法请求模型」，调用失败返回 `err.Error()`，回答解析失败返回 `模型回答无法解析为 JSON 目标仓位: <回答片段>`（新增 `llm.Truncate`，按 rune 截断）。`engine.Agent.Decide` 在 `ai_unavailable` 分支把该原因写进 `StepResult.Reason`。
+  2. **日志行带上原因**：`session.CycleRecord` 新增 `reason` 字段并在 `cycleLocked` 中写入；`app.js` 的 `renderCycles` 让「说明」列显示 `reason`（错误行仍显示 `error`）。此前该列只在周期报错时有内容。
+  3. **日志跨重启保留**：新增 `internal/live/session/journal.go`，把每个周期以 JSONL 追加到账本同目录的 `<ledger>.log.jsonl`；`Start` 改为读取该文件而不是 `s.log = nil`。尾部截断的行会被跳过（崩溃时只丢最后一行，不会毁掉整个历史）；累计写入达到 `cycleLogLimit` 后从内存尾部重写文件，文件不会无限增长；写入失败只记录到 `status.log_error` 并继续交易 —— 日志是观察者，不参与交易。
+  4. **日志可见性**：会话状态新增 `log_path` / `log_error`；日志页签下方新增 `#log-note` 显示日志文件位置，写入失败时用告警色显示，避免「历史为空」和「历史写不进去」看起来一样。
+- 验证：`gofmt -l .` 空、`go vet ./...`、`go test -count=1 ./...` 24 包全绿；新增 8 项回归测试（`journal_test.go` 的跨重启恢复/截断行跳过/空路径不落盘/写失败上报/压缩/路径推导，`llm_test.go` 的解析失败原因与缺密钥原因，`ai_outage_test.go` 的原因透传，`webui/session_test.go` 的重启后日志仍在）；`node --test tests/ui/settings.test.cjs` 10 项通过；Windows desktop 与 Linux server 交叉构建成功。
+- 未完成：日志按账本分文件，没有集中查询接口；`log_error` 只在轮询状态里体现，没有独立的告警通道。
+
 ### T1. 构建与测试基线
 
 - 范围：在本机（Linux）跑通 `go test ./...` 和 server 构建

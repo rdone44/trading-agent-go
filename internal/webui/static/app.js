@@ -677,6 +677,14 @@ function renderCycles(log) {
     const action = c.error
       ? '<span class="pill stop">错误</span>'
       : `<span class="pill ${c.action === "hold" || c.action === "flat" ? "" : "long"}">${escape(translateReason(c.action) || c.action)}</span>`;
+    // The 说明 cell answers "why did it do that": the model's own explanation
+    // on a normal cycle, or the failure detail on a degradation. Without it a
+    // run of ai_unavailable rows says nothing about what to fix.
+    const note = c.error
+      ? `<span class="muted">${escape(c.error)}</span>`
+      : c.reason
+        ? escape(c.reason)
+        : "";
     return [
       `<td>${escape(c.time)}</td>`,
       `<td class="tag">${action}</td>`,
@@ -684,7 +692,7 @@ function renderCycles(log) {
       `<td class="num">${fmt.money(c.equity)}</td>`,
       `<td class="num">${fmt.money(c.cash)}</td>`,
       `<td class="tag">${escape(c.position || "空仓")}</td>`,
-      `<td class="tag">${c.error ? `<span class="muted">${escape(c.error)}</span>` : ""}</td>`,
+      `<td class="tag">${note}</td>`,
     ];
   });
   return table(
@@ -725,6 +733,22 @@ function renderTab() {
   $$(".tab").forEach((tab) => { tab.classList.toggle("active", tab.dataset.tab === activeTab); tab.setAttribute("aria-selected", String(tab.dataset.tab === activeTab)); });
 }
 
+// renderLogNote tells the operator where the run log lives and whether it is
+// actually being written. The log survives a restart, so "the table is empty"
+// and "the history could not be saved" are different problems and must not
+// look the same.
+function renderLogNote(s) {
+  const note = $("#log-note");
+  if (!note) return;
+  if (s.log_error) {
+    note.textContent = `运行日志写入失败：${s.log_error}`;
+    note.className = "hint log-note warn";
+    return;
+  }
+  note.textContent = s.log_path ? `运行日志保存在 ${s.log_path}，重启后仍会保留。` : "";
+  note.className = "hint log-note";
+}
+
 // ------------------------------------------------------------------ session
 
 function renderSession(s) {
@@ -743,6 +767,7 @@ function renderSession(s) {
   $("#cycles-count").textContent = (s.log || []).length;
   $("#trades-count").textContent = (s.trades || []).length;
   $("#orders-count").textContent = (s.orders || []).length;
+  renderLogNote(s);
   renderTab();
 
   // The config in force is part of the display, so lock the rail rather than

@@ -68,6 +68,11 @@ type LiveDecision interface {
 	// unparseable text). The live loop must treat that as "no new
 	// instruction" and keep the current position — never as a flat target,
 	// which would liquidate a healthy position on a model outage.
+	//
+	// reason is set even when ok is false, and then says WHY the strategy
+	// could not answer. A log that only shows "AI 不可用" cannot tell a
+	// missing key from a refused connection from an unparseable answer, so
+	// the operator has nothing to act on.
 	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool)
 }
 

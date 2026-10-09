@@ -114,8 +114,10 @@ func TestLastDecisionDegradesFlatOnModelError(t *testing.T) {
 	if sig != 0 || !math.IsNaN(stop) || !math.IsNaN(target) {
 		t.Fatalf("LastDecision on model error = (%v,%v,%v), want neutral (0,NaN,NaN)", sig, stop, target)
 	}
-	if reason != "" {
-		t.Fatalf("LastDecision on model error reason = %q, want empty", reason)
+	// The reason is what the console log shows; it must name the underlying
+	// failure instead of leaving the operator with a bare "AI 不可用".
+	if !strings.Contains(reason, "model down") {
+		t.Fatalf("LastDecision on model error reason = %q, want the underlying error", reason)
 	}
 }
 
@@ -131,11 +133,34 @@ func TestLastDecisionDegradesFlatWhenDisabled(t *testing.T) {
 	if sig != 0 {
 		t.Fatalf("LastDecision disabled = %v, want 0", sig)
 	}
-	if reason != "" {
-		t.Fatalf("LastDecision disabled reason = %q, want empty", reason)
+	// The operator needs to know a key is missing, not just that something
+	// failed: this string is the only clue the log gives them.
+	if !strings.Contains(reason, "密钥") {
+		t.Fatalf("LastDecision disabled reason = %q, want it to name the missing key", reason)
 	}
 	if f.calls != 0 {
 		t.Fatalf("disabled strategy made %d model calls, want 0", f.calls)
+	}
+}
+
+// A model that answers with prose instead of JSON is the failure mode an
+// operator is least able to diagnose from the outside: the key works, the
+// endpoint answers, and the strategy still refuses to trade. The reason must
+// quote enough of the answer to make that visible in the run log.
+func TestLastDecisionReportsUnparseableAnswer(t *testing.T) {
+	f := &fakeAsk{answer: "抱歉，我无法给出交易建议。"}
+	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
+	s := stratOf(t, f, true)
+
+	_, _, _, reason, ok := s.LastDecision(series, cfgFor(nil))
+	if ok {
+		t.Fatal("an unparseable answer must report ok=false")
+	}
+	if !strings.Contains(reason, "无法解析") {
+		t.Fatalf("reason = %q, want it to say the answer did not parse", reason)
+	}
+	if !strings.Contains(reason, "无法给出交易建议") {
+		t.Fatalf("reason = %q, want it to quote the model's actual answer", reason)
 	}
 }
 

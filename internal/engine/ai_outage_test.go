@@ -15,8 +15,8 @@ import (
 )
 
 // failingStrategy is a LiveDecision strategy whose model is unreachable: it
-// reports ok=false, exactly as strategy.LLM does on a timeout, HTTP error or
-// unparseable answer.
+// reports ok=false plus a reason, exactly as strategy.LLM does on a timeout,
+// HTTP error or unparseable answer.
 type failingStrategy struct{}
 
 func (failingStrategy) Name() string     { return "failing" }
@@ -27,7 +27,7 @@ func (failingStrategy) Generate(s model.Series, cfg config.Config) (strategy.Sig
 }
 
 func (failingStrategy) LastDecision(s model.Series, cfg config.Config) (float64, float64, float64, string, bool) {
-	return 0, math.NaN(), math.NaN(), "", false
+	return 0, math.NaN(), math.NaN(), "模型网关连接超时", false
 }
 
 // Regression: an LLM outage used to surface as a flat target, which the live
@@ -63,5 +63,10 @@ func TestAIModelOutageHoldsPositionInsteadOfLiquidating(t *testing.T) {
 	}
 	if res.Action != "ai_unavailable" {
 		t.Fatalf("action = %q, want ai_unavailable so the console shows the degradation", res.Action)
+	}
+	// The reason is the whole point of the log row: "AI 不可用" with no detail
+	// leaves the operator unable to tell a bad key from a dead endpoint.
+	if res.Reason != "模型网关连接超时" {
+		t.Fatalf("reason = %q, want the strategy's failure detail carried through to the log", res.Reason)
 	}
 }

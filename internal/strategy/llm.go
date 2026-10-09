@@ -125,8 +125,8 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 		if i%step != 0 {
 			continue
 		}
-		pos, sp, tp, _, ok := s.decideAt(ask, series, cfg, ind, i, window)
-		if !ok {
+		pos, sp, tp, _, err := s.decideAt(ask, series, cfg, ind, i, window)
+		if err != nil {
 			continue // unusable answer: hold the previous state
 		}
 		sig[i] = pos
@@ -156,33 +156,45 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 // the previous target on a failed call.
 func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool) {
 	ask, enabled := s.resolver(cfg)
-	if !enabled || series.Len() == 0 {
-		return 0, math.NaN(), math.NaN(), "", false
+	if !enabled {
+		// Say which credential is missing rather than reporting a bare
+		// failure: this string is what the console log shows.
+		return 0, math.NaN(), math.NaN(), "未配置模型密钥（设置 → Binance 与 AI 服务 填写 AI Token）", false
+	}
+	if series.Len() == 0 {
+		return 0, math.NaN(), math.NaN(), "行情数据为空，无法请求模型", false
 	}
 	ind := buildIndicators(series, cfg)
 	window := cfg.IntParam("llm_window", 30)
 	if window < 5 {
 		window = 5
 	}
-	pos, sp, tp, why, decided := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
-	if !decided {
-		return 0, math.NaN(), math.NaN(), "", false
+	pos, sp, tp, why, err := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
+	if err != nil {
+		return 0, math.NaN(), math.NaN(), err.Error(), false
 	}
 	return pos, sp, tp, why, true
 }
 
 // decideAt asks the model for one target-position decision on bar i and
-// returns the snapped position plus any stop/target it supplied. ok is false
-// when the model could not be called or its answer did not parse, in which
-// case the caller holds the previous state. reason is the model's own short
-// explanation, trimmed to one line for the console.
-func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, reason string, ok bool) {
+// returns the snapped position plus any stop/target it supplied. A non-nil
+// error means the model could not be called or its answer did not parse, and
+// its text says which — the caller holds the previous state and surfaces the
+// message in the console log. reason is the model's own short explanation,
+// trimmed to one line for the console.
+func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, reason string, err error) {
 	user := llmUserPrompt(series.Symbol, i, window, series.Close(), ind)
-	answer, err := ask(llmSystemPrompt(cfg), user)
-	if err != nil {
-		return 0, 0, 0, "", false
+	answer, callErr := ask(llmSystemPrompt(cfg), user)
+	if callErr != nil {
+		return 0, 0, 0, "", callErr
 	}
-	return parseLLMAnswer(answer)
+	pos, stop, target, reason, ok := parseLLMAnswer(answer)
+	if !ok {
+		// Include a short excerpt of what the model actually said: "答案无法
+		// 解析" alone gives the operator nothing to correct.
+		return 0, 0, 0, "", fmt.Errorf("模型回答无法解析为 JSON 目标仓位: %s", llm.Truncate(answer, 160))
+	}
+	return pos, stop, target, reason, nil
 }
 
 // parseLLMAnswer extracts {position, stop, target} from a model reply. The

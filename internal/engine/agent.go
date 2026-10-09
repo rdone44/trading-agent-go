@@ -140,7 +140,10 @@ type Agent struct {
 }
 
 // New builds an agent with a paper broker — the shape used by backtests and
-// the default trade loop (which simulates fills, no real orders).
+// the default trade loop (which simulates fills, no real orders). The book is
+// a perpetual one, matching the venue every run trades: backtest accounting
+// and live accounting have to be the same model, or a backtest says nothing
+// about the account it is meant to predict.
 func New(cfg config.Config, strat strategy.Strategy) *Agent {
 	symbol := cfg.Agent.Symbol
 	return &Agent{
@@ -148,7 +151,7 @@ func New(cfg config.Config, strat strategy.Strategy) *Agent {
 		Strategy: strat,
 		Symbol:   symbol,
 		Broker:   broker.New(cfg.Execution),
-		Book:     portfolio.New(cfg.Risk.InitialCash),
+		Book:     portfolio.New(cfg.Risk.InitialCash, cfg.Risk.Leverage),
 		Risk:     risk.New(cfg.Risk),
 	}
 }

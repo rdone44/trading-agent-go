@@ -50,10 +50,10 @@ type Risk struct {
 	MaxDailyLossPct    *float64 `yaml:"max_daily_loss_pct"`
 	AllowShort         bool     `yaml:"allow_short"`
 	MaxOpenPositions   int      `yaml:"max_open_positions"`
-	// Leverage is the margin multiplier for a position. 1 is spot-like (full
-	// notional, cash-constrained sizing, no shorting). >1 switches the sizing
-	// to the futures margin model: notional = margin * Leverage, so the same
-	// risk budget controls more notional. Only meaningful on a futures venue.
+	// Leverage is the margin multiplier for a position: notional = margin *
+	// Leverage, so the same risk budget controls more notional. 1 means an
+	// unleveraged perpetual position, which is still a perpetual: the position
+	// can be shorted and the exchange, not the wallet, holds the inventory.
 	Leverage int `yaml:"leverage"`
 }
 
@@ -75,12 +75,7 @@ type Live struct {
 	LookbackDays int    `yaml:"lookback_days"`
 	PaperTrading bool   `yaml:"paper_trading"`
 	StateFile    string `yaml:"state_file"`
-	// Futures selects the USDT-margined perpetual venue. When false the
-	// runner uses the spot broker and spot K-lines; when true it wires the
-	// futures broker and futures K-lines/mark prices. A live loop that shorts
-	// or runs a leverage > 1 must be on a futures venue.
-	Futures    bool   `yaml:"futures"`
-	MarginMode string `yaml:"margin_mode"` // "ISOLATED" (default) or "CROSS"
+	MarginMode   string `yaml:"margin_mode"` // "ISOLATED" (default) or "CROSS"
 	// ExchangeAPIKey / ExchangeSecretKey carry the per-user Binance
 	// credentials the webui injects from the credential vault. They are
 	// yaml:"-" on purpose: secrets live in the vault (0600, hashed users),
@@ -196,9 +191,9 @@ func Load(path string) (Config, error) {
 		cfg.Data.Provider = "binance"
 	}
 	// A Leverage below 1 is nonsensical (that would be a discount), clamp to 1.
-	// The venue choice (Live.Futures) does NOT force AllowShort: long-only
-	// futures is a valid, safer default. To use the short side the user sets
-	// Risk.AllowShort explicitly.
+	// Leverage does NOT force AllowShort: long-only perpetuals is a valid,
+	// safer default. To use the short side the user sets Risk.AllowShort
+	// explicitly.
 	if cfg.Risk.Leverage < 1 {
 		cfg.Risk.Leverage = 1
 	}

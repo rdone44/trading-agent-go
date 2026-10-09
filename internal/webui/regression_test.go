@@ -48,7 +48,7 @@ func TestSessionStateIsPartitionedByModeVenueSymbol(t *testing.T) {
 		t.Fatal(r.Body.String())
 	}
 	defer s.Session("").Stop()
-	if got := filepath.Base(getSession(t, s).StatePath); got != "paper-spot-ETHUSDT.json" {
+	if got := filepath.Base(getSession(t, s).StatePath); got != "paper-futures-ETHUSDT.json" {
 		t.Fatalf("unexpected state path %s", got)
 	}
 }
@@ -56,7 +56,7 @@ func TestSessionStateIsPartitionedByModeVenueSymbol(t *testing.T) {
 func TestMarketDoesNotRequireRunningTradingSession(t *testing.T) {
 	s, _ := newTestServer(t)
 	calls := 0
-	s.MarketLoader = func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error) {
+	s.MarketLoader = func(symbol string, interval string) (marketdata.MarketSnapshot, error) {
 		calls++
 		return marketdata.MarketSnapshot{Symbol: symbol, Interval: interval, Price: 81234, UpdatedAt: time.Now()}, nil
 	}
@@ -88,7 +88,7 @@ func TestInvalidParametersFailBeforeTrading(t *testing.T) {
 func TestSymbolsEndpointServesCachedList(t *testing.T) {
 	s, _ := newTestServer(t)
 	calls := 0
-	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+	s.SymbolList = func(limit int) ([]marketdata.SymbolInfo, error) {
 		calls++
 		return []marketdata.SymbolInfo{
 			{Symbol: "BTCUSDT", Price: 60000, Volume24h: 500000000},
@@ -113,6 +113,8 @@ func TestSymbolsEndpointServesCachedList(t *testing.T) {
 	}
 
 	// limit caps the result without another loader call.
+	// A stale bookmark carrying ?venue=spot is tolerated and still answered
+	// with the perpetual venue: the query no longer selects a data source.
 	r := httptest.NewRecorder()
 	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/symbols?venue=spot&limit=2", nil))
 	var payload struct {
@@ -122,8 +124,8 @@ func TestSymbolsEndpointServesCachedList(t *testing.T) {
 	if err := json.Unmarshal(r.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode /api/symbols: %v", err)
 	}
-	if payload.Venue != "spot" || len(payload.Symbols) != 2 {
-		t.Fatalf("venue=%q len=%d, want spot/2", payload.Venue, len(payload.Symbols))
+	if payload.Venue != "futures" || len(payload.Symbols) != 2 {
+		t.Fatalf("venue=%q len=%d, want futures/2", payload.Venue, len(payload.Symbols))
 	}
 	if calls != 1 {
 		t.Fatalf("limit re-read the cache wrongly: SymbolList called %d times", calls)
@@ -134,7 +136,7 @@ func TestSymbolsEndpointServesCachedList(t *testing.T) {
 // rejected like every other API route.
 func TestSymbolsEndpointRejectsBadLimitAndMethod(t *testing.T) {
 	s, _ := newTestServer(t)
-	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+	s.SymbolList = func(limit int) ([]marketdata.SymbolInfo, error) {
 		return nil, nil
 	}
 
@@ -155,7 +157,7 @@ func TestSymbolsEndpointRejectsBadLimitAndMethod(t *testing.T) {
 // which the console shows as "cannot list coins" rather than a blank page.
 func TestSymbolsEndpointLoaderFailureIs502(t *testing.T) {
 	s, _ := newTestServer(t)
-	s.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+	s.SymbolList = func(limit int) ([]marketdata.SymbolInfo, error) {
 		return nil, errors.New("exchange down")
 	}
 	r := httptest.NewRecorder()

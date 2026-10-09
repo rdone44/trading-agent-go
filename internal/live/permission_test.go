@@ -23,25 +23,22 @@ func TestRunnerRequiresExactProcessOptIn(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for _, futures := range []bool{false, true} {
-				cfg := config.Default()
-				cfg.Live.Futures = futures
-				strat, err := strategy.New(cfg.Strategy.Name, cfg)
-				if err != nil {
-					t.Fatal(err)
+			cfg := config.Default()
+			strat, err := strategy.New(cfg.Strategy.Name, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner, err := live.New(cfg, strat, true, filepath.Join(t.TempDir(), "state.json"))
+			if value == "1" {
+				if err != nil || runner == nil || !runner.IsExecuted() {
+					t.Fatalf("explicit opt-in did not allow construction: runner=%v err=%v", runner, err)
 				}
-				runner, err := live.New(cfg, strat, true, filepath.Join(t.TempDir(), "state.json"))
-				if value == "1" {
-					if err != nil || runner == nil || !runner.IsExecuted() {
-						t.Fatalf("explicit opt-in did not allow construction: runner=%v err=%v", runner, err)
-					}
-				} else if err == nil || !strings.Contains(err.Error(), "TA_ALLOW_LIVE=1") || runner != nil {
-					t.Fatalf("unauthorized runner: runner=%v err=%v", runner, err)
-				}
-				paper, err := live.New(cfg, strat, false, "")
-				if err != nil || paper == nil || paper.IsExecuted() {
-					t.Fatalf("paper behavior changed: runner=%v err=%v", paper, err)
-				}
+			} else if err == nil || !strings.Contains(err.Error(), "TA_ALLOW_LIVE=1") || runner != nil {
+				t.Fatalf("unauthorized runner: runner=%v err=%v", runner, err)
+			}
+			paper, err := live.New(cfg, strat, false, "")
+			if err != nil || paper == nil || paper.IsExecuted() {
+				t.Fatalf("paper behavior changed: runner=%v err=%v", paper, err)
 			}
 		})
 	}

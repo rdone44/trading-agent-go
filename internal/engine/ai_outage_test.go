@@ -39,7 +39,7 @@ func TestAIModelOutageHoldsPositionInsteadOfLiquidating(t *testing.T) {
 	cfg.Backtest.WarmupBars = 2
 	cfg.Execution.MinTradeNotional = 0
 
-	book := portfolio.New(10_000)
+	book := portfolio.New(10_000, cfg.Risk.Leverage)
 	agent := engine.NewWithBroker(cfg, failingStrategy{}, broker.New(cfg.Execution), book, risk.New(cfg.Risk))
 	// A healthy long: entry 100, stop 90, target 130, marked at 100.
 	agent.RestoreState(10_000, 10_000,

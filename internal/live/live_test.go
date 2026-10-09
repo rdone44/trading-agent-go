@@ -49,11 +49,8 @@ func TestPaperRunnerReportsItsVenue(t *testing.T) {
 	if runner.IsExecuted() {
 		t.Fatal("a paper runner must report executed=false")
 	}
-	if runner.IsFutures() {
-		t.Fatal("the default config is spot, so futures must be false")
-	}
 	if got := runner.Leverage(); got != 1 {
-		t.Fatalf("leverage = %d, want 1 for a spot paper run", got)
+		t.Fatalf("leverage = %d, want 1 for the default config", got)
 	}
 }
 
@@ -192,12 +189,11 @@ func TestSaveWithoutStatePathIsANoOp(t *testing.T) {
 	}
 }
 
-// The runner must not claim executed=true for a futures paper session either:
-// DryRun futures still simulate fills locally.
+// The runner must not claim executed=true for a leveraged paper session:
+// DryRun still simulates fills locally, whatever the multiplier is.
 func TestFuturesPaperRunnerIsNotExecuted(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Symbol = "TEST"
-	cfg.Live.Futures = true
 	cfg.Risk.Leverage = 5
 
 	strat, err := strategy.New(cfg.Strategy.Name, cfg)
@@ -207,9 +203,6 @@ func TestFuturesPaperRunnerIsNotExecuted(t *testing.T) {
 	runner, err := live.New(cfg, strat, false, "")
 	if err != nil {
 		t.Fatalf("build runner: %v", err)
-	}
-	if !runner.IsFutures() {
-		t.Fatal("futures config must be reflected by IsFutures")
 	}
 	if runner.IsExecuted() {
 		t.Fatal("futures paper trading must not report executed=true")

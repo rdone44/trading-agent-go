@@ -83,8 +83,8 @@ func (c *exchangeClock) measure(client *http.Client, endpoint string) error {
 // The signature is appended last, deliberately, rather than set as another map
 // entry. Binance verifies the HMAC over everything that precedes "signature",
 // so the parameter must be sent last — but url.Values.Encode() sorts keys
-// alphabetically, which puts "signature" ahead of "timestamp". The spot API
-// happens to tolerate that ordering; the futures API rejects it with
+// alphabetically, which puts "signature" ahead of "timestamp". The perpetual
+// API rejects that ordering with
 // "code -1022: Signature for this request is not valid", which is
 // indistinguishable from a wrong secret key and costs an hour of debugging.
 // Building the string here keeps the order correct on every endpoint.

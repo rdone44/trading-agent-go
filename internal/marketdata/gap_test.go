@@ -55,13 +55,13 @@ func TestCountGapDaysSingleAndEmptySeries(t *testing.T) {
 	}
 }
 
-// The Binance loader must surface skipped days on the returned Series so a
+// The loader must surface skipped days on the returned Series so a
 // caller can tell a ragged history from a clean one. This stub drops day 2 of
 // a 3-day window, leaving one missing day.
-func TestBinanceSeriesReportsGapDays(t *testing.T) {
+func TestSeriesReportsGapDays(t *testing.T) {
 	fastRetry(t)
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// Days 5,4 (then a gap) day 2: day 3 is missing.
 		rows := [][]any{
 			kline(end.AddDate(0, 0, -5).Truncate(24*time.Hour), 100),
@@ -71,9 +71,9 @@ func TestBinanceSeriesReportsGapDays(t *testing.T) {
 		encodeRows(t, w, rows)
 	})
 
-	series, err := Binance("BTCUSDT", 30, end)
+	series, err := Load("BTCUSDT", 30, end)
 	if err != nil {
-		t.Fatalf("Binance: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if series.GapDays != 1 {
 		t.Fatalf("GapDays = %d, want 1 (one missing day)", series.GapDays)
@@ -82,10 +82,10 @@ func TestBinanceSeriesReportsGapDays(t *testing.T) {
 
 // A clean loader run must report no gaps, confirming the field is not just
 // noise: 3 contiguous days -> GapDays 0.
-func TestBinanceSeriesCleanHasNoGaps(t *testing.T) {
+func TestSeriesCleanHasNoGaps(t *testing.T) {
 	fastRetry(t)
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		rows := [][]any{
 			kline(end.AddDate(0, 0, -3).Truncate(24*time.Hour), 100),
 			kline(end.AddDate(0, 0, -2).Truncate(24*time.Hour), 100),
@@ -94,9 +94,9 @@ func TestBinanceSeriesCleanHasNoGaps(t *testing.T) {
 		encodeRows(t, w, rows)
 	})
 
-	series, err := Binance("BTCUSDT", 30, end)
+	series, err := Load("BTCUSDT", 30, end)
 	if err != nil {
-		t.Fatalf("Binance: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if series.GapDays != 0 {
 		t.Fatalf("clean run: GapDays = %d, want 0", series.GapDays)
@@ -108,7 +108,7 @@ func TestBinanceSeriesCleanHasNoGaps(t *testing.T) {
 func TestLastPriceRetriesTransient(t *testing.T) {
 	fastRetry(t)
 	attempts := 0
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		if attempts < 3 {
 			w.WriteHeader(http.StatusBadGateway)
@@ -139,7 +139,7 @@ func TestLastPriceRetriesTransient(t *testing.T) {
 func TestLastPriceDoesNotRetryClientError(t *testing.T) {
 	fastRetry(t)
 	attempts := 0
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`{"code":-1121,"msg":"Invalid symbol."}`))

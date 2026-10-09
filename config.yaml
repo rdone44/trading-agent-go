@@ -11,7 +11,7 @@ agent:
   history_days: 730
 
 data:
-  provider: binance    # Binance spot (public REST API); the only data source
+  provider: binance    # Binance USDT perpetuals (public REST API); the only data source
   # bars_per_year: 0   # 0 = 365 (crypto trades every day)
 
 strategy:

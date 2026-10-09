@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rdone44/trading-agent-go/internal/broker"
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/engine"
 	"github.com/rdone44/trading-agent-go/internal/live"
@@ -93,7 +94,7 @@ type RiskView struct {
 type SessionStatus struct {
 	Running  bool   `json:"running"`
 	Mode     string `json:"mode"`  // paper | live
-	Venue    string `json:"venue"` // spot | futures
+	Venue    string `json:"venue"` // always "futures": the perpetual venue
 	Leverage int    `json:"leverage"`
 	Symbol   string `json:"symbol"`
 	Strategy string `json:"strategy"`
@@ -122,16 +123,20 @@ type SessionStatus struct {
 	TotalReturnPct float64 `json:"total_return_pct"`
 	PeakEquity     float64 `json:"peak_equity"`
 
-	Position         PositionView    `json:"position"`
-	Risk             RiskView        `json:"risk"`
-	Log              []CycleRecord   `json:"log"`
-	Trades           []TradeView     `json:"trades"`
-	Orders           []ExecutionView `json:"orders"`
-	Settings         *Settings       `json:"settings,omitempty"`
-	ProtectionActive bool            `json:"protection_active"`
-	Wallet           float64         `json:"wallet"`
-	MarginUsed       float64         `json:"margin_used"`
-	StatePath        string          `json:"state_path,omitempty"`
+	Position         PositionView              `json:"position"`
+	Risk             RiskView                  `json:"risk"`
+	Log              []CycleRecord             `json:"log"`
+	Trades           []TradeView               `json:"trades"`
+	Orders           []ExecutionView           `json:"orders"`
+	Settings         *Settings                 `json:"settings,omitempty"`
+	ProtectionActive bool                      `json:"protection_active"`
+	Protection       broker.ProtectionSnapshot `json:"protection"`
+	RecoveryRequired bool                      `json:"recovery_required"`
+	Starting         bool                      `json:"starting"`
+	Recovering       bool                      `json:"recovering"`
+	Wallet           float64                   `json:"wallet"`
+	MarginUsed       float64                   `json:"margin_used"`
+	StatePath        string                    `json:"state_path,omitempty"`
 	// LogPath is where the run log is persisted, and LogError is set when the
 	// last append failed. The console shows both so "the history is empty"
 	// can be told apart from "the history could not be written".
@@ -198,9 +203,11 @@ type Settings struct {
 	IntervalSeconds int                `json:"interval_seconds"`
 	Execute         bool               `json:"execute"`
 	Confirm         string             `json:"confirm"`
-	Futures         bool               `json:"futures"`
-	Leverage        int                `json:"leverage"`
-	StatePath       string             `json:"state_path"`
+	// Futures is kept in the wire shape for a console build that still sends
+	// it; every session is a perpetual one, so the value is ignored.
+	Futures   bool   `json:"futures"`
+	Leverage  int    `json:"leverage"`
+	StatePath string `json:"state_path"`
 	// Veto is the per-session entry-veto switch (cfg.LLM.VetoEnabled).
 	Veto bool `json:"veto"`
 }
@@ -232,14 +239,16 @@ type Session struct {
 	interval  time.Duration
 	execute   bool
 
-	cancel    context.CancelFunc
-	done      chan struct{}
-	running   bool
-	stopping  bool
-	stopDone  chan struct{}
-	stopErr   error
-	startedAt time.Time
-	stoppedAt time.Time
+	cancel     context.CancelFunc
+	done       chan struct{}
+	running    bool
+	starting   bool
+	stopping   bool
+	recovering bool
+	stopDone   chan struct{}
+	stopErr    error
+	startedAt  time.Time
+	stoppedAt  time.Time
 
 	cycles     int
 	lastTick   time.Time
@@ -260,6 +269,9 @@ type Session struct {
 	// offline; production leaves them nil and the runner uses Binance.
 	SeriesLoader func(symbol string, days int, end time.Time) (model.Series, error)
 	PriceLoader  func(symbol string) (float64, time.Time, error)
+	// InitRunner is an internal seam for offline concurrency tests. Production
+	// leaves it nil and Start calls Runner.Init directly.
+	InitRunner func(*live.Runner) error
 }
 
 // NewSession returns an idle session. It holds no runner until Start.
@@ -303,10 +315,21 @@ type StartOptions struct {
 // the exchange keys in the environment.
 func (s *Session) Start(opts StartOptions) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running {
+	if s.running || s.starting || s.recovering {
+		defer s.mu.Unlock()
+		if s.starting {
+			return fmt.Errorf("交易会话正在初始化，请稍候")
+		}
+		if s.recovering {
+			return fmt.Errorf("保护单恢复核验正在进行，请稍候")
+		}
 		return fmt.Errorf("已有交易会话在运行，请先停止")
 	}
+	if s.snapshot.RecoveryRequired || (s.runner != nil && s.runner.ProtectionRecoveryRequired()) {
+		s.mu.Unlock()
+		return fmt.Errorf("存在待人工核验的保护单恢复锁，请先完成恢复，不能用新会话覆盖")
+	}
+	s.mu.Unlock()
 	opts.Config.Agent.Symbol = marketdata.BinanceSymbol(opts.Config.Agent.Symbol)
 
 	if opts.Execute {
@@ -331,19 +354,72 @@ func (s *Session) Start(opts StartOptions) error {
 	if err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	if s.running || s.starting || s.recovering {
+		s.mu.Unlock()
+		return fmt.Errorf("已有交易会话正在运行或初始化")
+	}
+	if s.snapshot.RecoveryRequired || (s.runner != nil && s.runner.ProtectionRecoveryRequired()) {
+		s.mu.Unlock()
+		return fmt.Errorf("存在待人工核验的保护单恢复锁，请先完成恢复，不能用新会话覆盖")
+	}
+	s.starting = true
+	s.lastAction = "正在初始化"
+	s.lastError = ""
+	seriesLoader := s.SeriesLoader
+	priceLoader := s.PriceLoader
+	initRunner := s.InitRunner
+	s.mu.Unlock()
+
 	runner, err := live.NewForOwner(opts.Config, strat, opts.Execute, opts.StatePath, opts.Owner)
 	if err != nil {
+		s.mu.Lock()
+		s.starting = false
+		s.lastAction = "启动失败"
+		s.lastError = err.Error()
+		s.mu.Unlock()
 		return err
 	}
-	runner.SeriesLoader = s.SeriesLoader
-	runner.PriceLoader = s.PriceLoader
+	runner.SeriesLoader = seriesLoader
+	runner.PriceLoader = priceLoader
 	// Init reconciles against the exchange when executing; doing it before the
 	// loop starts means a mismatched book fails the start instead of trading.
-	if err := runner.Init(); err != nil {
+	if initRunner == nil {
+		initRunner = func(r *live.Runner) error { return r.Init() }
+	}
+	if err := initRunner(runner); err != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.starting = false
+		if !runner.ProtectionRecoveryRequired() {
+			s.lastAction = "启动失败"
+			s.lastError = err.Error()
+			return err
+		}
+		// Preserve a blocked runner as a read-only recovery target. The page can
+		// then show the restored position and exact protection evidence instead
+		// of reducing a safety stop to a transient error toast.
+		s.runner = runner
+		s.cfg = opts.Config
+		s.statePath = opts.StatePath
+		s.interval = opts.Interval
+		s.execute = opts.Execute
+		s.running = false
+		s.stopping = false
+		s.lastAction = "启动被阻断"
+		s.lastError = err.Error()
+		s.journalPath = journalPathFor(opts.StatePath)
+		s.log = loadJournal(s.journalPath, cycleLogLimit)
+		s.captureLocked()
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	journalPath := journalPathFor(opts.StatePath)
+	log := loadJournal(journalPath, cycleLogLimit)
+
+	s.mu.Lock()
 	s.runner = runner
 	s.cfg = opts.Config
 	s.statePath = opts.StatePath
@@ -352,6 +428,7 @@ func (s *Session) Start(opts StartOptions) error {
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	s.running = true
+	s.starting = false
 	s.stopping = false
 	s.startedAt = time.Now()
 	s.stoppedAt = time.Time{}
@@ -364,10 +441,10 @@ func (s *Session) Start(opts StartOptions) error {
 	// explain why the last run stopped are the first thing an operator needs
 	// after a restart. A journal that cannot be read degrades to an empty log
 	// rather than blocking the start.
-	s.journalPath = journalPathFor(opts.StatePath)
+	s.journalPath = journalPath
 	s.journalErr = ""
 	s.journalAppends = 0
-	s.log = loadJournal(s.journalPath, cycleLogLimit)
+	s.log = log
 	if len(s.log) == 0 {
 		s.log = nil
 	}
@@ -376,6 +453,7 @@ func (s *Session) Start(opts StartOptions) error {
 	// model), and it should show the session's opening state rather than a row
 	// of zeroes that looks like a failed start.
 	s.captureLocked()
+	s.mu.Unlock()
 
 	go s.loop(ctx)
 	return nil
@@ -499,6 +577,8 @@ func (s *Session) captureLocked() {
 		view.PeakEquity = agent.PeakEquity
 		view.Position = s.positionLocked()
 		view.Risk = s.riskLocked(view.Equity)
+		view.Protection = s.runner.ProtectionSnapshot()
+		view.RecoveryRequired = s.runner.ProtectionRecoveryRequired()
 		view.Trades = tradeViews(agent.Trades())
 		if view.InitialCash > 0 {
 			view.TotalReturnPct = (view.Equity/view.InitialCash - 1) * 100
@@ -539,10 +619,59 @@ func (s *Session) Step() error {
 	return nil
 }
 
+// RecoverProtection clears a crash-era protection lock after an explicit
+// operator confirmation and read-only exchange verification. It never starts
+// the loop; starting a new session remains a separate action.
+func (s *Session) RecoverProtection(confirm string) error {
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
+	s.mu.Lock()
+	if s.running || s.starting || s.stopping || s.recovering {
+		s.mu.Unlock()
+		return fmt.Errorf("交易会话运行中，不能执行恢复")
+	}
+	if s.runner == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("没有待恢复的交易会话")
+	}
+	runner := s.runner
+	s.recovering = true
+	s.mu.Unlock()
+
+	err := runner.RecoverProtectiveIntent(confirm)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recovering = false
+	if s.runner != runner {
+		return fmt.Errorf("恢复期间交易会话已变化，请重新核验")
+	}
+	if err != nil {
+		s.lastError = err.Error()
+		s.captureLocked()
+		return err
+	}
+	s.lastError = ""
+	s.lastAction = "保护单已人工确认恢复"
+	now := time.Now()
+	s.appendLocked(CycleRecord{
+		Time: now.Format("15:04:05"), Action: "人工恢复",
+		Reason:   "本地账本、Binance 持仓和原始保护单 ID 已完成只读核验；未启动策略、未发送订单",
+		Equity:   s.currentEquityLocked(),
+		Position: positionSummary(s.runner.Agent().OpenTrade()),
+	})
+	s.captureLocked()
+	return nil
+}
+
 // Stop cancels the loop and waits for it to finish. It is safe to call on an
 // idle session.
 func (s *Session) Stop() error {
 	s.mu.Lock()
+	if s.starting || s.recovering {
+		s.mu.Unlock()
+		return fmt.Errorf("交易会话正在初始化或恢复核验，请稍候")
+	}
 	if s.stopping {
 		done := s.stopDone
 		s.mu.Unlock()
@@ -646,7 +775,7 @@ func (s *Session) Status() SessionStatus {
 	status := SessionStatus{
 		Running:     s.running,
 		Mode:        "paper",
-		Venue:       "spot",
+		Venue:       "futures",
 		Symbol:      s.cfg.Agent.Symbol,
 		Strategy:    s.cfg.Strategy.Name,
 		Interval:    int(s.interval.Seconds()),
@@ -677,7 +806,19 @@ func (s *Session) Status() SessionStatus {
 		Trades:           s.snapshot.Trades,
 		Orders:           s.snapshot.Orders,
 		Settings:         s.snapshot.Settings,
-		ProtectionActive: s.running && !s.stopping && !s.snapshot.Risk.OrderUncertain,
+		Protection:       s.snapshot.Protection,
+		RecoveryRequired: s.snapshot.RecoveryRequired,
+		Starting:         s.starting,
+		Recovering:       s.recovering,
+		ProtectionActive: s.running && !s.stopping && s.execute && s.snapshot.Position.Open &&
+			s.snapshot.Protection.State == broker.ProtectionVerified &&
+			!s.snapshot.Risk.OrderUncertain && !s.snapshot.RecoveryRequired,
+	}
+	if status.Protection.State == "" {
+		status.Protection.State = broker.ProtectionUnknown
+		if !s.execute {
+			status.Protection.State = broker.ProtectionNotRequired
+		}
 	}
 	if status.Interval == 0 {
 		status.Interval = 60
@@ -687,9 +828,6 @@ func (s *Session) Status() SessionStatus {
 	}
 	if s.execute {
 		status.Mode = "live"
-	}
-	if s.cfg.Live.Futures {
-		status.Venue = "futures"
 	}
 	if !s.startedAt.IsZero() {
 		status.StartedAt = s.startedAt.Format(time.RFC3339)
@@ -918,7 +1056,7 @@ func sessionSettings(cfg config.Config, interval int, execute bool) *Settings {
 			StopLossPct: cfg.Risk.StopLossPct, TakeProfitPct: cfg.Risk.TakeProfitPct, MaxDrawdownPct: cfg.Risk.MaxDrawdownPct,
 			MaxDailyLossPct: cfg.Risk.MaxDailyLossPct, AllowShort: &cfg.Risk.AllowShort,
 			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps},
-		IntervalSeconds: interval, Execute: execute, Futures: cfg.Live.Futures, Leverage: cfg.Risk.Leverage,
+		IntervalSeconds: interval, Execute: execute, Futures: true, Leverage: cfg.Risk.Leverage,
 		Veto: cfg.LLM.VetoEnabled,
 	}
 }

@@ -61,8 +61,8 @@ func TestSessionStatusOnIdleServer(t *testing.T) {
 	if status.Mode != "paper" {
 		t.Fatalf("mode = %q, want paper by default", status.Mode)
 	}
-	if status.Venue != "spot" {
-		t.Fatalf("venue = %q, want spot by default", status.Venue)
+	if status.Venue != "futures" {
+		t.Fatalf("venue = %q, want futures (the only venue)", status.Venue)
 	}
 }
 

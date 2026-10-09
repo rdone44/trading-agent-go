@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/rdone44/trading-agent-go/internal/auth"
+	"github.com/rdone44/trading-agent-go/internal/broker"
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/engine"
 	livesession "github.com/rdone44/trading-agent-go/internal/live/session"
@@ -78,16 +79,19 @@ type Server struct {
 	// rewrites the llm strategy's persona and the backtest judges it. It
 	// defaults to tune.RunPrompt.
 	PromptTuneRunner func(cfg config.Config, series model.Series, opts tune.PromptOptions) (tune.PromptReport, error)
-	MarketLoader     func(symbol string, futures bool, interval string) (marketdata.MarketSnapshot, error)
-	// SymbolList loads the venue's tradable pairs, liquidity-ranked. It
+	MarketLoader     func(symbol, interval string) (marketdata.MarketSnapshot, error)
+	// SymbolList loads the perpetual venue's tradable pairs, liquidity-ranked. It
 	// defaults to the public 24-hour ticker endpoint; tests inject a stub so
 	// the /api/symbols handler stays offline.
-	SymbolList func(venue string, limit int) ([]marketdata.SymbolInfo, error)
+	SymbolList func(limit int) ([]marketdata.SymbolInfo, error)
 	// ModelList asks an OpenAI-compatible endpoint which models it serves, so
 	// the settings panel can offer a picker instead of a blank text box. It
 	// defaults to llm.ListModels; tests inject a stub so /api/models stays
 	// offline.
 	ModelList func(baseURL, apiKey string) ([]string, error)
+	// AccountLoader is a read-only signed futures balance query. Tests replace
+	// it so the account page never reaches the exchange in CI.
+	AccountLoader func(broker.FuturesConfig) (broker.AccountBalance, error)
 	// Auth, when set, enables account login: /api/auth/* routes plus a
 	// session middleware on the credential-bearing routes. The credential
 	// vault also carries each user's Binance and LLM keys, which the
@@ -122,7 +126,7 @@ func New(cfg config.Config) *Server {
 		Log:       os.Stdout,
 		sessions:  map[string]*livesession.Session{},
 		SeriesLoader: func(symbol string, days int, end time.Time) (model.Series, error) {
-			return marketdata.Binance(symbol, days, end)
+			return marketdata.Load(symbol, days, end)
 		},
 		TuneRunner:       tune.Run,
 		PromptTuneRunner: tune.RunPrompt,
@@ -168,9 +172,11 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/api/run", s.handleRunDetail)
 	// Trading-console routes: the live session, not a backtest.
 	protected.HandleFunc("/api/session", s.handleSession)
+	protected.HandleFunc("/api/account", s.handleAccount)
 	protected.HandleFunc("/api/session/start", s.handleSessionStart)
 	protected.HandleFunc("/api/session/stop", s.handleSessionStop)
 	protected.HandleFunc("/api/session/step", s.handleSessionStep)
+	protected.HandleFunc("/api/session/recover", s.handleSessionRecover)
 	protected.HandleFunc("/api/session/review", s.handleSessionReview)
 	protected.HandleFunc("/api/market", s.handleMarket)
 	protected.HandleFunc("/api/symbols", s.handleSymbols)
@@ -291,9 +297,11 @@ type StartSessionRequest struct {
 	// confirmation phrase and the exchange keys to be in the environment.
 	Execute bool   `json:"execute"`
 	Confirm string `json:"confirm"`
-	// Futures and Leverage select the perpetual venue.
-	Futures  bool `json:"futures"`
-	Leverage int  `json:"leverage"`
+	// Futures is accepted for backwards compatibility with a console build
+	// that still sends it, and ignored: every session is a perpetual one.
+	Futures bool `json:"futures"`
+	// Leverage is the perpetual margin multiplier.
+	Leverage int `json:"leverage"`
 	// StatePath persists the session so a restart resumes the position.
 	StatePath string `json:"state_path"`
 	// Veto arms the LLM second-opinion gate on new live entries for this
@@ -326,7 +334,6 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.applyRequest(req.BacktestRequest)
 	cfg.Agent.Symbol = marketdata.BinanceSymbol(cfg.Agent.Symbol)
-	cfg.Live.Futures = req.Futures
 	// The entry veto is per-session: the form's switch overrides whatever the
 	// config file said, and the session echoes it back in Settings.
 	cfg.LLM.VetoEnabled = req.Veto
@@ -335,14 +342,6 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.Risk.Leverage = max(req.Leverage, 1)
-	if !req.Futures && cfg.Risk.Leverage > 1 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("现货不支持杠杆"))
-		return
-	}
-	if !req.Futures && cfg.Risk.AllowShort && req.Execute {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("现货实盘不能做空"))
-		return
-	}
 	// The live loop sizes positions against the same risk limits the form
 	// shows, so the request's overrides apply here too.
 	if req.Days > 0 {
@@ -405,6 +404,29 @@ func (s *Server) handleSessionStep(w http.ResponseWriter, r *http.Request) {
 	}
 	sess := s.Session(s.requestUsername(r))
 	if err := sess.Step(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess.Status())
+}
+
+// handleSessionRecover clears a crash-era protective intent after explicit
+// operator confirmation and read-only Binance verification. It does not start
+// the session and does not send any order.
+func (s *Server) handleSessionRecover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("该接口只接受 POST 请求"))
+		return
+	}
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("请求体不是合法的 JSON: %w", err))
+		return
+	}
+	sess := s.Session(s.requestUsername(r))
+	if err := sess.RecoverProtection(req.Confirm); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -759,12 +781,9 @@ func (s *Server) sessionStatePath(cfg config.Config, req StartSessionRequest, us
 	if username != "" && strings.TrimSpace(req.StatePath) != "" {
 		return "", fmt.Errorf("账号模式不支持自定义状态文件路径，请留空使用系统分配的位置")
 	}
-	mode, venue := "paper", "spot"
+	mode := "paper"
 	if req.Execute {
 		mode = "live"
-	}
-	if req.Futures {
-		venue = "futures"
 	}
 	name := mode + "-" + venue + "-" + cfg.Agent.Symbol + ".json"
 	if username == "" {

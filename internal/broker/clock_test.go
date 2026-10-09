@@ -125,42 +125,6 @@ func TestFuturesDoesNotRetryOtherErrors(t *testing.T) {
 	}
 }
 
-// Spot must follow the exchange clock too: it shares the same failure mode.
-func TestSpotInitSignsWithTheExchangeClock(t *testing.T) {
-	const skew = -3 * time.Hour
-	serverTime := time.Now().Add(skew).UnixMilli()
-	var stamped int64
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v3/time":
-			fmt.Fprintf(w, `{"serverTime":%d}`, serverTime)
-		case "/api/v3/exchangeInfo":
-			fmt.Fprint(w, `{"symbols":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`)
-		default:
-			stamped, _ = strconv.ParseInt(r.URL.Query().Get("timestamp"), 10, 64)
-			if delta := stamped - serverTime; delta > 1000 || delta < -1000 {
-				w.WriteHeader(400)
-				fmt.Fprint(w, `{"code":-1021,"msg":"Timestamp for this request was 1000ms ahead of the server's time."}`)
-				return
-			}
-			fmt.Fprint(w, `{"balances":[]}`)
-		}
-	}))
-	defer server.Close()
-
-	b := NewBinance(BinanceConfig{BaseURL: server.URL, Symbol: "BTCUSDT", APIKey: "k", SecretKey: "s"})
-	if err := b.Init(); err != nil {
-		t.Fatalf("spot Init with a skewed host clock: %v", err)
-	}
-	if _, _, err := b.Balances(); err != nil {
-		t.Fatalf("Balances with a skewed host clock: %v", err)
-	}
-	if delta := stamped - serverTime; delta > 1000 || delta < -1000 {
-		t.Fatalf("timestamp %d is %dms from the exchange's clock, want within 1s", stamped, delta)
-	}
-}
-
 // The offset must be measured from the middle of the round trip. Comparing the
 // server's stamp against the moment the response *arrived* would read ordinary
 // network latency as clock skew, and on a slow link that error alone can push
@@ -267,8 +231,8 @@ func TestTimestampErrorDetectionUsesTheCode(t *testing.T) {
 //
 // Binance verifies the HMAC over everything preceding "signature", so the
 // parameter has to come last. url.Values.Encode() sorts keys alphabetically,
-// which puts "signature" before "timestamp" — the spot API tolerates that, but
-// the futures API answers "code -1022: Signature for this request is not
+// which puts "signature" before "timestamp" — the API answers
+// "code -1022: Signature for this request is not
 // valid", a message that looks exactly like a wrong secret key. Pinning the
 // rendering here keeps a refactor from quietly reintroducing it.
 func TestSignedQueryPutsTheSignatureLast(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 func TestFuturesMarginLongAndShortRoundTrip(t *testing.T) {
 	for _, side := range []broker.Side{broker.Buy, broker.Sell} {
 		t.Run(string(side), func(t *testing.T) {
-			p := NewFutures(100, 5)
+			p := New(100, 5)
 			p.ApplyFill(broker.Fill{Symbol: "TEST", Side: side, Quantity: 4, Price: 100, Commission: 1})
 			if p.Cash != 99 || p.AvailableCash() != 19 {
 				t.Fatalf("wallet/margin wrong: %v/%v", p.Cash, p.AvailableCash())
@@ -32,10 +32,22 @@ func TestFuturesMarginLongAndShortRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSpotBaseFeeReducesInventoryNotCashTwice(t *testing.T) {
-	p := New(10000)
-	p.ApplyFill(broker.Fill{Symbol: "BTCUSDT", Side: broker.Buy, Quantity: .1, Price: 80000, Commission: 8, BaseCommission: .0001})
-	if p.Cash != 2000 || math.Abs(p.Position("BTCUSDT").Quantity-.0999) > 1e-10 || math.Abs(p.Equity(map[string]float64{"BTCUSDT": 80000})-9992) > 1e-8 {
-		t.Fatalf("base commission double counted: %+v", p)
+// A perpetual taker fee is charged once, in USDT, out of the wallet. The
+// retired spot venue's base-asset fee (reduce the received inventory instead
+// of charging the quote twice) has no counterpart here: the exchange holds
+// the inventory, so there is no inventory for a fee to reduce.
+func TestCommissionChargedOnceInQuote(t *testing.T) {
+	p := New(10000, 1)
+	p.ApplyFill(broker.Fill{Symbol: "BTCUSDT", Side: broker.Buy, Quantity: .1, Price: 80000, Commission: 8})
+	if p.Cash != 9992 {
+		t.Fatalf("wallet = %v, want 9992 (one 8 USDT fee)", p.Cash)
+	}
+	if math.Abs(p.Position("BTCUSDT").Quantity-.1) > 1e-10 {
+		t.Fatalf("quantity = %v, want the full 0.1 (no base fee to deduct)", p.Position("BTCUSDT").Quantity)
+	}
+	// Flat equity is the wallet plus unrealized PnL: the position is open, so
+	// the mark-to-market gain is what the account is worth on top of the cash.
+	if math.Abs(p.Equity(map[string]float64{"BTCUSDT": 81000})-(9992+100)) > 1e-8 {
+		t.Fatalf("equity = %v, want wallet + unrealized", p.Equity(map[string]float64{"BTCUSDT": 81000}))
 	}
 }

@@ -8,9 +8,14 @@ write a report you can open in the browser.
 data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 ```
 
-Two execution venues: **Binance spot** and **Binance USDT-margined perpetual
-futures** (leverage, long and short). The live loop is paper by default and
+One execution venue: **Binance USDT-margined perpetual futures** (leverage,
+long and short). The live loop is paper by default and
 only places real orders with an explicit `--execute` and a typed `yes`.
+
+The spot venue was retired: every session, backtest and chart now speaks the
+perpetual market the orders actually execute in. A state file written by the
+old spot runner is refused on load rather than converted — reconcile those
+positions by hand before migrating them.
 
 **This is research/education code, not investment advice.** Futures and
 leverage can lose more than the margin posted; treat a live run accordingly.
@@ -19,8 +24,8 @@ leverage can lose more than the margin posted; treat a live run accordingly.
 
 - Three built-in strategies: `ma_cross`, `rsi_reversion`, `breakout`
 - Risk layer: position sizing (leverage-aware), ATR/% stops, take-profit, max drawdown kill switch, daily loss limit
-- Data source: Binance spot **and** USDT-perp futures (public REST API, daily bars)
-- Two brokers: paper (simulated fills) and live Binance spot / futures, behind one `Broker` interface
+- Data source: Binance USDT-perp futures (public REST API, daily bars)
+- Two brokers: paper (simulated fills) and live Binance perpetuals, behind one `Broker` interface
 - Realistic frictions: commission, slippage, lot rounding, minimum notional
 - Look-ahead safe: signals decided on the close, executed on the next open
 - Live loop: state persistence, restart reconciliation, idempotent client order ids
@@ -189,14 +194,14 @@ wallet plus unrealized PnL, with entry margin reserved rather than debiting
 full notional. The live futures broker currently supports one-way positions
 only; Hedge Mode is rejected.
 
-Session files are partitioned by paper/live, spot/futures and symbol:
-`sessions/paper-spot-BTCUSDT.json`, for example. Legacy `trade-state.json`
+Session files are partitioned by paper/live and symbol:
+`sessions/paper-futures-BTCUSDT.json`, for example. Legacy `trade-state.json`
 files are not silently imported or overwritten. Back them up and reconcile
 positions before migrating. An explicit `state_path` must match the saved
 symbol and mode. Old futures accounting files require manual reconciliation.
 
 The run log is persisted next to its ledger as
-`sessions/paper-spot-BTCUSDT.log.jsonl` (one JSON object per decision cycle,
+`sessions/paper-futures-BTCUSDT.log.jsonl` (one JSON object per decision cycle,
 appended), so restarting the console resumes the history instead of erasing
 it. Each row carries the strategy's own explanation in the 说明 column —
 the model's one-line reason on a normal cycle, and the failure detail on a
@@ -224,7 +229,7 @@ The HTTP API behind it is small enough to script against:
 | --- | --- | --- |
 | `GET` | `/api/config` | effective config plus strategy metadata |
 | `GET` | `/api/session` | effective session settings, equity, position, risk, fills and logs |
-| `GET` | `/api/market?symbol=BTCUSDT&venue=spot&interval=1h` | public Binance quote and candles, independent of trading |
+| `GET` | `/api/market?symbol=BTCUSDT&interval=1h` | public Binance quote and candles, independent of trading |
 | `POST` | `/api/session/start` | start the trading loop (`interval_seconds`, `execute`, `confirm`, `futures`, `leverage`, `state_path`, `veto`) |
 | `POST` | `/api/session/stop` | stop the loop and persist state |
 | `POST` | `/api/session/step` | run exactly one cycle now |
@@ -262,7 +267,7 @@ curl.exe http://localhost:8080/api/session
 # dashboard
 .\bin\trading-agent.exe web
 
-# backtest on Binance spot klines (BTCUSDT, ETHUSDT, ...)
+# backtest on Binance perpetual klines (BTCUSDT, ETHUSDT, ...)
 .\bin\trading-agent.exe backtest --symbol BTCUSDT --days 730
 
 # compare strategies on the same data
@@ -280,8 +285,8 @@ curl.exe http://localhost:8080/api/session
 
 # perpetual venue with leverage; shorts allowed. --execute + BINANCE_API_KEY /
 # BINANCE_SECRET_KEY + a typed "yes" (or --yes) to place real orders.
-.\bin\trading-agent.exe trade --symbol BTCUSDT --futures --leverage 5
-.\bin\trading-agent.exe trade --symbol BTCUSDT --futures --leverage 5 --execute
+.\bin\trading-agent.exe trade --symbol BTCUSDT --leverage 5
+.\bin\trading-agent.exe trade --symbol BTCUSDT --leverage 5 --execute
 
 # machine-readable output, and a saved config for reproducibility
 .\bin\trading-agent.exe backtest --json
@@ -315,14 +320,13 @@ risk:
   max_drawdown_pct: 0.25
   max_daily_loss_pct: 0.05
   allow_short: false       # enable to trade the strategy's short signals
-  leverage: 1             # >1 only applies on a futures venue
+  leverage: 1             # margin multiplier; 1 = unleveraged perpetual
 
 live:
   poll_seconds: 60
   lookback_days: 400
   paper_trading: true
   state_file: trade-state.json
-  futures: false          # true = USDT-margined perpetuals (fapi.binance.com)
   margin_mode: ISOLATED   # or CROSS
 ```
 
@@ -330,7 +334,7 @@ Sizing is leverage-aware: the notional a position may control is the smallest
 of `equity × max_position_pct × leverage`, the fixed-fractional risk cap
 (`equity × max_risk_per_trade_pct` divided by the stop distance), and the
 margin the balance can post (`cash × leverage`). With `leverage: 1` the formula
-collapses to the historical spot behaviour. The per-trade risk *dollars* do
+collapses to the unleveraged case. The per-trade risk *dollars* do
 not grow with leverage — only the notional does.
 
 ## Project layout
@@ -345,11 +349,11 @@ internal/
   indicators/          SMA, EMA, RSI, ATR, rolling max/min, shift
   strategy/            ma_cross, rsi_reversion, breakout, llm
   risk/                sizing, stops, kill switches
-  broker/              paper broker + live Binance spot & futures clients
+  broker/              paper broker + live Binance perpetual client
   portfolio/           cash, positions, realized PnL, equity curve
   engine/              the event loop (backtest + live step)
   metrics/             Sharpe, Sortino, Calmar, drawdown, win rate, profit factor
-  marketdata/          Binance spot and futures klines clients
+  marketdata/          Binance perpetual klines and ticker clients
   state/               JSON session persistence (atomic write)
   live/                the live session runner: broker wiring, reconciliation
   report/              CSV / JSON / Markdown / HTML writers
@@ -418,11 +422,11 @@ reproducible while the CLI and dashboard keep talking to real Binance.
 
 The `trade` command is the live loop, already wired to real Binance:
 
-- **Venue.** `--futures` switches the runner to USDT-margined perpetuals
+- **Venue.** The runner trades USDT-margined perpetuals
   (`fapi.binance.com`): signed positions, so the strategy's short signals are
-  tradable, and leverage via `--leverage` / `risk.leverage`. Without it the
-  loop trades spot. `risk.allow_short` keeps the short side opt-in even on a
-  futures venue.
+  tradable, and leverage via `--leverage` / `risk.leverage`. There is no venue
+  flag — that is the only market this program knows. `risk.allow_short` keeps
+  the short side opt-in: long-only is the safer default.
 - **Paper by default.** No `--execute` means fills are simulated locally
   (`DryRun`), so you can run the loop with real market data and zero financial
   risk. `--execute` places real orders and reads the API key/secret from the
@@ -431,14 +435,14 @@ The `trade` command is the live loop, already wired to real Binance:
   credentials file).
 - **Safe by default.** `--execute` requires a typed `yes` on stdin unless
   `--yes` is given. On startup the runner reconciles the local book against
-  the exchange (balances for spot, the signed position for futures) and
+  the exchange (the signed position) and
   refuses to continue if the two disagree. Client order ids are idempotent.
 - **Restart-safe.** Each cycle persists the open position, equity
   high-water mark and risk-manager state to `--state`. A restart resumes
   rather than re-entering.
 - **Clock-corrected signing.** Every private request is stamped with the
-  exchange's clock, measured from `/api/v3/time` (spot) or `/fapi/v1/time`
-  (futures) with the round trip halved so ordinary latency is not read as
+  exchange's clock, measured from `/fapi/v1/time`
+  with the round trip halved so ordinary latency is not read as
   skew. A host clock more than a second off would otherwise make every signed
   call fail with `code -1021`, starting with leverage setup during startup —
   which looks like a permissions problem but is only the clock. If a request

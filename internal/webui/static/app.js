@@ -117,6 +117,8 @@ let liveGateEnv = false;
 // repeated config refresh must not re-query the provider.
 let modelsLoaded = false;
 let lastConfig = null;
+let accountPending = false;
+let ledgerMode = null;
 
 const strategyByName = (name) => strategies.find((s) => s.name === name);
 
@@ -157,7 +159,7 @@ function collectRequest() {
     days: Number($('[name="days"]').value) || 0,
     interval_seconds: Number($('[name="interval_seconds"]').value) || 60,
     initial_cash: Number($('[name="initial_cash"]').value) || 0,
-    futures: true, // terminal is perpetual-only: the spot venue is retired from the UI
+    futures: true,
     leverage: Number($('[name="leverage"]').value) || 1,
     // The entry veto lives on the AI page but belongs to the session request.
     veto: Boolean($("#ai-veto")?.checked),
@@ -252,7 +254,7 @@ async function refreshMarket() {
   clearTimeout(marketTimer);
   if (closing) return;
   const symbol = session?.running ? session.symbol : $('[name="symbol"]').value;
-  const venue = session?.running ? (session.venue || "futures") : "futures";
+  const venue = "futures";
   const key = `${symbol}/${venue}/${marketInterval}`;
   $("#market-state").textContent = "更新行情中";
   try {
@@ -355,7 +357,13 @@ function renderTopbar(s) {
 
   const dot = $("#status-dot");
   const state = $("#run-state");
-  if (s.last_error) {
+  if (s.starting) {
+    dot.className = "dot live";
+    state.textContent = "初始化中";
+  } else if (s.recovering) {
+    dot.className = "dot live";
+    state.textContent = "保护单核验中";
+  } else if (s.last_error) {
     dot.className = "dot error";
     state.textContent = "周期出错";
   } else if (s.running) {
@@ -366,13 +374,21 @@ function renderTopbar(s) {
     state.textContent = s.cycles > 0 ? `已停止 ${s.cycles}` : "待机";
   }
   const open = s.position?.open;
-  const warning = s.risk?.order_uncertain || (open && !s.protection_active) || s.mode === "live";
+  const protection = s.protection?.state || "unknown";
+  $("#recovery-button").hidden = !s.recovery_required;
+  $("#recovery-button").disabled = Boolean(s.recovering || busy);
+  $("#recovery-button").textContent = s.recovering ? "保护单核验中…" : "人工核验恢复";
+  const warning = s.risk?.order_uncertain || (open && s.mode === "live" && protection !== "verified") || s.mode === "live";
   $("#safety-strip").classList.toggle("warn", Boolean(warning));
-  $("#safety-text").textContent = s.risk?.order_uncertain ? "订单状态待核对 · 自动交易已锁定，请在交易所核对成交与持仓"
-    : open && !s.protection_active ? "策略已停止，持仓仍在 · 本地止损/止盈已停止，请人工管理持仓"
-    : s.mode === "live" ? "实盘资金 · 本地轮询止损，非交易所保护订单；断网或退出会失去保护"
+  $("#safety-text").textContent = s.recovering ? "正在只读核验 Binance 持仓、USDT 钱包和原始保护单 ID · 不会发送订单"
+    : s.recovery_required ? "发现遗留保护单意图 · 自动交易已锁定，请先在 Binance 人工核对后执行恢复"
+    : s.risk?.order_uncertain ? "订单状态待核对 · 自动交易已锁定，请在交易所核对成交与持仓"
+    : open && s.mode === "live" && protection !== "verified" ? `交易所保护单${protection === "partial" ? "不完整" : protection === "missing" ? "缺失" : "未核验"} · 禁止新开仓，请人工核对`
+    : open && s.mode === "live" && !s.running ? "策略已停止，持仓仍在 · 保护单上次核验不代表当前仍有效，请在 Binance 核对"
+    : open && s.mode === "live" ? `交易所保护单已核验 · ${s.protection?.checked_at ? new Date(s.protection.checked_at).toLocaleString("zh-CN") : "时间未知"}，请持续核对`
+    : s.mode === "live" ? "实盘资金 · 请持续核对 Binance 持仓、保护单和本地账本"
     : s.running ? "纸面策略运行中 · 使用真实 Binance 行情，成交仅本地模拟"
-    : "纸面模式 · 可独立查看行情，在交易配置区核对参数";
+    : "纸面模式 · 可独立查看行情，在策略与风控页核对参数";
 
   renderAI(s);
 }
@@ -411,7 +427,11 @@ function renderAI(s) {
 
 function renderAccount(s) {
   const started = s.cycles > 0 || s.running;
-  const venue = s.venue === "futures" ? `合约 ${s.leverage || 1}x` : "现货";
+  const venue = `USDT 永续 · ${s.leverage || 1}x`;
+  if (ledgerMode !== s.mode) {
+    $("#session-ledger").open = s.mode === "live";
+    ledgerMode = s.mode;
+  }
 
   $("#account-note").textContent = started
     ? `${s.mode === "live" ? "交易账本" : "纸面资金"} · ${venue}`
@@ -439,7 +459,41 @@ function renderAccount(s) {
   // than a redraw of the same number.
   const series = (s.log || []).map((c) => c.equity).filter((v) => ok(v) && v > 0);
 
+  renderChart(series, s);
   renderMetrics(s, started);
+}
+
+async function refreshAccount() {
+  if (accountPending || closing || (authEnabled && !localSettings && !lastAuthState?.username)) return;
+  accountPending = true;
+  const button = $("#account-refresh");
+  const state = $("#exchange-state");
+  const values = $("#exchange-values");
+  const host = $("#exchange-account");
+  const owner = lastAuthState?.username || "";
+  button.disabled = true;
+  state.textContent = "正在读取 Binance USDT 永续合约账户…";
+  try {
+    const account = await api("/api/account");
+    if (owner !== (lastAuthState?.username || "")) return;
+    $("#exchange-wallet").textContent = fmt.money(account.wallet);
+    $("#exchange-available").textContent = fmt.money(account.available);
+    $("#exchange-unrealized").textContent = fmt.signedMoney(account.cross_unrealized);
+    $("#exchange-updated").textContent = `Binance 实时读取 · ${fmt.stamp(account.updated_at)} · 只读，不启动交易`;
+    state.textContent = "已连接真实合约账户";
+    values.hidden = false;
+    host.classList.remove("error");
+  } catch (error) {
+    if (owner !== (lastAuthState?.username || "")) return;
+    // A failed refresh must never leave an old number looking like a live
+    // balance. Session/paper values below are intentionally unaffected.
+    values.hidden = true;
+    host.classList.add("error");
+    state.textContent = `真实账户未读取：${error.message}`;
+  } finally {
+    button.disabled = false;
+    accountPending = false;
+  }
 }
 
 function renderChart(series, s) {
@@ -498,7 +552,7 @@ function renderMetrics(s, started) {
 
   const cells = [
     { k: "可用现金", v: started ? fmt.money(s.cash) : "—" },
-    { k: s.venue === "futures" ? "占用保证金" : "持仓市值", v: s.venue === "futures" ? fmt.money(s.margin_used) : p.open ? fmt.money(p.notional) : "0.00" },
+    { k: "占用保证金", v: fmt.money(s.margin_used) },
     { k: "名义仓位 / 权益", v: p.open ? fmt.pct(exposure, 1) : "0%" },
     { k: "净收益", v: started ? fmt.signedMoney(s.equity-s.initial_cash) : "—" },
   ];
@@ -648,7 +702,14 @@ function renderRisk(s) {
   blocks.push(`<div class="flags">${flags
     .map((f) => `<span class="flag ${f.bad ? "bad" : "ok"}">${escape(f.text)}</span>`)
     .join("")}</div>`);
-  blocks.push(`<div class="empty">${escape(strategyByName(s.strategy)?.title || s.strategy)} · 日线决策 / ${s.interval_seconds} 秒轮询<br>保护状态：${s.protection_active ? "本地止损轮询中" : "本地保护已停止"}</div>`);
+  const p = s.protection || {};
+  const protection = s.mode === "live"
+    ? (p.state === "verified"
+      ? `交易所侧已核验 · ${p.checked_at ? new Date(p.checked_at).toLocaleString("zh-CN") : "时间未知"} · 止损 ${p.stop?.client_algo_id || "—"}${p.target?.present ? ` / 止盈 ${p.target.client_algo_id}` : ""}`
+      : p.state === "not_required" ? "交易所空仓且无需保护单"
+      : `未核验（${p.state || "unknown"}）${p.reason ? ` · ${p.reason}` : ""}；禁止新开仓并到 Binance 人工核对`)
+    : "纸面风控仅本地模拟，不存在交易所保护单";
+  blocks.push(`<div class="empty">${escape(strategyByName(s.strategy)?.title || s.strategy)} · 日线决策 / ${s.interval_seconds} 秒轮询<br>保护状态：${protection}</div>`);
 
   if (s.last_error) {
     blocks.push(`<div class="alert">最近一次周期出错：${escape(s.last_error)}</div>`);
@@ -772,10 +833,12 @@ function renderSession(s) {
 
   // The config in force is part of the display, so lock the rail rather than
   // letting edits look as though they apply to the running session.
-  $("#run-form").classList.toggle("locked", Boolean(s.running));
-  $("#rail-lock").hidden = !s.running;
-  Array.from($("#run-form").elements).filter(el => el.matches("input, select")).forEach(el => { el.disabled = Boolean(s.running); });
-  $("#load-symbols").disabled = Boolean(s.running);
+  const locked = Boolean(s.running || s.starting || s.recovering);
+  $("#run-form").classList.toggle("locked", locked);
+  $("#rail-lock").hidden = !locked;
+  $("#rail-lock").textContent = s.starting ? "初始化中" : s.recovering ? "保护单核验中" : "运行中只读";
+  Array.from($("#run-form").elements).filter(el => el.matches("input, select")).forEach(el => { el.disabled = locked; });
+  $("#load-symbols").disabled = locked;
 
   if (s.last_error) setStatus(`最近一次周期出错：${s.last_error}`, "error");
   else if (s.running) setStatus("");
@@ -788,7 +851,7 @@ async function refreshSession() {
     setRunningUi(status.running);
     // Poll fast while a loop is live, slowly when idle so an open tab does not
     // hammer the server for a session that is not running.
-    schedulePoll(status.running ? 3000 : 15000);
+    schedulePoll(status.running || status.starting || status.recovering ? 3000 : 15000);
   } catch (error) {
     if (error.status === 401 && authEnabled) {
       // The session cookie expired while this tab was open: offer the login
@@ -828,13 +891,14 @@ function schedulePoll(delay) {
 }
 
 function setRunningUi(running) {
-  const label = running ? "交易中…" : "开始交易";
-  $("#run-button").disabled = running || busy;
-  $("#run-button").textContent = label;
-  $("#rail-run").disabled = running || busy;
+  const transitioning = Boolean(session?.starting || session?.recovering);
+  const locked = running || transitioning;
+  const label = session?.starting ? "初始化中…" : session?.recovering ? "保护单核验中…" : running ? "交易中…" : "启动交易会话 →";
+  $("#rail-run").disabled = locked || busy;
   $("#rail-run").textContent = label;
-  $("#step-button").disabled = !running || busy;
-  $("#stop-button").disabled = !running || busy;
+  $("#step-button").disabled = !running || transitioning || busy;
+  $("#stop-button").disabled = !running || transitioning || busy;
+  if (session) $("#recovery-button").disabled = Boolean(session.recovering || busy);
   // The AI page's controls all describe the NEXT session, so a live loop must
   // not let them look editable.
   renderAiPage(lastConfig || {});
@@ -1012,6 +1076,7 @@ async function submitAuth(event) {
     applyAuthUi(config);
     $("#auth-password").value = "";
     refreshSession();
+    refreshAccount();
   } catch (error) {
     $("#auth-message").textContent = error.message;
     $("#auth-message").className = "hint warn";
@@ -1032,6 +1097,8 @@ async function logout() {
 function showAuthCard() {
   $("#credentials-form").reset();
   $("#cred-status").textContent = "";
+  $("#exchange-values").hidden = true;
+  $("#exchange-state").textContent = "请登录后读取自己的 Binance 合约账户。";
   $("#user-name").textContent = "";
   $("#settings-account").textContent = "登录已失效，请重新登录。";
   $("#settings-login").hidden = false;
@@ -1070,6 +1137,7 @@ async function saveCredentials() {
     // and the LLM URL stays typed so it can be read at a glance.
     $$("[data-cred]").forEach((input) => { if (input.type !== "url") input.value = ""; });
     $("#cred-status").textContent += " · 已保存";
+    if (view.binance_api && view.binance_secret) refreshAccount();
   } catch (error) {
     $("#cred-status").textContent = `保存失败：${error.message}`;
   } finally {
@@ -1183,7 +1251,7 @@ async function bootstrap() {
     const quit = $("#quit-button");
     quit.hidden = false;
     quit.addEventListener("click", async () => {
-      if (session?.position?.open && !window.confirm("退出不会平仓，且本地止损/止盈将停止。确认退出并人工管理持仓？")) return;
+      if (session?.position?.open && !window.confirm("退出不会平仓，本地决策与风控轮询会停止。请在 Binance 核对持仓和保护单。确认退出？")) return;
       quit.disabled = true;
       quit.textContent = "退出中…";
       try {
@@ -1219,6 +1287,7 @@ async function bootstrap() {
   renderPage();
   await refreshSession();
   refreshMarket();
+  refreshAccount();
 }
 
 // ------------------------------------------------------------------- wiring
@@ -1538,6 +1607,7 @@ $("#ai-use-llm").addEventListener("click", () => {
 
 // 全部币种: pull the whole perpetual market into the datalist.
 $("#load-symbols").addEventListener("click", loadAllSymbols);
+$("#account-refresh").addEventListener("click", refreshAccount);
 
 // Arming real orders reveals the confirmation box and is deliberately noisy:
 // this is the only control in the UI that can move real money.
@@ -1582,10 +1652,12 @@ $("#run-form").addEventListener("submit", async (event) => {
     renderSession(payload);
     setRunningUi(payload.running);
     setStatus("");
+    window.location.hash = "/market";
     schedulePoll(3000);
   } catch (error) {
     setStatus(error.message, "error");
     setRunningUi(false);
+    await refreshSession();
   } finally {
     busy = false;
     setRunningUi(Boolean(session?.running));
@@ -1621,12 +1693,43 @@ async function stopSession() {
   }
 }
 
+async function recoverProtection() {
+  if (busy) return;
+  busy = true;
+  const confirm = $("#recovery-confirm").value;
+  $("#recovery-confirm-button").disabled = true;
+  setStatus("正在只读核验 Binance 持仓与原始保护单 ID…");
+  try {
+    const payload = await api("/api/session/recover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({confirm}),
+    });
+    $("#recovery-dialog").close();
+    $("#recovery-confirm").value = "";
+    renderSession(payload);
+    setStatus("保护单恢复锁已解除；策略仍未启动，请重新核对参数后手动启动。");
+  } catch (error) {
+    setStatus(`恢复失败：${error.message}`, "error");
+  } finally {
+    busy = false;
+    $("#recovery-confirm-button").disabled = false;
+    setRunningUi(Boolean(session?.running));
+  }
+}
+
 $("#stop-button").addEventListener("click", () => {
   if (session?.position?.open) $("#stop-dialog").showModal();
   else stopSession();
 });
 $("#stop-cancel").addEventListener("click", () => $("#stop-dialog").close());
 $("#stop-confirm").addEventListener("click", () => { $("#stop-dialog").close(); stopSession(); });
+$("#recovery-button").addEventListener("click", () => {
+  $("#recovery-confirm").value = "";
+  $("#recovery-dialog").showModal();
+});
+$("#recovery-cancel").addEventListener("click", () => $("#recovery-dialog").close());
+$("#recovery-confirm-button").addEventListener("click", recoverProtection);
 $('[name="symbol"]').addEventListener("change", () => { market = null; refreshMarket(); });
 $$('[data-interval]').forEach(button => {
   button.addEventListener("click", () => {
@@ -1670,13 +1773,12 @@ function renderPage() {
   $("#trade-config").hidden = !strategiesPage;
   $("#ai-page").hidden = !aiPage;
   $$(".board > .market, .board > .account, .board > .position, .board > .log, .board > .risk").forEach(el => { el.hidden = page !== "market"; });
-  $("#run-button").hidden = !strategiesPage;
   $("#setup-shortcut").hidden = page !== "market";
   $("#nav-market").setAttribute("aria-current", page === "market" ? "page" : "false");
   $("#nav-strategies").setAttribute("aria-current", strategiesPage ? "page" : "false");
   $("#nav-ai").setAttribute("aria-current", aiPage ? "page" : "false");
   $("#strategy-target").textContent = `${$('[name="symbol"]').value} · USDT 永续`;
-  document.title = aiPage ? "AI · trading-agent" : strategiesPage ? "策略 · trading-agent" : "行情 · trading-agent";
+  document.title = aiPage ? "AI 决策 · 交易工作台" : strategiesPage ? "策略与风控 · 交易工作台" : "交易总览 · 交易工作台";
 }
 window.addEventListener("hashchange", () => { renderPage(); window.scrollTo(0, 0); });
 renderPage();

@@ -37,12 +37,12 @@
     </div>
   </header>
 
-  <nav class="topnav" aria-label="主导航"><a href="#/market" id="nav-market">行情</a><a href="#/strategies" id="nav-strategies">策略</a><a href="#/ai" id="nav-ai">AI</a></nav>
+  <nav class="topnav" aria-label="主导航"><a href="#/market" id="nav-market">交易总览</a><a href="#/strategies" id="nav-strategies">策略与风控</a><a href="#/ai" id="nav-ai">AI 决策</a></nav>
 
-  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">查看交易配置 →</button>
+  <div class="safety-strip" id="safety-strip" role="status"><span class="safety-dot"></span><span id="safety-text">纸面模式 · 行情可以独立查看，尚未启动交易策略</span><button type="button" id="setup-shortcut">配置策略 →</button>
     <div class="strip-actions">
+      <button type="button" id="recovery-button" class="btn danger" hidden>人工核验恢复</button>
       <button type="button" id="rail-toggle" class="btn ghost" aria-controls="rail" aria-expanded="false">设置</button>
-      <button type="submit" form="run-form" id="run-button" class="btn primary" hidden>开始交易</button>
       <button type="button" id="step-button" class="btn ghost" disabled title="立即跑一个决策周期">立即执行</button>
       <button type="button" id="stop-button" class="btn ghost danger" disabled>停止策略</button>
       <button type="button" id="quit-button" class="btn ghost" title="关闭本地服务并退出" hidden>退出</button>
@@ -128,7 +128,7 @@
     </section>
 
     <section class="panel market">
-      <header class="market-head"><div><p class="eyebrow">BINANCE · PUBLIC MARKET DATA</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">现货</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>
+      <header class="market-head"><div><p class="eyebrow">BINANCE / USDT 永续行情</p><h1><span id="market-symbol">BTC / USDT</span><span class="venue-tag" id="market-venue">USDT 永续</span></h1></div><span class="market-state" id="market-state">连接行情中</span></header>
       <div class="market-trade">
         <label class="field">
           <span>交易对</span>
@@ -138,27 +138,20 @@
           </div>
         </label>
         <datalist id="symbol-options"></datalist>
-        <label class="field" id="leverage-field">
-          <span>杠杆</span>
-          <div class="inline"><input form="run-form" name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
-        </label>
-        <label class="check" id="short-field">
-          <input form="run-form" name="allow_short" type="checkbox">
-          <span>允许做空</span>
-        </label>
+        <a class="market-config-link" href="#/strategies">调整策略与风险参数 <span aria-hidden="true">↗</span></a>
       </div>
       <div class="market-toolbar"><div class="market-stats" id="market-stats"></div><div class="timeframes" aria-label="K线周期"><button type="button" data-interval="15m">15分</button><button type="button" class="active" data-interval="1h">1时</button><button type="button" data-interval="4h">4时</button><button type="button" data-interval="1d">日线</button></div></div>
       <div class="market-chart" id="market-chart"><div class="market-empty">正在加载 Binance 行情…</div></div>
-      <footer class="market-footer"><span>公开行情 · 不需要 API Key</span><span id="market-update">等待行情</span></footer>
+      <footer class="market-footer"><span>公开合约行情 · 无需 API Key · 查看行情不会启动交易</span><span id="market-update">等待行情</span></footer>
     </section>
 
     <section class="panel trade-config" id="trade-config" hidden>
-      <header class="panel-head"><h2 tabindex="-1" id="strategy-page-title">策略</h2><span id="rail-lock" class="rail-lock" hidden>运行中只读</span></header>
-      <p class="hint trade-note"><span id="strategy-target"></span> · 参数用于下一次启动，切页保留草稿，刷新不保留。<a href="#/market">返回行情选择交易对</a></p>
+      <header class="panel-head page-head"><div><p class="eyebrow">02 / 交易配置</p><h2 tabindex="-1" id="strategy-page-title">策略与风控</h2><p class="hint">在这里设置决策、仓位与实盘权限。运行中的会话不会随表单修改。</p></div><span id="rail-lock" class="rail-lock" hidden>运行中只读</span></header>
+      <p class="hint trade-note"><span id="strategy-target"></span> · 下一次启动生效。<a href="#/market">返回交易总览修改交易对 ↗</a></p>
     <form id="run-form" autocomplete="off" class="trade-body">
 
-      <fieldset>
-        <legend>策略</legend>
+      <fieldset class="config-card">
+        <legend><span class="card-index">01</span> 决策策略</legend>
         <label class="field">
           <span>策略类型</span>
           <select name="strategy" id="strategy-select"></select>
@@ -167,8 +160,18 @@
         <div id="strategy-params" class="grid2"></div>
       </fieldset>
 
-      <fieldset>
-        <legend>资金</legend>
+      <fieldset class="config-card">
+        <legend><span class="card-index">02</span> 资金与风险</legend>
+        <div class="grid2">
+          <label class="field" id="leverage-field">
+            <span>合约杠杆</span>
+            <div class="inline"><input form="run-form" name="leverage" type="number" min="1" max="125" step="1" value="1"><span class="unit">倍</span></div>
+          </label>
+          <label class="check" id="short-field">
+            <input form="run-form" name="allow_short" type="checkbox">
+            <span>允许做空</span>
+          </label>
+        </div>
         <label class="field">
           <span>纸面初始资金（实盘读取交易所余额）</span>
           <input name="initial_cash" type="number" min="100" step="100" value="100000">
@@ -186,7 +189,7 @@
       </fieldset>
 
       <details id="advanced" class="advanced">
-        <summary id="advanced-toggle">高级设置</summary>
+        <summary id="advanced-toggle"><span class="card-index">03</span> 高级风控与执行参数</summary>
 
         <div class="adv-block">
           <p class="adv-title">数据与节奏</p>
@@ -240,13 +243,13 @@
 
       </details>
 
-      <fieldset class="danger-zone">
-        <legend>实盘开关</legend>
+      <fieldset class="danger-zone config-card">
+        <legend><span class="card-index">04</span> 启动模式</legend>
         <label class="check danger">
           <input name="execute" type="checkbox">
           <span>实盘下单（真实资金）</span>
         </label>
-        <p class="hint">不勾选时全部为本地纸面模拟，不动用资金。止损由本地程序轮询执行，并非交易所挂单；停止、断网或退出后不再自动保护持仓。</p>
+        <p class="hint">默认纸面模拟，不动用真实资金。实盘会在交易所挂保护单；停止本地策略不会自动平仓或撤销已有保护单，需在 Binance 核对持仓与委托。</p>
         <div id="execute-key-hint" class="key-hint" hidden></div>
         <div id="live-confirm" hidden>
           <label class="field">
@@ -258,25 +261,26 @@
       </fieldset>
 
       <div class="rail-actions">
-        <button type="submit" class="btn primary wide" id="rail-run">开始交易</button>
+        <div><strong>核对后启动</strong><p class="hint">纸面与实盘的订单后果不同；请先确认上方模式。</p></div>
+        <button type="submit" class="btn primary" id="rail-run">启动交易会话 →</button>
         <p class="rail-foot" id="config-source"></p>
       </div>
     </form>
     </section>
 
     <section class="panel ai-page" id="ai-page" hidden>
-      <header class="panel-head">
-        <h2 tabindex="-1" id="ai-page-title">AI 交易大脑</h2>
-        <span class="panel-note">决策 · 否决 · 复盘 · 自我迭代</span>
+      <header class="panel-head page-head">
+        <div><p class="eyebrow">03 / 智能决策</p><h2 tabindex="-1" id="ai-page-title">AI 决策中心</h2><p class="hint">模型负责决策辅助，硬风控与交易权限始终独立。</p></div>
+        <span class="panel-note">决策 · 否决 · 复盘</span>
       </header>
 
       <div class="ai-body">
-        <p class="hint ai-lede">这个项目的核心是 AI。下面每一项都由模型驱动，且只影响<strong>下一次启动</strong>的交易会话；正在运行的会话不会被改写。</p>
+        <p class="hint ai-lede">模型驱动策略、入场复核和交易复盘。设置只影响<strong>下一次启动</strong>，不会改写正在运行的会话。</p>
 
         <div class="ai-status" id="ai-status" role="status"></div>
 
         <fieldset class="ai-card">
-          <legend>AI 决策</legend>
+          <legend><span class="card-index">01</span> AI 决策</legend>
           <p class="hint">把「策略类型」切到 <b>LLM 目标仓位</b>，模型会读取 K 线快照并直接给出目标仓位与止损/目标位。</p>
           <div class="ai-actions">
             <button type="button" class="btn" id="ai-use-llm">使用 AI 策略</button>
@@ -291,7 +295,7 @@
         </fieldset>
 
         <fieldset class="ai-card">
-          <legend>AI 复盘</legend>
+          <legend><span class="card-index">02</span> AI 复盘</legend>
           <p class="hint">让模型读完成交与指标，写出「发生了什么、优势是否成立、下一步盯什么」。</p>
           <div class="ai-actions">
             <button type="button" class="btn ghost" id="ai-review-backtest">回测复盘</button>
@@ -302,7 +306,7 @@
         </fieldset>
 
         <fieldset class="ai-card">
-          <legend>AI 自我迭代</legend>
+          <legend><span class="card-index">03</span> AI 自我迭代</legend>
           <p class="hint">模型提出改动，回测当裁判：更好的留下，更差的淘汰。不改代码、不下单。</p>
           <div class="grid2">
             <label class="field">
@@ -351,9 +355,21 @@
 
     <section class="panel account">
       <header class="panel-head">
-        <h2>资金与收益 <span class="unit-label">USDT</span></h2>
-        <span class="panel-note" id="account-note"></span>
+        <h2>Binance 合约账户 <span class="unit-label">USDT</span></h2>
+        <button type="button" class="btn ghost" id="account-refresh">刷新账户</button>
       </header>
+
+      <div class="exchange-account" id="exchange-account" aria-live="polite">
+        <p class="hint" id="exchange-state">尚未读取真实账户；此区域不会显示纸面资金。</p>
+        <div id="exchange-values" hidden>
+          <div class="exchange-wallet"><span>合约钱包余额</span><strong id="exchange-wallet">—</strong></div>
+          <div class="exchange-details"><span>可用余额 <b id="exchange-available">—</b></span><span>全仓未实现盈亏 <b id="exchange-unrealized">—</b></span></div>
+          <p class="hint" id="exchange-updated"></p>
+        </div>
+      </div>
+
+      <details class="session-ledger" id="session-ledger">
+      <summary><span>策略会话账本（非账户余额）</span><span id="account-note">纸面模拟</span></summary>
 
       <div class="account-body">
         <div class="account-figure">
@@ -373,6 +389,7 @@
       </div>
 
       <div class="metrics" id="account-metrics"></div>
+      </details>
     </section>
 
     <section class="panel position">
@@ -403,7 +420,8 @@
   </main>
 
   <p class="status" id="status" hidden></p>
-  <dialog id="stop-dialog" class="confirm-dialog"><h2>停止策略，不会平仓</h2><p>当前持仓将继续保留。停止后本地止损、止盈和风控轮询全部停止，请到交易所人工管理持仓。</p><div class="dialog-actions"><button type="button" class="btn" id="stop-cancel">继续运行</button><button type="button" class="btn danger-solid" id="stop-confirm">确认停止，不平仓</button></div></dialog>
+  <dialog id="stop-dialog" class="confirm-dialog"><h2>停止策略，不会平仓</h2><p>当前持仓和交易所已有的保护单可能继续存在；本地决策、对账与风控轮询会停止。请到 Binance 核对并管理持仓与委托。</p><div class="dialog-actions"><button type="button" class="btn" id="stop-cancel">继续运行</button><button type="button" class="btn danger-solid" id="stop-confirm">确认停止，不平仓</button></div></dialog>
+  <dialog id="recovery-dialog" class="confirm-dialog"><h2>人工核验保护单恢复</h2><p>请先在 Binance 核对真实持仓、止损与止盈的原始 ID。恢复操作只做只读核验并清理本地恢复锁，不会启动策略、撤单、平仓或发送新订单。</p><label class="field"><span>输入「确认恢复」</span><input id="recovery-confirm" spellcheck="false" placeholder="确认恢复"></label><div class="dialog-actions"><button type="button" class="btn" id="recovery-cancel">取消</button><button type="button" class="btn danger-solid" id="recovery-confirm-button">完成核验并恢复</button></div></dialog>
 </div>
 
 <script src="/app.js"></script>

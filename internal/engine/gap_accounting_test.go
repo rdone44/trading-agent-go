@@ -14,15 +14,13 @@ import (
 
 func TestGapStopAccounting(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		futures bool
-		side    broker.Side
-		stop    float64
-		open    float64
+		name string
+		side broker.Side
+		stop float64
+		open float64
 	}{
-		{"spot_long", false, broker.Buy, 90, 80},
-		{"futures_long", true, broker.Buy, 90, 80},
-		{"futures_short", true, broker.Sell, 110, 120},
+		{"long", broker.Buy, 90, 80},
+		{"short", broker.Sell, 110, 120},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
@@ -31,10 +29,7 @@ func TestGapStopAccounting(t *testing.T) {
 			cfg.Execution.MinTradeNotional = 0
 			cfg.Execution.CommissionBps = 10
 			cfg.Execution.SlippageBps = 25
-			book := portfolio.New(1000)
-			if tc.futures {
-				book = portfolio.NewFutures(1000, 1)
-			}
+			book := portfolio.New(1000, cfg.Risk.Leverage)
 			a := NewWithBroker(cfg, nil, broker.New(cfg.Execution), book, risk.New(cfg.Risk))
 			ts := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 			// Seed a completed entry without calling any exchange. Its fee is

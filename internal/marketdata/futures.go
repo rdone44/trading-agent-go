@@ -1,6 +1,9 @@
-// USDT-margined perpetual futures market data, from the public fapi REST API.
-// Same K-line shape as spot; the venue difference matters for live trading
-// (leverage, shorting) and for marking stops at the exchange price.
+// USDT-margined perpetual market data, from the public Binance fapi REST API.
+//
+// This is the only venue the program trades, so there is no spot/futures
+// switch: bars, last price and mark price all come from the perpetual
+// endpoints. The perpetual price is also the honest one to mark stops
+// against, because it is the market the orders actually execute in.
 package marketdata
 
 import (
@@ -22,12 +25,12 @@ var fapiEndpoint = "https://fapi.binance.com"
 // Binance futures REST API. Crypto futures trade every day, so N days of
 // history maps to roughly N candles; the still-forming candle is dropped so
 // a backtest never acts on a partial bar.
-func Futures(symbol string, days int, end time.Time) (model.Series, error) {
-	return klinesFor(fapiEndpoint, "binance-usdt-perp", symbol, days, end)
+func Load(symbol string, days int, end time.Time) (model.Series, error) {
+	return klinesFor("binance-usdt-perp", symbol, days, end)
 }
 
 // klinesFor pages through one K-line endpoint and returns closed daily bars.
-func klinesFor(baseURL, source, symbol string, days int, end time.Time) (model.Series, error) {
+func klinesFor(source, symbol string, days int, end time.Time) (model.Series, error) {
 	if days < 1 {
 		days = 1
 	}
@@ -41,7 +44,7 @@ func klinesFor(baseURL, source, symbol string, days int, end time.Time) (model.S
 
 	klines := make([]binanceKline, 0, days+1)
 	for len(klines) < days+1 {
-		page, err := fetchKlinesPage(client, baseURL, ticker, cursor, end)
+		page, err := fetchKlinesPage(client, ticker, cursor, end)
 		if err != nil {
 			return model.Series{}, err
 		}
@@ -82,10 +85,9 @@ func klinesFor(baseURL, source, symbol string, days int, end time.Time) (model.S
 	return series, nil
 }
 
-// fetchKlinesPage fetches one page of daily candles from a K-line endpoint.
-// The spot and futures endpoints share the row layout but live at different
-// paths, so the URL is built per venue.
-func fetchKlinesPage(client *http.Client, baseURL, ticker string, start, end time.Time) ([]binanceKline, error) {
+// fetchKlinesPage fetches one page of daily candles from the perpetual K-line
+// endpoint.
+func fetchKlinesPage(client *http.Client, ticker string, start, end time.Time) ([]binanceKline, error) {
 	query := url.Values{}
 	query.Set("symbol", ticker)
 	query.Set("interval", "1d")
@@ -93,13 +95,7 @@ func fetchKlinesPage(client *http.Client, baseURL, ticker string, start, end tim
 	query.Set("endTime", strconv.FormatInt(end.UnixMilli(), 10))
 	query.Set("limit", strconv.Itoa(binanceMaxLimit))
 
-	var u string
-	switch baseURL {
-	case fapiEndpoint:
-		u = baseURL + "/fapi/v1/klines?" + query.Encode()
-	default:
-		u = baseURL + "/api/v3/klines?" + query.Encode()
-	}
+	u := fapiEndpoint + "/fapi/v1/klines?" + query.Encode()
 
 	request, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
@@ -160,10 +156,10 @@ func fetchKlinesPage(client *http.Client, baseURL, ticker string, start, end tim
 	return out, nil
 }
 
-// FuturesLastPrice fetches the latest traded price for a futures ticker from
-// the public fapi REST API. The trade loop calls this each cycle to mark
-// open positions and to evaluate protective stops between candles.
-func FuturesLastPrice(symbol string) (float64, time.Time, error) {
+// LastPrice fetches the latest traded price for a perpetual ticker from the
+// public fapi REST API. The trade loop calls this each cycle to mark open
+// positions and to evaluate protective stops between candles.
+func LastPrice(symbol string) (float64, time.Time, error) {
 	ticker := BinanceSymbol(symbol)
 	if ticker == "" {
 		return 0, time.Time{}, fmt.Errorf("Binance 数据源需要交易对代码，例如 BTCUSDT")
@@ -205,10 +201,10 @@ func FuturesLastPrice(symbol string) (float64, time.Time, error) {
 	return price, time.UnixMilli(openTime).UTC(), nil
 }
 
-// FuturesMarkPrice fetches the current mark price for a futures ticker.
+// MarkPrice fetches the current mark price for a perpetual ticker.
 // Mark prices are what the exchange uses for liquidations and funding, so
 // they are the honest reference for judging stops on a leveraged position.
-func FuturesMarkPrice(symbol string) (float64, error) {
+func MarkPrice(symbol string) (float64, error) {
 	ticker := BinanceSymbol(symbol)
 	if ticker == "" {
 		return 0, fmt.Errorf("Binance 数据源需要交易对代码，例如 BTCUSDT")

@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交易工作台 UI 设计评审与优化方案</title>
+<style>
+:root{
+  --bg:#f6f4ef; --panel:#ffffff; --panel-2:#fbfaf7; --ink:#1c2430; --ink-2:#5b6b7c; --ink-3:#8b9aa8;
+  --line:#e4e0d6; --line-2:#eeeae1; --accent:#8a6d3b; --accent-soft:#f3ead8;
+  --up:#c0392b; --up-soft:#fbeceb; --down:#1a7f5a; --down-soft:#e8f4ef;
+  --warn:#9a6b12; --warn-soft:#fbf1dc; --crit:#a32d2d; --crit-soft:#fcebeb;
+  --mono:"Cascadia Code",Consolas,"SF Mono",monospace;
+  --sans:"Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.7 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:56px 32px 96px}
+
+/* ---------- header ---------- */
+.doc-head{border-bottom:2px solid var(--ink);padding-bottom:26px;margin-bottom:12px}
+.doc-head .kicker{font:11px var(--mono);letter-spacing:.18em;color:var(--ink-3);text-transform:uppercase;margin:0 0 10px}
+.doc-head h1{margin:0 0 10px;font-size:32px;font-weight:600;letter-spacing:-.02em;line-height:1.25}
+.doc-head .sub{color:var(--ink-2);font-size:14px;margin:0}
+.doc-meta{display:flex;flex-wrap:wrap;gap:26px;margin-top:22px;padding-top:18px;border-top:1px solid var(--line-2)}
+.doc-meta div{font-size:12px}
+.doc-meta .k{display:block;color:var(--ink-3);font-size:11px;letter-spacing:.05em;margin-bottom:3px}
+.doc-meta .v{font:12px var(--mono);color:var(--ink)}
+
+/* ---------- structure ---------- */
+h2.sec{margin:56px 0 6px;font-size:22px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:baseline;gap:12px}
+h2.sec .n{font:12px var(--mono);color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:2px 7px;background:var(--panel)}
+h3.sub{margin:34px 0 10px;font-size:16px;font-weight:600}
+h4.sub2{margin:22px 0 8px;font-size:13.5px;font-weight:600;color:var(--ink-2)}
+p{margin:0 0 12px}
+.lede{color:var(--ink-2);font-size:14.5px;line-height:1.8;max-width:78ch}
+code{font:12.5px var(--mono);background:#efece5;border:1px solid var(--line-2);border-radius:4px;padding:1px 5px}
+ul,ol{margin:0 0 14px;padding-left:22px}
+li{margin-bottom:6px}
+strong{font-weight:600}
+a{color:var(--accent)}
+
+/* ---------- verdict ---------- */
+.verdict{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 0 8px}
+.vcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px}
+.vcard .h{font-size:12px;letter-spacing:.06em;color:var(--ink-3);margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.vcard.good{border-left:3px solid var(--down)}
+.vcard.bad{border-left:3px solid var(--warn)}
+.vcard ul{margin:0;padding-left:18px}
+.vcard li{font-size:13px;color:var(--ink-2);line-height:1.65}
+
+/* ---------- score ---------- */
+.scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:12px;margin:18px 0}
+.score{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.score .k{font-size:11.5px;color:var(--ink-3);display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.score .k b{font:600 13px var(--mono);color:var(--ink)}
+.score .track{height:5px;border-radius:3px;background:#eae6dd;margin:10px 0 8px;overflow:hidden}
+.score .fill{height:100%;border-radius:3px}
+.f-good{background:var(--down)} .f-mid{background:var(--warn)} .f-bad{background:var(--crit)}
+.score .d{font-size:11.5px;color:var(--ink-2);line-height:1.55}
+
+/* ---------- finding ---------- */
+.finding{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin:16px 0;overflow:hidden}
+.finding > header{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line-2);background:var(--panel-2)}
+.finding > header .idx{font:11px var(--mono);color:var(--ink-3);border:1px solid var(--line);border-radius:4px;padding:2px 6px;flex:none;margin-top:2px}
+.finding > header .t{flex:1;min-width:0}
+.finding > header .t h4{margin:0 0 3px;font-size:15px;font-weight:600}
+.finding > header .t p{margin:0;font-size:12.5px;color:var(--ink-3)}
+.sev{flex:none;font-size:11px;font-weight:600;border-radius:20px;padding:3px 10px;white-space:nowrap;margin-top:1px}
+.sev.high{background:var(--crit-soft);color:var(--crit)}
+.sev.mid{background:var(--warn-soft);color:var(--warn)}
+.sev.low{background:#eef1f4;color:var(--ink-2)}
+.finding .body{padding:18px 20px 20px}
+.evidence{background:#f7f5f0;border:1px solid var(--line-2);border-left:3px solid var(--ink-3);border-radius:6px;padding:12px 14px;margin:12px 0;font-size:13px;color:var(--ink-2);line-height:1.7}
+.evidence .lbl{display:block;font:10.5px var(--mono);letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;margin-bottom:6px}
+pre{margin:12px 0;padding:13px 15px;background:#1e2732;color:#dfe7ee;border-radius:8px;overflow-x:auto;font:12px/1.75 var(--mono)}
+pre .cm{color:#7d8f9e}
+pre .rm{color:#e08a8f}
+pre .ad{color:#7fc9a4}
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
+.ba > div{border:1px solid var(--line);border-radius:8px;padding:13px 15px;font-size:12.5px;line-height:1.7;background:var(--panel-2)}
+.ba .tag{display:block;font:10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;margin-bottom:7px}
+.ba .before .tag{color:var(--crit)} .ba .after .tag{color:var(--down)}
+.fix{margin:12px 0 0;padding:13px 15px;background:var(--down-soft);border:1px solid #cfe6dd;border-radius:8px;font-size:13px;line-height:1.7}
+.fix .lbl{display:block;font:10.5px var(--mono);letter-spacing:.1em;color:var(--down);text-transform:uppercase;margin-bottom:6px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:12.5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:10px 13px;text-align:left;border-bottom:1px solid var(--line-2);vertical-align:top}
+th{background:var(--panel-2);font-size:11px;letter-spacing:.05em;color:var(--ink-2);font-weight:600;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-family:var(--mono);white-space:nowrap}
+.tag-sm{display:inline-block;font:10.5px var(--mono);padding:1px 6px;border-radius:4px;background:#eef1f4;color:var(--ink-2)}
+.p0{background:var(--crit-soft);color:var(--crit)} .p1{background:var(--warn-soft);color:var(--warn)} .p2{background:#eef1f4;color:var(--ink-2)}
+
+/* ---------- roadmap ---------- */
+.phase{border-left:3px solid var(--line);padding:0 0 6px 20px;margin:0 0 24px;position:relative}
+.phase::before{content:"";position:absolute;left:-7px;top:8px;width:11px;height:11px;border-radius:50%;background:var(--panel);border:3px solid var(--accent)}
+.phase h4{margin:0 0 4px;font-size:15px}
+.phase .when{font:11px var(--mono);color:var(--ink-3);letter-spacing:.06em;margin-bottom:10px}
+.phase ul{margin:0;padding-left:18px}
+.phase li{font-size:13px;color:var(--ink-2)}
+
+.foot{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:var(--ink-3);font-size:12px}
+@media(max-width:760px){
+  .wrap{padding:32px 18px 64px}
+  .verdict,.ba{grid-template-columns:1fr}
+  .doc-head h1{font-size:25px}
+  h2.sec{font-size:19px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc-head">
+  <p class="kicker">UI Design Review / 设计评审</p>
+  <h1>交易工作台 UI 评审与优化方案</h1>
+  <p class="sub">评审对象：<code>internal/webui/static/</code> 单页交易终端（<code>index.html</code> 411 行 / <code>app.css</code> 325 行 / <code>app.js</code> 1684 行）</p>
+  <div class="doc-meta">
+    <div><span class="k">评审人</span><span class="v">UiDesigner</span></div>
+    <div><span class="k">日期</span><span class="v">2026-10-09</span></div>
+    <div><span class="k">界面规模</span><span class="v">3 路由 · 9 面板 · 1 抽屉</span></div>
+    <div><span class="k">技术栈</span><span class="v">原生 HTML/CSS/JS · 零依赖</span></div>
+  </div>
+</header>
+
+<p class="lede" style="margin-top:26px">结论先行：这套 UI 的<strong>架构判断力高于其视觉完成度</strong>。信息分区、路由设计、安全语义（纸面/实盘分级、危险操作二次确认、fail-open 说明）都达到了成熟交易终端的水平，代码组织也干净。但它在三个地方系统性失分：<strong>① 颜色语义与中文金融惯例相反</strong>；<strong>② 小屏与 1000–1150px 区间存在真实布局故障</strong>；<strong>③ 信息密度与层级结构不匹配</strong>——最重要的账户与持仓，被塞进了最不显眼的角落。下面逐项给出证据与可直接落地的修复。</p>
+
+<div class="verdict">
+  <div class="vcard good">
+    <div class="h">■ 做对了的（应保留）</div>
+    <ul>
+      <li><b>路由与草稿保留</b>：hash 路由切页不销毁表单实例，草稿不丢，是有经验的产品判断。</li>
+      <li><b>图表不引依赖</b>：K 线与权益曲线用内联 SVG 手写，零运行时依赖，<code>preserveAspectRatio="none"</code> 自适应。</li>
+      <li><b>安全语义成体系</b>：纸面/实盘在顶栏、安全条、风控卡、开关四处一致出现；实盘需输入「确认实盘」；停止不平仓有专属对话框。</li>
+      <li><b>状态即文案</b>：空状态、错误态、降级态都有明确中文说明（fail-open 会讲清楚「照常放行」）。</li>
+      <li><b>输入容错</b>：<code>invalid</code> 事件会自动跳到出错字段所在页并展开 <code>details</code>，细节到位。</li>
+    </ul>
+  </div>
+  <div class="vcard bad">
+    <div class="h">■ 必须改的（本次重点）</div>
+    <ul>
+      <li><b>涨跌色反了</b>：代码里涨=绿、跌=红，与 A 股/国内用户直觉相反（P0）。</li>
+      <li><b>中屏布局故障</b>：<code>.rail</code> 在 &lt;1150px 变成覆盖抽屉，但「设置」按钮 <code>#rail-toggle</code> 的 JS 逻辑与栅格断点不一致（P0）。</li>
+      <li><b>层级倒置</b>：权益数字 27px 却排在行情图之下，持仓与风控挤在同宽两列（P1）。</li>
+      <li><b>可用性硬伤</b>：顶栏行情不自增、表格无排序、日志无法暂停滚动、缺少连接状态骨架（P1）。</li>
+      <li><b>设计令牌分裂</b>：报告页 <code>report.html</code> 是浅色米黄主题，与工作台深色主题完全无关（P2）。</li>
+    </ul>
+  </div>
+</div>
+
+<h2 class="sec"><span class="n">01</span>视觉与交互评分</h2>
+<p class="lede">按六个维度打分（0–10）。分数反映的是「相对于一个专业交易终端应有的水准」，不是「相对于同类业余项目」。</p>
+
+<div class="scores">
+  <div class="score">
+    <div class="k"><span>信息架构</span><b>7.5</b></div>
+    <div class="track"><span class="fill f-good" style="width:75%"></span></div>
+    <div class="d">分区清晰、路由合理，但主次层级倒置，第二屏内容默认首屏可见。</div>
+  </div>
+  <div class="score">
+    <div class="k"><span>视觉语言</span><b>6.5</b></div>
+    <div class="track"><span class="fill f-mid" style="width:65%"></span></div>
+    <div class="d">金色强调色克制得体，但字号普遍 9–11px，层级几乎只靠颜色区分。</div>
+  </div>
+  <div class="score">
+    <div class="k"><span>响应式</span><b>5.0</b></div>
+    <div class="track"><span class="fill f-bad" style="width:50%"></span></div>
+    <div class="d">1150px 与 1000px 两个断点语义冲突，中屏抽屉开关可能失效。</div>
+  </div>
+  <div class="score">
+    <div class="k"><span>可访问性</span><b>5.5</b></div>
+    <div class="track"><span class="fill f-bad" style="width:55%"></span></div>
+    <div class="d">有 <code>inert</code>、焦点陷阱、<code>focus-visible</code> 但对比度不足，缺 skip-link 与 aria-live。</div>
+  </div>
+  <div class="score">
+    <div class="k"><span>数据可视化</span><b>7.0</b></div>
+    <div class="track"><span class="fill f-good" style="width:70%"></span></div>
+    <div class="d">止损/最新价/止盈位置条设计优秀；但文字偏小，缺缩放与十字光标。</div>
+  </div>
+  <div class="score">
+    <div class="k"><span>可用性与反馈</span><b>6.0</b></div>
+    <div class="track"><span class="fill f-mid" style="width:60%"></span></div>
+    <div class="d">错误提示到位，但表格不可排序、无加载骨架、顶栏时间不刷新。</div>
+  </div>
+</div>
+
+<h2 class="sec"><span class="n">02</span>问题清单（按严重度）</h2>
+<p class="lede">共 14 项。P0 必须在下次发版前修复；P1 建议本轮迭代完成；P2 可作为持续优化项。</p>
+
+<table>
+  <thead><tr>
+    <th style="width:56px">编号</th><th style="width:64px">级别</th><th>问题</th><th style="width:190px">位置</th><th style="width:120px">影响</th>
+  </tr></thead>
+  <tbody>
+    <tr><td class="num">F-01</td><td><span class="tag-sm p0">P0</span></td><td>涨跌配色与中文金融惯例相反（涨绿跌红）</td><td><code>app.css</code> L6</td><td>误读盈利方向</td></tr>
+    <tr><td class="num">F-02</td><td><span class="tag-sm p0">P0</span></td><td>侧边抽屉在 1000–1150px 区间的开关逻辑与栅格断点不一致</td><td><code>app.css</code> L189 / <code>app.js</code> L188</td><td>中屏无法打开设置</td></tr>
+    <tr><td class="num">F-03</td><td><span class="tag-sm p0">P0</span></td><td>顶栏报价时间戳不自增，行情停滞时无视觉告警</td><td><code>app.js</code> L251</td><td>看着「最新」实为过期</td></tr>
+    <tr><td class="num">F-04</td><td><span class="tag-sm p1">P1</span></td><td>账号登录卡占满整行，未登录时把行情图挤到第二屏</td><td><code>app.css</code> L74</td><td>首屏价值被稀释</td></tr>
+    <tr><td class="num">F-05</td><td><span class="tag-sm p1">P1</span></td><td>权益数字（27px）排位低于行情图，主次倒置</td><td><code>app.css</code> L74–78</td><td>找不到「我赚了多少」</td></tr>
+    <tr><td class="num">F-06</td><td><span class="tag-sm p1">P1</span></td><td>三个数据表均不支持排序、筛选、列固定</td><td><code>app.js</code> L336</td><td>28+ 行后无法定位</td></tr>
+    <tr><td class="num">F-07</td><td><span class="tag-sm p1">P1</span></td><td>日志区无自动滚动控制、无「跳到最新」</td><td><code>app.js</code> L674</td><td>运行中无法追日志</td></tr>
+    <tr><td class="num">F-08</td><td><span class="tag-sm p1">P1</span></td><td>全局 toast 无自动消失、无关闭按钮，多条互相覆盖</td><td><code>app.js</code> L180</td><td>错误常驻遮挡</td></tr>
+    <tr><td class="num">F-09</td><td><span class="tag-sm p1">P1</span></td><td>首屏无骨架屏，加载态只有一行居中小字</td><td><code>app.js</code> L296+</td><td>感知性能差</td></tr>
+    <tr><td class="num">F-10</td><td><span class="tag-sm p2">P2</span></td><td>正文 9–11px 偏小，信息层级只靠颜色</td><td><code>app.css</code> 全篇</td><td>长时间阅读疲劳</td></tr>
+    <tr><td class="num">F-11</td><td><span class="tag-sm p2">P2</span></td><td>对比度不足：<code>--ink-3 #839aa9</code> 配深底约 4.0:1</td><td><code>app.css</code> L4</td><td>不满足 WCAG AA</td></tr>
+    <tr><td class="num">F-12</td><td><span class="tag-sm p2">P2</span></td><td>顶栏/导航/安全条三层 chrome 合计占约 140px</td><td><code>index.html</code> L14–56</td><td>挤压数据区</td></tr>
+    <tr><td class="num">F-13</td><td><span class="tag-sm p2">P2</span></td><td>深色工作台与浅色回测报告为两套互不相干的设计令牌</td><td><code>report.html</code> L8</td><td>品牌断裂</td></tr>
+    <tr><td class="num">F-14</td><td><span class="tag-sm p2">P2</span></td><td>K 线图无指标叠加、无缩放、无十字光标联动</td><td><code>app.js</code> L296</td><td>分析能力受限</td></tr>
+  </tbody>
+</table>
+
+<h2 class="sec"><span class="n">03</span>P0 · 必须立即修复</h2>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-01</span>
+    <div class="t">
+      <h4>涨跌配色与中文金融惯例相反</h4>
+      <p>颜色语义错误 · 影响所有行情、持仓与成交展示</p>
+    </div>
+    <span class="sev high">严重</span>
+  </header>
+  <div class="body">
+    <p>当前主题把「涨」定义为青绿色 <code>--up: #55c6a2</code>，把「跌」定义为粉红色 <code>--down: #f18087</code>——这是欧美惯例。而中国用户在 A 股、港股、国内行情软件中形成的肌肉记忆是<strong>红涨绿跌</strong>。结果是：一笔 +18% 的浮盈显示为绿色、止损告警显示为红色，方向感是反的。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.css:6</code> → <code>--up: #55c6a2; --up-dim: #19352f; --down: #f18087; --down-dim: #39252c;</code><br>
+      <code>app.js:52</code> → <code>const signClass = (v) =&gt; (ok(v) ? (v &gt;= 0 ? "pos" : "neg") : "");</code><br>
+      <code>app.css:151-152</code> → <code>.pos { color: var(--up); } .neg { color: var(--down); }</code>
+    </div>
+    <p>注意这不是简单的「两个变量对调」：<code>--down</code> 同时被用作<strong>危险/错误/止损</strong>语义（<code>.btn.danger</code>、<code>.alert</code>、<code>.safety-strip.warn</code>、<code>.gauge-fill.hot</code>、熔断提示）。如果直接把 <code>--down</code> 改成绿色，整个风控体系会变成「绿色告警」。</p>
+    <div class="ba">
+      <div class="before">
+        <span class="tag">当前（欧美惯例）</span>
+        盈利 <span style="color:#1a7f5a;font-weight:600">+18.00%</span> · 亏损 <span style="color:#c0392b;font-weight:600">−6.20%</span><br>
+        止损离场标签为红色，与「亏损红」混为一谈。
+      </div>
+      <div class="after">
+        <span class="tag">目标（中文惯例）</span>
+        盈利 <span style="color:#c0392b;font-weight:600">+18.00%</span> · 亏损 <span style="color:#1a7f5a;font-weight:600">−6.20%</span><br>
+        危险语义拆成独立变量 <code>--danger</code>，恒为红色。
+      </div>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现：语义拆分，而非变量对调</span>
+      新增一组与涨跌解耦的语义色，让「方向」和「风险」各管各的：
+<pre><span class="cm">/* 方向色：遵循中文金融惯例，红涨绿跌 */</span>
+<span class="rm">--up: #55c6a2;   --up-dim: #19352f;</span>
+<span class="rm">--down: #f18087; --down-dim: #39252c;</span>
+<span class="ad">--rise: #e05a4f;  --rise-dim: #3b2320;   <span class="cm">/* 上涨 / 盈利 → 红 */</span></span>
+<span class="ad">--fall: #37b98a;  --fall-dim: #16352b;   <span class="cm">/* 下跌 / 亏损 → 绿 */</span></span>
+
+<span class="cm">/* 风险色：与方向无关，恒为红 */</span>
+<span class="ad">--danger: #f18087; --danger-dim: #39252c;</span>
+<span class="ad">--warn:   #dfbc75; --warn-dim:   #352d21;</span>
+
+<span class="cm">/* 兼容别名：现有 .pos/.neg 自动跟随新语义 */</span>
+<span class="ad">.pos { color: var(--rise); }</span>
+<span class="ad">.neg { color: var(--fall); }</span></pre>
+      然后把风控相关的 <code>var(--down)</code> 全部改为 <code>var(--danger)</code>，仅保留 <code>.neg</code>、K 线阴线、盈亏数字使用 <code>--fall</code>。建议新增一个 <code>.dir-rise</code> / <code>.dir-fall</code> 类名，避免后人再把两个语义混用。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-02</span>
+    <div class="t">
+      <h4>侧边抽屉开关逻辑与栅格断点不一致</h4>
+      <p>响应式故障 · 1000–1150px 区间设置抽屉不可达</p>
+    </div>
+    <span class="sev high">严重</span>
+  </header>
+  <div class="body">
+    <p>侧边栏 <code>.rail</code> 是 <code>position: fixed</code> 且默认 <code>transform: translateX(100%); visibility: hidden</code>——也就是说<strong>它永远是一个覆盖式抽屉，永远不会进入栅格</strong>。但代码注释与 <code>.board</code> 的网格定义（<code>grid-template-areas</code> 中并没有 rail）暗示它曾有「宽屏入栅格」的设计意图。</p>
+    <p>矛盾点在于：<code>.board</code> 在 1150px 才收窄，而 <code>setRail()</code> 的注释写的是「below 1000px it becomes an overlay」。实际效果是<strong>任何宽度下设置都只能通过抽屉打开</strong>，而 &lt;560px 时 <code>#setup-shortcut</code> 又被 <code>display:none</code> 隐藏，窄屏用户只能靠顶栏的「设置」按钮，而该按钮在窄屏下与「开始交易 / 立即执行 / 停止策略」挤在同一行 <code>.strip-actions</code> 中，容易换行错位。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.css:189</code> → <code>.rail { position: fixed; ... transform: translateX(100%); visibility: hidden; }</code><br>
+      <code>app.css:74-78</code> → <code>.board</code> 的 <code>grid-template-areas</code> 只有 market/account/position/log/risk，<b>没有 rail</b><br>
+      <code>app.css:274</code> → <code>@media (max-width:560px){ #setup-shortcut { display: none; } }</code><br>
+      <code>app.js:190-191</code> → 注释声称 1000px 以下才需要显式开合，与 CSS 实际不符
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      <strong>方案 A（推荐，改动最小）</strong>：承认抽屉是唯一形态，删掉误导性注释，并把断点统一到 <code>1150px</code>；同时在 <code>&lt;560px</code> 保留 <code>#setup-shortcut</code> 但改为图标按钮，避免与安全条争抢。
+      <br><br>
+      <strong>方案 B（体验更好）</strong>：≥1500px 时让 rail 真正入栅格成为第三列（<code>grid-template-columns: 240px minmax(0,1fr) 380px</code>），交易终端的大屏用户可同时看到设置与行情，减少一次开合操作。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-03</span>
+    <div class="t">
+      <h4>行情时间戳不自增，过期数据无告警</h4>
+      <p>信任问题 · 用户无法判断看到的是否是「此刻」</p>
+    </div>
+    <span class="sev high">严重</span>
+  </header>
+  <div class="body">
+    <p>顶栏的 <code>#ticker-time</code> 只在 <code>renderMarket()</code> 被调用时写入一次。<code>refreshMarket()</code> 的轮询是 <strong>15 秒</strong>，失败时退避到 30 秒——也就是说刷新间隔内时间文案是冻结的。行情更新失败时虽然会把 <code>#market-state</code> 改成「行情过期 · 重连中」，但顶栏大号价格数字<strong>仍然保持原样且颜色不变</strong>。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.js:264</code> → <code>marketTimer = setTimeout(refreshMarket, 15000);</code>（成功）<br>
+      <code>app.js:271</code> → <code>marketTimer = setTimeout(refreshMarket, 30000);</code>（失败退避）<br>
+      <code>app.js:281</code> → <code>$("#ticker-time").textContent = fmt.clock(market.updated_at);</code> ← 仅在渲染时写一次<br>
+      <code>app.js:266-267</code> → 失败时只改 <code>#market-state</code> 与图表，<b>顶栏价格无任何过期标记</b>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      三件事一起做：<b>①</b> 用 1 秒 <code>setInterval</code> 单独驱动一个「数据新鲜度」指示器，显示 <code>3s 前</code> 而非绝对时间，超阈值变色；<b>②</b> 行情过期时给顶栏价格加 <code>.stale</code> 类（降透明度 + 右上角琥珀色警示点）；<b>③</b> 在 <code>.market-state</code> 旁加一个 <code>aria-live="polite"</code> 的隐藏告警，读屏用户也能获知。
+<pre><span class="cm">// 新增：独立的新鲜度心跳，与行情请求解耦</span>
+<span class="ad">let marketTickTimer = null;</span>
+<span class="ad">function startFreshnessTick() {</span>
+<span class="ad">  clearInterval(marketTickTimer);</span>
+<span class="ad">  marketTickTimer = setInterval(() =&gt; {</span>
+<span class="ad">    if (!market?.updated_at) return;</span>
+<span class="ad">    const age = (Date.now() - new Date(market.updated_at)) / 1000;</span>
+<span class="ad">    $("#ticker-time").textContent = age &lt; 5 ? "刚刚" : `${Math.round(age)}s 前`;</span>
+<span class="ad">    $("#ticker-price").classList.toggle("stale", age &gt; 45);</span>
+<span class="ad">  }, 1000);</span>
+<span class="ad">}</span></pre>
+      配套 CSS：<code>.quote-price.stale { opacity:.55 }</code>，并在其后用 <code>::after</code> 加一个小圆点。
+    </div>
+  </div>
+</article>
+
+<h2 class="sec"><span class="n">04</span>P1 · 建议本轮迭代完成</h2>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-04</span>
+    <div class="t">
+      <h4>登录卡横跨整行，未登录时把行情图挤到第二屏</h4>
+      <p>信息层级 · 首次访问体验</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p><code>.board</code> 的第一行网格区域被 <code>auth auth</code> 独占。当 <code>authEnabled</code> 为真且未登录时，一整张登录卡占据首屏，把<strong>产品最有价值的实时 K 线推到折叠线以下</strong>。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.css:74-78</code> → <code>grid-template-areas: "auth auth" "market market" ...</code><br>
+      <code>app.js:866</code> → <code>card.hidden = !authEnabled || signedIn;</code>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      未登录时把登录卡收成 <strong>顶栏右侧的一个紧凑入口</strong>（「登录以启用交易 →」）；点击后以模态或右抽屉形式展开登录表单。行情图从此恒定位于首屏。若必须保留卡内嵌形式，则把 <code>auth</code> 与 <code>market</code> 合并到同一行（<code>grid-template-columns: 340px minmax(0,1fr)</code>），让登录卡成为左侧窄列。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-05</span>
+    <div class="t">
+      <h4>核心数字的视觉权重与位置不匹配</h4>
+      <p>信息层级 · 交易终端的第一性问题</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p>终端用户最先想知道的是「<strong>我现在赚了多少、还有多少风险敞口</strong>」。但当前网格顺序把 <code>market</code>（K 线）放在整行主位，<code>account</code> 与 <code>position</code> 被压到第二行等宽两列，<code>equity-value</code> 尽管是全页最大的字（27px），却出现在首屏之外。</p>
+    <div class="ba">
+      <div class="before">
+        <span class="tag">当前布局</span>
+        第一行：登录卡（整行）<br>
+        第二行：K 线图（整行，248px 高）<br>
+        第三行：资金与收益 ｜ 持仓<br>
+        第四行：运行日志 ｜ 风控与策略
+      </div>
+      <div class="after">
+        <span class="tag">建议布局（≥1150px）</span>
+        第一行：<b>资金与收益</b> ｜ <b>持仓</b>（含止损位置条）<br>
+        第二行：K 线图（整行，≥320px）<br>
+        第三行：风控与策略 ｜ 运行日志<br>
+        <span style="color:var(--ink-3)">登录入口移至顶栏，不再占行</span>
+      </div>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      重排 <code>grid-template-areas</code>，只在 &lt;850px 时把行情提到最前（移动端确实先看价格）：
+<pre><span class="ad">.board {</span>
+<span class="ad">  grid-template-areas:</span>
+<span class="ad">    "account position"</span>
+<span class="ad">    "market  market"</span>
+<span class="ad">    "risk    log";</span>
+<span class="ad">}</span>
+<span class="cm">/* 移动端反过来：先价格，再资金 */</span>
+<span class="ad">@media (max-width:850px){</span>
+<span class="ad">  .board { grid-template-areas: "market" "account" "position" "risk" "log"; }</span>
+<span class="ad">}</span></pre>
+      另建议把 <code>.big</code> 从 27px 提到 <strong>30–32px</strong>，并给 <code>.account-body</code> 加一条同涨跌色的左侧 3px 竖条，让「账户状态」在余光中即可辨识。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-06</span>
+    <div class="t">
+      <h4>数据表不可排序、不可筛选、无列固定</h4>
+      <p>可用性 · 订单/成交/日志三大表的通用短板</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p>三个表格都由同一个 <code>table(headers, rows, emptyMessage)</code> 生成，只做 <code>reverse()</code> 后正序渲染，<strong>没有任何排序入口</strong>。当成交记录或运行日志累积到几十上百行后，用户无法按盈亏、按方向、按离场原因快速定位。同时 <code>td.note</code> 被限制在 220–460px，其余列 <code>white-space: nowrap</code>，窄屏必然横向滚动。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.js:336-341</code> → <code>function table(headers, rows, emptyMessage)</code> 无交互参数<br>
+      <code>app.js:676</code> → <code>[...log].reverse()</code>（固定倒序）<br>
+      <code>app.css:167</code> → <code>th, td { white-space: nowrap; }</code><br>
+      <code>app.css:173</code> → <code>td.note { min-width:220px; max-width:460px; }</code>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      <b>①</b> 给 <code>table()</code> 增加第三个可选参数 <code>options.sortable</code>，表头点击切换排序（数值列按数字、时间列按时间），并在 <code>th</code> 上用 <code>aria-sort</code> 暴露状态；<b>②</b> 数值列统一加 <code>font-variant-numeric: tabular-nums</code>，避免数字宽度跳动；<b>③</b> 时间列改为<strong>相对时间</strong>（<code>12:04:31</code> → <code>3 分钟前</code>，hover 显示完整时间戳），可显著压缩列宽；<b>④</b> 给 <code>.panel-scroll</code> 加 <code>overscroll-behavior: contain</code>，防止横向滚动带动整页。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-07</span>
+    <div class="t">
+      <h4>日志区缺少「跟随最新」与暂停滚动</h4>
+      <p>可用性 · 运行中追日志的核心操作</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p>策略运行时每 3 秒轮询一次并整体重绘表格（<code>renderTab()</code> → <code>innerHTML</code> 全量替换）。这带来两个问题：<strong>①</strong> 表格每次重建，用户滚动位置与文本选择会丢失；<strong>②</strong> 新行出现在<strong>顶部</strong>（<code>reverse()</code>），用户正在读的行会不断被向下推。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      在 <code>.log</code> 面板头部右侧加一个「<b>跟随最新</b>」开关（默认开）。开启时保持当前倒序置顶行为；用户手动向上滚动即自动解除跟随，并在右下角浮出「↓ 有 N 条新记录」按钮，点击后回到顶部并恢复跟随。实现上建议改为<strong>增量渲染</strong>（只 append 新行 + <code>aria-live="polite"</code>），避免全量 innerHTML 重建导致的选择丢失。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-08</span>
+    <div class="t">
+      <h4>全局提示条无超时、无关闭、无队列</h4>
+      <p>可用性 · 错误提示可能永久遮挡界面</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p><code>setStatus()</code> 只有一个固定定位的 <code>#status</code> 元素，<code>position: fixed; bottom: 18px; left: 50%</code>，位于底部中央——恰好覆盖日志表格的最后一两行。错误状态下<strong>不会自动消失</strong>，也没有关闭按钮；下一条提示直接覆写上一条，历史信息全部丢失。</p>
+    <div class="evidence">
+      <span class="lbl">代码证据</span>
+      <code>app.js:180-186</code> → <code>function setStatus(message, kind)</code>，无 timer、无 dismiss<br>
+      <code>app.css:236</code> → <code>.status { position: fixed; bottom: 18px; left: 50%; z-index: 95; }</code>
+    </div>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      改造成 toast 栈：<b>①</b> 成功/信息类 4 秒后自动淡出，错误类需手动关闭或停留 12 秒；<b>②</b> 支持多条纵向堆叠（最多 3 条，超出折叠为「+2 条」）；<b>③</b> 加 <code>role="status"</code> / 错误用 <code>role="alert"</code>，并避免遮住 <code>.panel-scroll</code>——建议移到<strong>右上角</strong>，与内容区互不干扰。
+    </div>
+  </div>
+</article>
+
+<article class="finding">
+  <header>
+    <span class="idx">F-09</span>
+    <div class="t">
+      <h4>缺少骨架屏，加载过程只有一行小字</h4>
+      <p>感知性能 · 首屏与切页</p>
+    </div>
+    <span class="sev mid">中等</span>
+  </header>
+  <div class="body">
+    <p>K 线加载态是 <code>&lt;div class="market-empty"&gt;正在加载 Binance 行情…&lt;/div&gt;</code>，资金与持仓在会话未启动时显示一串 <code>—</code>。整个首屏在数据到达前是「空的且有跳变」：数字从 <code>—</code> 突然变成 27px 大数，卡片高度会抖动（CLS）。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      <b>①</b> 为 K 线区、权益区、指标网格各做一个同尺寸的骨架占位（灰块 + 1.4s 微光动画），保证 <strong>布局零位移</strong>；<b>②</b> 所有数值容器预设 <code>min-height</code> 与 <code>font-variant-numeric: tabular-nums</code>；<b>③</b> 首次进入时把 <code>#market-state</code> 的「连接行情中」改为带旋转点的动态指示，让「正在工作」可被感知。骨架动画需包在 <code>@media (prefers-reduced-motion: no-preference)</code> 内——当前已有全局 <code>prefers-reduced-motion</code> 兜底，保持这个好习惯。
+    </div>
+  </div>
+</article>
+
+<h2 class="sec"><span class="n">05</span>P2 · 持续优化项</h2>
+
+<div class="finding">
+  <header>
+    <span class="idx">F-10</span>
+    <div class="t"><h4>字号偏小，层级几乎只靠颜色</h4><p>视觉语言</p></div>
+    <span class="sev low">轻微</span>
+  </header>
+  <div class="body">
+    <p>正文基准 <code>13px</code>，但 <code>.hint</code>、<code>.metric .k</code>、<code>.market-stat .k</code>、<code>.panel-note</code>、<code>.count</code>、<code>.unit-label</code>、<code>.log-note</code> 等大量文本落在 <strong>9–11px</strong>。在 1080p 屏幕上 9px 中文已接近可读性下限。同时标题（12px）与正文（13px）几乎同高，层级差异主要来自颜色而非尺寸。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      建立一套 5 级字阶并全局替换：<code>--fs-xs: 11px</code>（辅助/时间戳）、<code>--fs-sm: 12px</code>（标签）、<code>--fs-md: 13.5px</code>（正文）、<code>--fs-lg: 16px</code>（面板标题）、<code>--fs-xl: 22px</code>（区块主标题）。<strong>全站最小字号提升到 11px</strong>，把 <code>.panel-head h2</code> 提到 14px 并加 <code>letter-spacing: .01em</code>，让「标题比正文重」这件事重新成立。
+    </div>
+  </div>
+</div>
+
+<div class="finding">
+  <header>
+    <span class="idx">F-11</span>
+    <div class="t"><h4>对比度不满足 WCAG AA</h4><p>可访问性</p></div>
+    <span class="sev low">轻微</span>
+  </header>
+  <div class="body">
+    <p>辅助文字色 <code>--ink-3: #839aa9</code> 铺在 <code>--panel: #111b25</code> 上，对比度约 <strong>4.0:1</strong>，低于 AA 对正文要求的 4.5:1；而它承载了大量 9–10px 的说明文字，实际更糟。<code>--ink-2: #a4b5c2</code> 约为 6.5:1，是合格的。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      把 <code>--ink-3</code> 提亮到 <code>#9aafbe</code>（约 5.2:1），同时配合 F-10 把最小字号提到 11px。另外 <code>.market-state</code> 绿色 <code>--up</code> 配深底约 6.1:1 已达标，无需调整。
+    </div>
+  </div>
+</div>
+
+<div class="finding">
+  <header>
+    <span class="idx">F-12</span>
+    <div class="t"><h4>三层 chrome 挤压数据区</h4><p>空间效率</p></div>
+    <span class="sev low">轻微</span>
+  </header>
+  <div class="body">
+    <p>顶栏（≥66px）+ 安全条（33px）+ AI 条（30px）+ 导航（约 40px）= <strong>最多 169px</strong> 的固定头部，占 900px 视口高度的近 19%，全部用于状态陈述而非数据。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      <b>①</b> 把 <code>.ai-strip</code> 合并进 <code>.safety-strip</code>——两者都是「当前状态一句话」，共用一行、按需切换内容是合理的；<b>②</b> 顶栏在滚动时折叠为紧凑模式（只留 logo + 价格 + 状态点，高度收到 48px）；<b>③</b> 导航项可考虑与顶栏合并（成为左侧分段控件），再省约 40px。
+    </div>
+  </div>
+</div>
+
+<div class="finding">
+  <header>
+    <span class="idx">F-13</span>
+    <div class="t"><h4>工作台与回测报告是两套设计语言</h4><p>品牌一致性</p></div>
+    <span class="sev low">轻微</span>
+  </header>
+  <div class="body">
+    <p>工作台是<strong>深色 + 金色强调</strong>（<code>--bg:#0b1118</code> / <code>--accent:#dfbc75</code>），回测报告 <code>report.html</code> 是<strong>浅色米黄</strong>（<code>--bg:#f4f1ea</code> / <code>--ink:#1d232b</code>），且报告的涨跌色用了 <code>--up:#0f766e</code>（青绿）/ <code>--down:#b42318</code>（砖红）——又一套独立的颜色语义。用户从终端点开报告会有强烈割裂感。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      抽出 <code>tokens.css</code> 作为两处共用的设计令牌来源，至少统一三件事：<strong>强调色</strong>（统一金色系）、<strong>涨跌色</strong>（统一为红涨绿跌，与 F-01 一致）、<strong>字体栈与语义色命名</strong>。报告页可保留浅色底（打印友好是合理需求），但强调色与涨跌语义必须同源。
+    </div>
+  </div>
+</div>
+
+<div class="finding">
+  <header>
+    <span class="idx">F-14</span>
+    <div class="t"><h4>K 线图缺少专业分析能力</h4><p>数据可视化</p></div>
+    <span class="sev low">轻微</span>
+  </header>
+  <div class="body">
+    <p>当前 K 线是静态 SVG：无十字光标、无缩放/平移、无均线或成交量副图，<code>&lt;title&gt;</code> 悬浮提示是唯一的读数方式（原生 tooltip 有约 1 秒延迟，无法快速扫读）。同时 <code>preserveAspectRatio="none"</code> 会让<strong>蜡烛实体随容器宽度被横向拉伸</strong>，不同窗口宽度下形态不一致。</p>
+    <div class="fix">
+      <span class="lbl">建议实现</span>
+      <b>①</b> 加一条跟随鼠标的十字光标，交点处常驻显示 <code>时间 / 开高低收 / 涨跌幅</code>，比 tooltip 快得多；<b>②</b> 把 <code>preserveAspectRatio</code> 改为 <code>xMidYMid meet</code> 或改用固定内部坐标系，保证蜡烛比例稳定；<b>③</b> 增加均线叠加开关（复用策略里的 MA 参数）与成交量副图，让图表与「策略在做什么」建立联系；<b>④</b> 均线/成交量颜色不要复用涨跌色，避免语义冲突。
+    </div>
+  </div>
+</div>
+
+<h2 class="sec"><span class="n">06</span>优化路线图</h2>
+<p class="lede">按「先修正确性，再修结构，最后加能力」排序。前两个阶段完成后，UI 的一致性与可用性会有质的提升，且不涉及任何后端改动。</p>
+
+<div class="phase">
+  <h4>阶段一 · 修正语义与故障（P0）</h4>
+  <div class="when">预计 0.5–1 天 · 纯 CSS 变量与少量 JS</div>
+  <ul>
+    <li>F-01 拆分「方向色」与「风险色」，统一为红涨绿跌（含 report.html）</li>
+    <li>F-02 统一侧栏断点，修正误导性注释，窄屏保留设置入口</li>
+    <li>F-03 增加独立的新鲜度心跳，过期行情给出视觉告警</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h4>阶段二 · 重构层级与反馈（P1）</h4>
+  <div class="when">预计 2–3 天 · 布局重排 + 交互补齐</div>
+  <ul>
+    <li>F-05 重排首屏：资金与持仓升到第一行，K 线增至 320px 高</li>
+    <li>F-04 登录卡收进顶栏，不再独占整行</li>
+    <li>F-08 提示条改造为可堆叠、可自动消失的 toast</li>
+    <li>F-09 补骨架屏，消除首屏布局位移</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h4>阶段三 · 补齐专业能力（P1–P2）</h4>
+  <div class="when">预计 3–5 天 · 表格与图表交互</div>
+  <ul>
+    <li>F-06 表格支持排序与相对时间，数值列等宽</li>
+    <li>F-07 日志增加「跟随最新」与增量渲染</li>
+    <li>F-14 K 线加十字光标、均线与成交量副图</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h4>阶段四 · 打磨设计系统（P2）</h4>
+  <div class="when">持续迭代</div>
+  <ul>
+    <li>F-10 建立 5 级字阶，全站最小字号提到 11px</li>
+    <li>F-11 提升辅助文字对比度至 WCAG AA</li>
+    <li>F-12 合并状态条、压缩固定头部</li>
+    <li>F-13 抽出共享 design tokens，统一两个页面的品牌语言</li>
+  </ul>
+</div>
+
+<div class="foot">
+  <p>本报告仅做设计评审与方案建议，未修改任何源码。文中的 CSS/JS 片段为示意实现，落地时需结合 <code>webui</code> 的测试（<code>regression_test.go</code>、<code>e2e_test.go</code>）回归验证。</p>
+  <p>评审范围：<code>internal/webui/static/index.html</code>、<code>app.css</code>、<code>app.js</code> 及 <code>reports/*/report.html</code> 主题样式。</p>
+</div>
+
+</div>
+</body>
+</html>

@@ -35,22 +35,16 @@ type tickerRow struct {
 	Status string      `json:"status"`
 }
 
-// AllSymbols fetches every pair in a venue in a single exchange request and
-// returns the USDT/USDC-quoted pairs that are still trading, sorted by
-// 24-hour quote volume, largest first. limit caps the result; 0 means no cap.
-// venue is "spot" or "futures"; anything else is treated as spot.
-func AllSymbols(venue string, limit int) ([]SymbolInfo, error) {
-	base, path := binanceEndpoint, "/api/v3/ticker/24hr"
-	if venue == "futures" {
-		base, path = fapiEndpoint, "/fapi/v1/ticker/24hr"
-	}
-
+// AllSymbols fetches every perpetual pair in a single exchange request and
+// returns the USDT/USDC-quoted pairs, sorted by 24-hour quote volume, largest
+// first. limit caps the result; 0 means no cap.
+func AllSymbols(limit int) ([]SymbolInfo, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
-	request, err := http.NewRequest(http.MethodGet, base+path, nil)
+	request, err := http.NewRequest(http.MethodGet, fapiEndpoint+"/fapi/v1/ticker/24hr", nil)
 	if err != nil {
 		return nil, fmt.Errorf("构造 Binance 请求失败: %w", err)
 	}
-	response, err := doGetWithRetry(client, request, venue)
+	response, err := doGetWithRetry(client, request, "futures")
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +85,8 @@ func filterTradable(rows []tickerRow) []SymbolInfo {
 		if !strings.HasSuffix(symbol, "USDT") && !strings.HasSuffix(symbol, "USDC") {
 			continue
 		}
-		// Spot reports status on halted pairs; futures leaves it empty, which
-		// means "assume trading".
+		// The perpetual ticker usually leaves status empty, which means
+		// "assume trading"; honour it when the exchange does send one.
 		if row.Status != "" && !strings.EqualFold(row.Status, "TRADING") {
 			continue
 		}

@@ -4,12 +4,104 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rdone44/trading-agent-go/internal/broker"
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/live"
 	"github.com/rdone44/trading-agent-go/internal/model"
 	"github.com/rdone44/trading-agent-go/internal/strategy"
 	"github.com/rdone44/trading-agent-go/internal/testfx"
 )
+
+func TestProtectionActiveRequiresVerifiedNonRecoveryState(t *testing.T) {
+	s := NewSession()
+	s.cfg = config.Default()
+	s.execute = true
+	s.running = true
+	s.snapshot = SessionStatus{
+		Position:   PositionView{Open: true},
+		Protection: broker.ProtectionSnapshot{State: broker.ProtectionVerified},
+	}
+	if !s.Status().ProtectionActive {
+		t.Fatal("verified exchange protection should be reported active")
+	}
+	s.snapshot.RecoveryRequired = true
+	status := s.Status()
+	if status.ProtectionActive || !status.RecoveryRequired {
+		t.Fatalf("recovery state incorrectly reported active: %+v", status)
+	}
+	s.execute = false
+	status = s.Status()
+	if status.ProtectionActive {
+		t.Fatal("paper sessions must never claim exchange protection")
+	}
+	s.execute = true
+	s.running = false
+	status = s.Status()
+	if status.ProtectionActive || status.Protection.State != broker.ProtectionVerified {
+		t.Fatalf("stopped session must keep the snapshot without claiming active monitoring: %+v", status)
+	}
+}
+
+func TestStatusAnswersDuringSlowInitialization(t *testing.T) {
+	s := NewSession()
+	cfg := config.Default()
+	cfg.Agent.Symbol = "BTCUSDT"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s.InitRunner = func(*live.Runner) error {
+		close(entered)
+		<-release
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Start(StartOptions{Config: cfg, Interval: time.Minute})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("start never reached initialization")
+	}
+
+	start := time.Now()
+	status := s.Status()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Status took %s during initialization", elapsed)
+	}
+	if !status.Starting || status.Running {
+		t.Fatalf("status during initialization = %+v", status)
+	}
+	if err := s.Start(StartOptions{Config: cfg, Interval: time.Minute}); err == nil {
+		t.Fatal("a second start was accepted during initialization")
+	}
+	if err := s.RecoverProtection(live.ProtectionRecoveryPhrase); err == nil {
+		t.Fatal("recovery was accepted during initialization")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("start after release: %v", err)
+	}
+	if !s.Status().Running {
+		t.Fatal("released initialization did not start the session")
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartCannotOverwritePendingProtectionRecovery(t *testing.T) {
+	s := NewSession()
+	s.snapshot.RecoveryRequired = true
+	cfg := config.Default()
+	if err := s.Start(StartOptions{Config: cfg, Interval: time.Minute}); err == nil {
+		t.Fatal("a new session overwrote a pending protection recovery")
+	}
+	status := s.Status()
+	if !status.RecoveryRequired || status.Starting || status.Running {
+		t.Fatalf("recovery status changed after rejected start: %+v", status)
+	}
+}
 
 // slowStrategy blocks inside Generate/LastDecision for the given duration,
 // standing in for a model call that takes a minute or more.

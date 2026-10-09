@@ -18,7 +18,7 @@ func TestProtectiveRepairsMissingLegIdempotently(t *testing.T) {
 				}
 				rows := []protectiveAlgoOrder{}
 				add := func(kind, price string) {
-					rows = append(rows, protectiveAlgoOrder{AlgoID: int64(len(rows) + 1), ClientAlgoID: fmt.Sprintf("tap-%d", len(rows)+1), Symbol: "BTCUSDT", OrderType: kind, Side: closeSide, PositionSide: "BOTH", WorkingType: "MARK_PRICE", TriggerPrice: price, ClosePos: true})
+					rows = append(rows, protectiveAlgoOrder{AlgoID: int64(len(rows) + 1), AlgoStatus: "NEW", ClientAlgoID: fmt.Sprintf("tap-%d", len(rows)+1), Symbol: "BTCUSDT", OrderType: kind, Side: closeSide, PositionSide: "BOTH", WorkingType: "MARK_PRICE", TriggerPrice: price, ClosePos: true})
 				}
 				if existing == "STOP_MARKET" || existing == "both" {
 					add("STOP_MARKET", "90.000")
@@ -64,7 +64,7 @@ func TestProtectiveRepairsMissingLegIdempotently(t *testing.T) {
 func TestProtectiveRejectsConflictingLegBeforeAnyWrite(t *testing.T) {
 	for _, field := range []string{"id", "side", "position", "working", "price", "bad_price", "duplicate", "missing_price"} {
 		t.Run(field, func(t *testing.T) {
-			row := protectiveAlgoOrder{AlgoID: 1, ClientAlgoID: "tap-stop", Symbol: "BTCUSDT", OrderType: "STOP_MARKET", Side: "SELL", PositionSide: "BOTH", WorkingType: "MARK_PRICE", TriggerPrice: "90", ClosePos: true}
+			row := protectiveAlgoOrder{AlgoID: 1, AlgoStatus: "NEW", ClientAlgoID: "tap-stop", Symbol: "BTCUSDT", OrderType: "STOP_MARKET", Side: "SELL", PositionSide: "BOTH", WorkingType: "MARK_PRICE", TriggerPrice: "90", ClosePos: true}
 			switch field {
 			case "id":
 				row.AlgoID = 0
@@ -121,7 +121,7 @@ func TestProtectivePartialPlacementFailureDoesNotDuplicateStop(t *testing.T) {
 				return
 			}
 		}
-		rows = append(rows, protectiveAlgoOrder{AlgoID: int64(len(rows) + 1), ClientAlgoID: "tap-" + kind,
+		rows = append(rows, protectiveAlgoOrder{AlgoID: int64(len(rows) + 1), AlgoStatus: "NEW", ClientAlgoID: "tap-" + kind,
 			Symbol: "BTCUSDT", OrderType: kind, Side: "SELL", PositionSide: "BOTH",
 			WorkingType: "MARK_PRICE", TriggerPrice: q.Get("triggerPrice"), ClosePos: true})
 		_, _ = fmt.Fprint(w, `{"algoId":1,"algoStatus":"NEW"}`)
@@ -156,5 +156,25 @@ func TestProtectiveInspectionFailurePreventsPlacement(t *testing.T) {
 				t.Fatalf("error=%v writes=%d", err, writes)
 			}
 		})
+	}
+}
+
+func TestProtectiveUnknownOwnedTypePreventsPlacement(t *testing.T) {
+	writes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/fapi/v1/openAlgoOrders" {
+			_, _ = fmt.Fprint(w, `[{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-unknown","symbol":"BTCUSDT","orderType":"TRAILING_STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true}]`)
+			return
+		}
+		writes++
+		http.Error(w, "must not write", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	if err := newLiveFuturesForStub(srv.URL).PlaceProtective(Buy, 90, 110); err == nil {
+		t.Fatal("unknown owned algo type was ignored")
+	}
+	if writes != 0 {
+		t.Fatalf("unknown owned algo caused %d write(s)", writes)
 	}
 }

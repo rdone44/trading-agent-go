@@ -28,14 +28,16 @@ func kline(open time.Time, closePrice float64) []any {
 	}
 }
 
-// withBinanceServer points the client at a stub exchange for the test.
-func withBinanceServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+// withFuturesServer points the client at a stub exchange for the test. The
+// terminal is perpetual-only, so every loader in this package talks to the
+// fapi base and this is the only server swap the suite needs.
+func withFuturesServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(handler)
-	previous := binanceEndpoint
-	binanceEndpoint = server.URL
+	previous := fapiEndpoint
+	fapiEndpoint = server.URL
 	t.Cleanup(func() {
-		binanceEndpoint = previous
+		fapiEndpoint = previous
 		server.Close()
 	})
 	return server
@@ -69,13 +71,13 @@ func TestBinanceSymbolNormalization(t *testing.T) {
 	}
 }
 
-func TestBinanceLoadsDailyBars(t *testing.T) {
+func TestLoadDailyBars(t *testing.T) {
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	var gotQuery url.Values
 
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v3/klines" {
-			t.Errorf("path = %q, want /api/v3/klines", r.URL.Path)
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/klines" {
+			t.Errorf("path = %q, want /fapi/v1/klines", r.URL.Path)
 		}
 		gotQuery = r.URL.Query()
 
@@ -87,15 +89,15 @@ func TestBinanceLoadsDailyBars(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	series, err := Binance("btc-usdt", 10, end)
+	series, err := Load("btc-usdt", 10, end)
 	if err != nil {
-		t.Fatalf("Binance: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if series.Symbol != "BTCUSDT" {
 		t.Errorf("symbol = %q, want BTCUSDT", series.Symbol)
 	}
-	if series.Source != "binance" {
-		t.Errorf("source = %q, want binance", series.Source)
+	if series.Source != "binance-usdt-perp" {
+		t.Errorf("source = %q, want binance-usdt-perp", series.Source)
 	}
 	if len(series.Bars) != 10 {
 		t.Fatalf("bars = %d, want 10", len(series.Bars))
@@ -123,9 +125,9 @@ func TestBinanceLoadsDailyBars(t *testing.T) {
 
 // A daily candle whose close time is still in the future has not finished
 // forming; acting on it would be look-ahead bias.
-func TestBinanceDropsTheStillFormingCandle(t *testing.T) {
+func TestLoadDropsTheStillFormingCandle(t *testing.T) {
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		rows := [][]any{}
 		for i := 5; i >= 1; i-- {
 			open := end.AddDate(0, 0, -i).Truncate(24 * time.Hour)
@@ -136,9 +138,9 @@ func TestBinanceDropsTheStillFormingCandle(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	series, err := Binance("BTCUSDT", 30, end)
+	series, err := Load("BTCUSDT", 30, end)
 	if err != nil {
-		t.Fatalf("Binance: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(series.Bars) != 5 {
 		t.Fatalf("bars = %d, want 5 (the open candle must be dropped)", len(series.Bars))
@@ -150,13 +152,13 @@ func TestBinanceDropsTheStillFormingCandle(t *testing.T) {
 	}
 }
 
-func TestBinancePaginatesBeyondOneThousandBars(t *testing.T) {
+func TestLoadPaginatesBeyondOneThousandBars(t *testing.T) {
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	const days = 1005
 	requests := 0
 	var starts []int64
 
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		query := r.URL.Query()
 		start, err := strconv.ParseInt(query.Get("startTime"), 10, 64)
@@ -177,9 +179,9 @@ func TestBinancePaginatesBeyondOneThousandBars(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	series, err := Binance("BTCUSDT", days, end)
+	series, err := Load("BTCUSDT", days, end)
 	if err != nil {
-		t.Fatalf("Binance: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if requests < 2 {
 		t.Fatalf("requests = %d, want at least 2 (the client must page)", requests)
@@ -197,13 +199,13 @@ func TestBinancePaginatesBeyondOneThousandBars(t *testing.T) {
 	}
 }
 
-func TestBinanceReportsExchangeErrors(t *testing.T) {
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+func TestLoadReportsExchangeErrors(t *testing.T) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"code":-1121,"msg":"Invalid symbol."}`)
 	})
 
-	_, err := Binance("NOPEUSDT", 10, time.Now().UTC())
+	_, err := Load("NOPEUSDT", 10, time.Now().UTC())
 	if err == nil {
 		t.Fatal("expected an error for an unknown symbol")
 	}
@@ -212,7 +214,7 @@ func TestBinanceReportsExchangeErrors(t *testing.T) {
 	}
 }
 
-func TestBinanceRejectsEmptyAndMalformedResponses(t *testing.T) {
+func TestLoadRejectsEmptyAndMalformedResponses(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -223,30 +225,30 @@ func TestBinanceRejectsEmptyAndMalformedResponses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+			withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprint(w, tc.body)
 			})
-			if _, err := Binance("BTCUSDT", 10, time.Now().UTC()); err == nil {
+			if _, err := Load("BTCUSDT", 10, time.Now().UTC()); err == nil {
 				t.Fatal("expected an error")
 			}
 		})
 	}
 }
 
-func TestBinanceNeedsASymbol(t *testing.T) {
-	if _, err := Binance("", 10, time.Now().UTC()); err == nil {
+func TestLoadNeedsASymbol(t *testing.T) {
+	if _, err := Load("", 10, time.Now().UTC()); err == nil {
 		t.Fatal("expected an error for an empty symbol")
 	}
 }
 
 // The public endpoint occasionally drops a TLS handshake or answers 5xx; one
 // flaky connection must not fail the whole backtest.
-func TestBinanceRetriesTransientFailures(t *testing.T) {
+func TestLoadRetriesTransientFailures(t *testing.T) {
 	fastRetry(t)
 	end := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	attempts := 0
 
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		if attempts < 3 {
 			w.WriteHeader(http.StatusBadGateway)
@@ -260,9 +262,9 @@ func TestBinanceRetriesTransientFailures(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	series, err := Binance("BTCUSDT", 3, end)
+	series, err := Load("BTCUSDT", 3, end)
 	if err != nil {
-		t.Fatalf("Binance should recover from a 502, got: %v", err)
+		t.Fatalf("Load should recover from a 502, got: %v", err)
 	}
 	if attempts != 3 {
 		t.Errorf("attempts = %d, want 3", attempts)
@@ -273,15 +275,15 @@ func TestBinanceRetriesTransientFailures(t *testing.T) {
 }
 
 // A 4xx is a definitive answer from the exchange: retrying only wastes time.
-func TestBinanceDoesNotRetryClientErrors(t *testing.T) {
+func TestLoadDoesNotRetryClientErrors(t *testing.T) {
 	attempts := 0
-	withBinanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"code":-1121,"msg":"Invalid symbol."}`)
 	})
 
-	if _, err := Binance("NOPEUSDT", 10, time.Now().UTC()); err == nil {
+	if _, err := Load("NOPEUSDT", 10, time.Now().UTC()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if attempts != 1 {

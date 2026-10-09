@@ -136,10 +136,10 @@ func (m *Manager) RequireReconciliation(reason string) {
 //   - equity × max_risk_per_trade_pct / stop distance (fixed-fractional risk cap),
 //   - cash × leverage                         (margin a balance can post).
 //
-// With leverage 1 the first and third terms collapse to the historical
-// spot behaviour (full notional, cash-constrained), so backtests and spot
-// runs are unchanged. With leverage > 1 the same risk budget controls more
-// notional and a small balance can still open a full position — that is the
+// With leverage 1 the first and third terms collapse to the unleveraged
+// case (full notional, cash-constrained), so sizing matches what a 1x
+// perpetual run actually posts. With leverage > 1 the same risk budget
+// controls more notional and a small balance can still open a full position — that is the
 // leverage effect. The risk cap is expressed in dollars lost at the stop,
 // so the per-trade risk does not grow just because leverage does.
 func (m *Manager) PositionSize(equity, cash, price, stopPrice, lotSize float64) float64 {

@@ -13,14 +13,18 @@ import (
 var marketSymbolPattern = regexp.MustCompile(`^[A-Z0-9]{4,30}$`)
 
 // symbolsCacheTTL: the all-pair list is a heavy exchange answer, so the
-// console refreshes it at most once every 30 seconds per venue.
+// console refreshes it at most once every 30 seconds.
 const symbolsCacheTTL = 30 * time.Second
 
-// cachedSymbols is one venue's pair list plus the time it was fetched.
+// cachedSymbols is the perpetual pair list plus the time it was fetched.
 type cachedSymbols struct {
 	infos []marketdata.SymbolInfo
 	at    time.Time
 }
+
+// venue is the only trading venue this program has. It is reported in the API
+// payloads so the console can label the session.
+const venue = "futures"
 
 func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -35,12 +39,11 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	if interval == "" {
 		interval = "1h"
 	}
-	venue := r.URL.Query().Get("venue")
-	if venue == "" {
-		venue = "spot"
-	}
-	if !marketSymbolPattern.MatchString(symbol) || !marketdata.ValidMarketInterval(interval) || (venue != "spot" && venue != "futures") {
-		writeError(w, 400, fmt.Errorf("交易对、场所或周期无效"))
+	// The terminal is perpetual-only, so the venue is fixed rather than read
+	// from the query. A stale bookmark carrying ?venue=spot is not an error:
+	// it simply gets the perpetual market it should have asked for.
+	if !marketSymbolPattern.MatchString(symbol) || !marketdata.ValidMarketInterval(interval) {
+		writeError(w, 400, fmt.Errorf("交易对或周期无效"))
 		return
 	}
 	key := symbol + "/" + venue + "/" + interval
@@ -54,7 +57,7 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	if loader == nil {
 		loader = marketdata.Snapshot
 	}
-	snapshot, err := loader(symbol, venue == "futures", interval)
+	snapshot, err := loader(symbol, interval)
 	if err != nil {
 		writeError(w, 502, fmt.Errorf("行情获取失败：%w", err))
 		return
@@ -67,18 +70,14 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSymbols answers the console's "get me all the coins" request: it
-// returns the venue's tradable USDT/USDC pairs, liquidity-ranked, so the
-// symbol field offers the whole market instead of making the user type a
-// ticker they may not know. Repeats within the 30-second cache window for a
-// venue are served without another heavy exchange call.
+// returns the perpetual venue's tradable USDT/USDC pairs, liquidity-ranked, so
+// the symbol field offers the whole market instead of making the user type a
+// ticker they may not know. Repeats within the 30-second cache window are
+// served without another heavy exchange call.
 func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, 405, fmt.Errorf("该接口只接受 GET"))
 		return
-	}
-	venue := r.URL.Query().Get("venue")
-	if venue != "futures" {
-		venue = "spot"
 	}
 	limit := 200
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -106,7 +105,7 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	if loader == nil {
 		loader = marketdata.AllSymbols
 	}
-	infos, err := loader(venue, 0)
+	infos, err := loader(0)
 	if err != nil {
 		writeError(w, 502, fmt.Errorf("币种列表获取失败：%w", err))
 		return

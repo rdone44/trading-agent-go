@@ -62,24 +62,6 @@ func (o exchangeOrder) detail() orderDetail {
 	return d
 }
 
-func (o exchangeOrder) fees(base, quote string) (total, baseFee float64, assets map[string]float64) {
-	assets = map[string]float64{}
-	price := o.detail().avgPrice
-	for _, f := range o.Fills {
-		fee := positive(f.Commission)
-		asset := strings.ToUpper(f.Asset)
-		assets[asset] += fee
-		switch asset {
-		case strings.ToUpper(base):
-			baseFee += fee
-			total += fee * price
-		case strings.ToUpper(quote):
-			total += fee
-		}
-	}
-	return
-}
-
 func orderUnknown(ts time.Time, symbol string, side Side, price float64, id, message string) Fill {
 	return Fill{Time: ts, Symbol: symbol, Side: side, Price: price, ClientOrderID: id,
 		Status: "unknown", Uncertain: true, Rejected: true, Reason: "成交状态待核对（" + id + "）：" + message}

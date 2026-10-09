@@ -35,28 +35,26 @@ type EquityPoint struct {
 }
 
 // Portfolio is the single source of truth for cash and holdings.
+//
+// It always models a USDT-margined perpetual account: Cash is the wallet
+// balance, an open position is a signed quantity (long positive, short
+// negative) that the exchange holds rather than the wallet, and entry margin
+// is reserved out of the wallet until the position is closed. There is no
+// spot mode — the venue it used to model (buy the coin, hold the coin) is
+// retired.
 type Portfolio struct {
 	InitialCash float64
 	Cash        float64
 	Positions   map[string]*Position
 	RealizedPnL float64
 	Curve       []EquityPoint
-	Futures     bool
 	Leverage    int
 }
 
-func NewFutures(initialCash float64, leverage int) *Portfolio {
-	p := New(initialCash)
-	p.Futures, p.Leverage = true, max(leverage, 1)
-	return p
-}
-
-// Cash is the wallet for futures, not sale proceeds. Entry margin is reserved
-// separately and released as the signed position shrinks.
+// AvailableCash is the wallet balance that is not tied up as entry margin on
+// an open position. It is what the risk manager may size a new position
+// against.
 func (p *Portfolio) AvailableCash() float64 {
-	if !p.Futures {
-		return math.Max(p.Cash, 0)
-	}
 	margin := 0.0
 	for _, pos := range p.OpenPositions() {
 		margin += math.Abs(pos.Quantity) * pos.AvgPrice / float64(max(p.Leverage, 1))
@@ -64,18 +62,17 @@ func (p *Portfolio) AvailableCash() float64 {
 	return math.Max(p.Cash-margin, 0)
 }
 
+// MarginUsed is the wallet balance currently posted as entry margin.
 func (p *Portfolio) MarginUsed() float64 {
-	if !p.Futures {
-		return 0
-	}
 	return p.Cash - p.AvailableCash()
 }
 
-func New(initialCash float64) *Portfolio {
+func New(initialCash float64, leverage int) *Portfolio {
 	return &Portfolio{
 		InitialCash: initialCash,
 		Cash:        initialCash,
 		Positions:   map[string]*Position{},
+		Leverage:    max(leverage, 1),
 	}
 }
 
@@ -110,11 +107,10 @@ func (p *Portfolio) MarketValue(prices map[string]float64) float64 {
 		if !ok {
 			price = pos.AvgPrice
 		}
-		if p.Futures {
-			total += pos.Unrealized(price)
-		} else {
-			total += pos.Quantity * price
-		}
+		// The wallet already holds the cash; a perpetual position contributes
+		// only its unrealized PnL, never its full notional (the exchange owns
+		// the inventory and the margin is reserved separately).
+		total += pos.Unrealized(price)
 	}
 	return total
 }
@@ -155,18 +151,14 @@ func (p *Portfolio) ApplyFill(fill broker.Fill) {
 	if fill.Side == broker.Sell {
 		signed = -fill.Quantity
 	}
-	if p.Futures {
-		if !sameSign(pos.Quantity, signed) && pos.IsOpen() {
-			closed := math.Min(math.Abs(signed), math.Abs(pos.Quantity))
-			p.Cash += closed * (fill.Price - pos.AvgPrice) * math.Copysign(1, pos.Quantity)
-		}
-		p.Cash -= fill.Commission
-	} else {
-		p.Cash -= signed * fill.Price
-		// Base-asset fees reduce received inventory instead of charging USDT twice.
-		p.Cash -= math.Max(fill.Commission-fill.BaseCommission*fill.Price, 0)
-		signed -= fill.BaseCommission
+	// Realized PnL on the closing part of the fill lands in the wallet
+	// immediately; the commission is charged in full, in USDT, as Binance
+	// charges a perpetual taker fee.
+	if !sameSign(pos.Quantity, signed) && pos.IsOpen() {
+		closed := math.Min(math.Abs(signed), math.Abs(pos.Quantity))
+		p.Cash += closed * (fill.Price - pos.AvgPrice) * math.Copysign(1, pos.Quantity)
 	}
+	p.Cash -= fill.Commission
 
 	oldQty := pos.Quantity
 	newQty := oldQty + signed

@@ -42,7 +42,7 @@ func newTestServer(t *testing.T) (*webui.Server, string) {
 	// /api/symbols is public (the login card and the symbol picker need it
 	// before sign-in), so every test server must answer it offline instead of
 	// calling Binance — CI has no network and would see a 502.
-	server.SymbolList = func(venue string, limit int) ([]marketdata.SymbolInfo, error) {
+	server.SymbolList = func(limit int) ([]marketdata.SymbolInfo, error) {
 		return []marketdata.SymbolInfo{{Symbol: "TESTUSDT", Price: 1, Volume24h: 1}}, nil
 	}
 	return server, dir
@@ -57,7 +57,7 @@ func TestDashboardPageIsServed(t *testing.T) {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{"trading-agent", "开始交易", "/app.js", "/app.css"} {
+	for _, want := range []string{"trading-agent", "启动交易会话", "/app.js", "/app.css"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("index.html is missing %q", want)
 		}

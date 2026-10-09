@@ -10,72 +10,6 @@ import (
 	"time"
 )
 
-func TestSpotActualFullResponseUsesExecutedQuoteAndFees(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Query().Get("newOrderRespType") != "FULL" {
-			t.Errorf("unexpected request %s %s", r.Method, r.URL)
-		}
-		fmt.Fprint(w, `{"orderId":123,"executedQty":"0.1","cummulativeQuoteQty":"8000","status":"FILLED","fills":[{"price":"80000","qty":"0.1","commission":"0.0001","commissionAsset":"BTC"}]}`)
-	}))
-	defer server.Close()
-	b := NewBinance(BinanceConfig{BaseURL: server.URL, APIKey: "test", SecretKey: "test", StepSize: .001, Symbol: "BTCUSDT"})
-	b.BaseAsset, b.QuoteAsset = "BTC", "USDT"
-	f := b.MarketOrder(time.Now(), "BTCUSDT", Buy, .1, 80000, "entry_long")
-	if f.Rejected || f.Uncertain || f.Price != 80000 || f.Quantity != .1 || f.BaseCommission != .0001 || f.Commission != 8 {
-		t.Fatalf("filled order incorrectly parsed: %+v", f)
-	}
-}
-
-func TestSpotTimeoutQueriesSameClientIDInsteadOfPostingAgain(t *testing.T) {
-	posts := 0
-	var clientID string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v3/myTrades" {
-			fmt.Fprint(w, `[{"price":"80000","qty":"0.1","commission":"0","commissionAsset":"USDT"}]`)
-			return
-		}
-		if r.Method == http.MethodPost {
-			posts++
-			clientID = r.URL.Query().Get("newClientOrderId")
-			w.WriteHeader(504)
-			fmt.Fprint(w, `{"code":-1007,"msg":"Timeout"}`)
-			return
-		}
-		if r.URL.Query().Get("origClientOrderId") != clientID {
-			t.Error("lookup changed the order identity")
-		}
-		fmt.Fprint(w, `{"orderId":123,"executedQty":"0.1","cummulativeQuoteQty":"8000","status":"FILLED"}`)
-	}))
-	defer server.Close()
-	b := NewBinance(BinanceConfig{BaseURL: server.URL, StepSize: .001})
-	f := b.MarketOrder(time.Now(), "BTCUSDT", Buy, .1, 80000, "entry_long")
-	if posts != 1 || f.Rejected || f.Uncertain || f.Price != 80000 || f.ClientOrderID != clientID {
-		t.Fatalf("unsafe timeout recovery: posts=%d fill=%+v", posts, f)
-	}
-}
-
-func TestUnknownSpotOrderRequiresReconciliation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
-	defer server.Close()
-	b := NewBinance(BinanceConfig{BaseURL: server.URL, StepSize: .001})
-	f := b.MarketOrder(time.Now(), "BTCUSDT", Buy, .1, 80000, "entry_long")
-	if !f.Uncertain || f.ClientOrderID == "" || f.Status != "unknown" {
-		t.Fatalf("network ambiguity was treated as an ordinary rejection: %+v", f)
-	}
-}
-
-func TestAdverseExecutedFillIsNotDiscarded(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"orderId":123,"executedQty":"1","cummulativeQuoteQty":"110","status":"FILLED"}`)
-	}))
-	defer server.Close()
-	b := NewBinance(BinanceConfig{BaseURL: server.URL, StepSize: .001, MaxPriceDev: .01})
-	f := b.MarketOrder(time.Now(), "BTCUSDT", Buy, 1, 100, "entry_long")
-	if f.Rejected || !f.Uncertain || f.Quantity != 1 || f.Price != 110 {
-		t.Fatalf("a real fill was lost: %+v", f)
-	}
-}
-
 func TestFuturesUsesSymbolFiltersAndReduceOnlyExit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -118,14 +52,11 @@ func TestFuturesUsesSymbolFiltersAndReduceOnlyExit(t *testing.T) {
 func TestClientIDFitsExchangeLimitAndSurvivesRestart(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 100; i++ {
-		b := NewBinance(BinanceConfig{})
+		b := NewFutures(FuturesConfig{})
 		id := b.nextOrderID("BTCUSDT", Buy)
-		if len(id) > 36 || seen[id] {
+		if len(id) > 36 || seen[id] || !strings.Contains(id, "BTCUSDT") {
 			t.Fatalf("invalid or duplicate %s", id)
 		}
 		seen[id] = true
-	}
-	if id := NewFutures(FuturesConfig{}).nextOrderID("BTCUSDT", Buy); len(id) > 36 || !strings.Contains(id, "BTCUSDT") {
-		t.Fatalf("invalid futures id %s", id)
 	}
 }

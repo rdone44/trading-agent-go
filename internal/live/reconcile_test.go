@@ -41,16 +41,15 @@ func TestFuturesCycleDetectsExchangeSideProtectiveFill(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Default()
-	cfg.Live.Futures = true
 	b := broker.NewFutures(broker.FuturesConfig{BaseURL: mock.URL, Symbol: "BTCUSDT"})
 	a := engine.NewWithBroker(cfg, strategy.MovingAverageCross{}, b,
-		portfolio.NewFutures(1000, 1), risk.New(cfg.Risk))
+		portfolio.New(1000, cfg.Risk.Leverage), risk.New(cfg.Risk))
 	a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, Side: broker.Buy},
 		90, 110, risk.RiskState{})
 	a.Protective = &futuresProtective{b: b}
 
 	runner := &Runner{
-		cfg: cfg, agent: a, broker: b, futures: true, executed: true, leverage: 1,
+		cfg: cfg, agent: a, broker: b, executed: true, leverage: 1,
 		statePath: filepath.Join(t.TempDir(), "ledger.json"),
 	}
 	runner.PriceLoader = func(string) (float64, time.Time, error) { return 95, time.Now(), nil }
@@ -100,15 +99,14 @@ func TestFuturesCyclePassesWhenPositionsAgree(t *testing.T) {
 	defer mock.Close()
 
 	cfg := config.Default()
-	cfg.Live.Futures = true
 	b := broker.NewFutures(broker.FuturesConfig{BaseURL: mock.URL, Symbol: "BTCUSDT"})
 	a := engine.NewWithBroker(cfg, strategy.MovingAverageCross{}, b,
-		portfolio.NewFutures(1000, 1), risk.New(cfg.Risk))
+		portfolio.New(1000, cfg.Risk.Leverage), risk.New(cfg.Risk))
 	a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, Side: broker.Buy},
 		90, 110, risk.RiskState{})
 
 	runner := &Runner{
-		cfg: cfg, agent: a, broker: b, futures: true, executed: true, leverage: 1,
+		cfg: cfg, agent: a, broker: b, executed: true, leverage: 1,
 		statePath: filepath.Join(t.TempDir(), "ledger.json"),
 	}
 	runner.PriceLoader = func(string) (float64, time.Time, error) { return 105, time.Now(), nil }
@@ -125,6 +123,43 @@ func TestFuturesCyclePassesWhenPositionsAgree(t *testing.T) {
 	}
 	if queries != 1 {
 		t.Fatalf("position queries = %d, want exactly 1 per cycle", queries)
+	}
+}
+
+func TestFuturesCycleRejectsMatchingQuantityWithDifferentEntryPrice(t *testing.T) {
+	queries := 0
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/fapi/v2/positionRisk" {
+			queries++
+			fmt.Fprint(w, `[{"symbol":"BTCUSDT","positionAmt":"1","entryPrice":"101","positionSide":"BOTH"}]`)
+			return
+		}
+		t.Errorf("unexpected exchange request %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer mock.Close()
+
+	cfg := config.Default()
+	b := broker.NewFutures(broker.FuturesConfig{BaseURL: mock.URL, Symbol: "BTCUSDT"})
+	a := engine.NewWithBroker(cfg, strategy.MovingAverageCross{}, b,
+		portfolio.New(1000, cfg.Risk.Leverage), risk.New(cfg.Risk))
+	a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, Side: broker.Buy},
+		90, 110, risk.RiskState{})
+	runner := &Runner{
+		cfg: cfg, agent: a, broker: b, executed: true, leverage: 1,
+		statePath: filepath.Join(t.TempDir(), "ledger.json"),
+	}
+	priceCalls := 0
+	runner.PriceLoader = func(string) (float64, time.Time, error) {
+		priceCalls++
+		return 105, time.Now(), nil
+	}
+
+	if _, err := runner.Cycle(time.Now()); err == nil || !strings.Contains(err.Error(), "均价") {
+		t.Fatalf("entry-price mismatch error = %v", err)
+	}
+	if queries != 1 || priceCalls != 0 || !a.Risk.OrderUncertain {
+		t.Fatalf("unsafe mismatch handling: queries=%d prices=%d risk=%+v", queries, priceCalls, a.Risk.Snapshot())
 	}
 }
 

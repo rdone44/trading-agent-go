@@ -7,6 +7,7 @@ const path = require('node:path');
 const assets = path.join(__dirname, '../../internal/webui/static');
 const script = fs.readFileSync(path.join(assets, 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(assets, 'index.html'), 'utf8');
+const css = fs.readFileSync(path.join(assets, 'app.css'), 'utf8');
 function functionSource(name) {
   const start = script.indexOf(`function ${name}(`);
   const end = script.indexOf('\n}', start);
@@ -34,11 +35,37 @@ test('settings and trading have separate forms; market inputs retain ownership',
   for(const name of ['symbol','leverage','allow_short']) {
     assert.match(html, new RegExp(`form="run-form" name="${name}"`));
   }
+  const market = html.match(/<section class="panel market">[\s\S]*?<\/section>/)[0];
+  const strategy = html.match(/<section class="panel trade-config"[\s\S]*?<\/section>/)[0];
+  assert.match(market, /name="symbol"/);
+  assert.doesNotMatch(market, /name="(?:leverage|allow_short|execute)"/);
+  assert.match(strategy, /name="leverage"/);
+  assert.match(strategy, /name="allow_short"/);
+  assert.equal((html.match(/id="rail-run"/g) || []).length, 1);
+  assert.doesNotMatch(html, /id="run-button"/);
   // Perpetual-only terminal: the spot toggle is gone and the form always
   // submits futures=true.
   assert.doesNotMatch(html, /name="futures"/);
   assert.match(script, /futures: true/);
   assert.match(script, /Array\.from\(\$\("#run-form"\)\.elements\)/);
+});
+test('overview keeps chart and account side by side on wide screens', () => {
+  assert.match(css, /"market\s+account"/);
+  assert.match(css, /"market\s+position"/);
+  assert.match(css, /@media \(max-width: 850px\)[\s\S]*?grid-template-areas: "auth" "market" "account"/);
+  assert.match(script, /renderChart\(series, s\)/);
+  assert.match(html, /id="market-venue">USDT 永续</);
+});
+test('live Binance wallet is separate from the local session ledger', () => {
+  assert.match(html, /id="account-refresh"/);
+  assert.match(html, /id="exchange-wallet"/);
+  assert.match(html, /id="exchange-available"/);
+  assert.match(html, /策略会话账本/);
+  assert.match(html, /<details class="session-ledger" id="session-ledger">/);
+  assert.match(script, /\$\("#session-ledger"\)\.open = s\.mode === "live"/);
+  assert.match(script, /api\("\/api\/account"\)/);
+  assert.match(script, /values\.hidden = true;[\s\S]*?真实账户未读取/);
+  assert.doesNotMatch(functionSource('renderAccount'), /exchange-wallet/);
 });
 test('strategy route is distinct and navigation retains form values', () => {
   const {ctx,get}=harness();
@@ -164,4 +191,15 @@ test('model list is fetched at most once per page load', () => {
   calls = 0;
   ctx.applyAuthUi({local_settings:true, auth:{enabled:true, local:true, username:'本机', llm_key:false}});
   assert.equal(calls, 0);
+});
+
+test('protective recovery is explicit and does not masquerade as session start', () => {
+  assert.match(html, /id="recovery-button"[^>]*hidden/);
+  assert.match(html, /输入「确认恢复」/);
+  assert.match(html, /不会启动策略、撤单、平仓或发送新订单/);
+  assert.match(script, /api\("\/api\/session\/recover"/);
+  assert.match(script, /recovery_required/);
+  assert.match(script, /策略仍未启动/);
+  assert.match(script, /status\.running \|\| status\.starting \|\| status\.recovering/);
+  assert.match(script, /s\.starting \? "初始化中"/);
 });

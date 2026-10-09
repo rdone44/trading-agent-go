@@ -29,7 +29,7 @@ import (
 
 const usage = `trading-agent - a small trading agent (Go)
 
-Data source: Binance spot + USDT perpetuals (public REST API), daily bars.
+Data source: Binance USDT perpetuals (public REST API), daily bars.
 
 AI features (all degrade gracefully without LLM_API_KEY):
   LLM strategy    --strategy llm         a model proposes target positions
@@ -44,8 +44,8 @@ Usage:
   trading-agent scan [flags]       backtest several symbols and rank them
   trading-agent live [flags]       paper-trade the latest bars (no real orders)
   trading-agent trade [flags]      run the live trading loop (paper by default;
-                                   --execute places real orders; --futures for
-                                   perpetuals with --leverage N)
+                                   --execute places real orders; perpetuals
+                                   with --leverage N)
   trading-agent tune [flags]       LLM parameter-tuning loop (rounds of propose+backtest)
   trading-agent web [flags]        serve the interactive dashboard
   trading-agent strategies         list the built-in strategies
@@ -56,7 +56,7 @@ Examples:
   trading-agent backtest --strategy breakout --symbol ETHUSDT --days 730 --review
   trading-agent scan --symbols BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
   trading-agent trade --symbol BTCUSDT --strategy rsi_reversion
-  trading-agent trade --futures --leverage 5 --strategy llm --veto
+  trading-agent trade --leverage 5 --strategy llm --veto
   trading-agent trade --execute   # real orders: needs BINANCE_API_KEY /
                                   # BINANCE_SECRET_KEY and a typed "yes"
   trading-agent tune --strategy rsi_reversion --objective sharpe --rounds 6
@@ -430,7 +430,6 @@ func runTrade(args []string) int {
 		stateFile *string
 		yes       *bool
 		cycles    *int
-		futures   *bool
 		leverage  *int
 		veto      *bool
 	}
@@ -439,8 +438,7 @@ func runTrade(args []string) int {
 	tf.stateFile = fs.String("state", "", "state file for restart persistence (default ./trade-state.json when present)")
 	tf.yes = fs.Bool("yes", false, "skip the confirmation prompt when --execute is used")
 	tf.cycles = fs.Int("cycles", 0, "run exactly N cycles then exit (0 = run until stopped)")
-	tf.futures = fs.Bool("futures", false, "trade USDT-margined perpetuals (leverage + shorts)")
-	tf.leverage = fs.Int("leverage", 0, "leverage multiplier for the futures venue (default from config, 1 = spot-like)")
+	tf.leverage = fs.Int("leverage", 0, "leverage multiplier for the perpetual venue (default from config)")
 	tf.veto = fs.Bool("veto", false, "gate new entries with an LLM second opinion (fail-open; needs LLM_API_KEY)")
 
 	if err := fs.Parse(args); err != nil {
@@ -454,22 +452,13 @@ func runTrade(args []string) int {
 	if set(f.days) {
 		cfg.Live.LookbackDays = *f.days
 	}
-	// Venue and leverage come from flags, defaulting to the config file.
-	if set(tf.futures) {
-		cfg.Live.Futures = *tf.futures
-	}
+	// Leverage comes from a flag, defaulting to the config file. There is no
+	// venue flag: the program trades USDT-margined perpetuals only.
 	if set(tf.leverage) {
 		if *tf.leverage < 1 {
 			return fail(fmt.Errorf("--leverage 必须 >= 1"))
 		}
 		cfg.Risk.Leverage = *tf.leverage
-		// Leverage only exists on a futures venue: a multiplier > 1 must
-		// point the run at perpetuals, otherwise a spot account would be
-		// asked to post margin it cannot. The short side is left to
-		// Risk.AllowShort (long-only futures is a valid, safer default).
-		if cfg.Risk.Leverage > 1 {
-			cfg.Live.Futures = true
-		}
 	}
 	// The LLM veto is enabled by an explicit flag or by the config.
 	if set(tf.veto) {
@@ -515,10 +504,7 @@ func runTrade(args []string) int {
 	if execute {
 		mode = "EXECUTE"
 	}
-	venue := "spot"
-	if runner.IsFutures() {
-		venue = fmt.Sprintf("futures %dx", runner.Leverage())
-	}
+	venue := fmt.Sprintf("futures %dx", runner.Leverage())
 	fmt.Printf("trade loop started: %s %s [mode=%s venue=%s] state=%s\n",
 		cfg.Agent.Symbol, strat.Describe(), mode, venue, statePath)
 	if cfg.LLM.VetoEnabled {
@@ -883,7 +869,7 @@ func execute(cfg config.Config) (engine.Result, error) {
 
 func loadSeries(cfg config.Config) (model.Series, error) {
 	symbol := strings.ToUpper(cfg.Agent.Symbol)
-	return marketdata.Binance(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
+	return marketdata.Load(symbol, cfg.Agent.HistoryDays, time.Now().UTC())
 }
 
 func printSummary(result engine.Result) {

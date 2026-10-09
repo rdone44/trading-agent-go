@@ -206,7 +206,7 @@ func TestAccountsRejectCustomStatePath(t *testing.T) {
 		t.Fatalf("start without state_path = %d: %s", rec.Code, rec.Body.String())
 	}
 	defer server.Session("paths").Stop()
-	want := filepath.Join(server.OutputDir, "accounts", "paths", "sessions", "paper-spot-TEST.json")
+	want := filepath.Join(server.OutputDir, "accounts", "paths", "sessions", "paper-futures-TEST.json")
 	if got := getSessionAs(t, server, cookie).StatePath; got != want {
 		t.Fatalf("state path = %q, want the account-scoped %q", got, want)
 	}

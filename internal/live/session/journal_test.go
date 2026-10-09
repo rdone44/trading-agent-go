@@ -12,7 +12,7 @@ import (
 // operator needs to understand why the previous run behaved as it did.
 func TestJournalSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	statePath := filepath.Join(dir, "paper-spot-TEST.json")
+	statePath := filepath.Join(dir, "paper-futures-TEST.json")
 
 	first := NewSession()
 	first.mu.Lock()
@@ -123,8 +123,8 @@ func TestJournalCompactsToTheInMemoryTail(t *testing.T) {
 // desktop build both get per-ledger history without extra wiring.
 func TestJournalPathFollowsTheLedger(t *testing.T) {
 	cases := map[string]string{
-		"trade-state.json":                        "trade-state.log.jsonl",
-		filepath.Join("a", "paper-spot-BTC.json"): filepath.Join("a", "paper-spot-BTC.log.jsonl"),
+		"trade-state.json":                           "trade-state.log.jsonl",
+		filepath.Join("a", "paper-futures-BTC.json"): filepath.Join("a", "paper-futures-BTC.log.jsonl"),
 		"": "",
 	}
 	for statePath, want := range cases {
@@ -139,7 +139,7 @@ func TestJournalPathFollowsTheLedger(t *testing.T) {
 // once a session owns a ledger it must not be overwritten by it.
 func TestRecoverLogShowsThePreviousRun(t *testing.T) {
 	dir := t.TempDir()
-	if err := appendJournal(filepath.Join(dir, "paper-spot-BTCUSDT.log.jsonl"),
+	if err := appendJournal(filepath.Join(dir, "paper-futures-BTCUSDT.log.jsonl"),
 		CycleRecord{Time: "09:00:00", Action: "ai_unavailable", Reason: "网关超时"}); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestRecoverLogShowsThePreviousRun(t *testing.T) {
 
 	// A session already bound to its own ledger keeps that ledger's log.
 	bound := NewSession()
-	bound.journalPath = filepath.Join(dir, "paper-spot-ETHUSDT.log.jsonl")
+	bound.journalPath = filepath.Join(dir, "paper-futures-ETHUSDT.log.jsonl")
 	bound.RecoverLog(dir)
 	bound.mu.Lock()
 	got := bound.journalPath

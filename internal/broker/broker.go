@@ -34,9 +34,7 @@ type Fill struct {
 	ClientOrderID string
 	Status        string
 	// Uncertain means an order may exist at the exchange; never retry it blindly.
-	Uncertain        bool
-	BaseCommission   float64
-	CommissionAssets map[string]float64
+	Uncertain bool
 }
 
 // Broker is anything that can place market orders: the paper broker used by

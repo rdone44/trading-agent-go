@@ -99,7 +99,7 @@ func TestProtectiveAlgoWriteFailureNoBlindRetry(t *testing.T) {
 						_, _ = fmt.Fprint(w, `[]`)
 						return
 					}
-					_, _ = fmt.Fprint(w, `[{"algoId":1,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true}]`)
+					_, _ = fmt.Fprint(w, `[{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true}]`)
 					return
 				}
 				if r.Method != method || r.URL.Path != "/fapi/v1/algoOrder" {

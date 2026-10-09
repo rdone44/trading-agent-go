@@ -153,7 +153,7 @@ func futuresAgent(t *testing.T, cfg config.Config) *engine.Agent {
 	bk := broker.NewFutures(broker.FuturesConfig{
 		Symbol: cfg.Agent.Symbol, Leverage: 5, DryRun: true, StepSize: 0.001,
 	})
-	book := portfolio.New(cfg.Risk.InitialCash)
+	book := portfolio.New(cfg.Risk.InitialCash, 5)
 	rm := risk.New(cfg.Risk)
 	return engine.NewWithBroker(cfg, strat, bk, book, rm)
 }
@@ -269,7 +269,7 @@ func TestLiveStepUsesSingleDecisionForExpensiveStrategy(t *testing.T) {
 
 	s := &countStrat{}
 	agent := engine.NewWithBroker(cfg, s,
-		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash, cfg.Risk.Leverage), risk.New(cfg.Risk))
 
 	price := series.Close()[series.Len()-1]
 	if _, err := agent.LiveStep(series, price, time.Now()); err != nil {
@@ -292,7 +292,7 @@ func TestLiveStepCarriesStrategyReasonIntoResult(t *testing.T) {
 
 	s := &countStrat{reason: "RSI 超卖，维持空仓"}
 	agent := engine.NewWithBroker(cfg, s,
-		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash, cfg.Risk.Leverage), risk.New(cfg.Risk))
 
 	price := series.Close()[series.Len()-1]
 	res, err := agent.LiveStep(series, price, time.Now())
@@ -325,7 +325,7 @@ func TestLiveStepFallsBackToGenerateForPlainStrategy(t *testing.T) {
 
 	p := &plainStrat{}
 	agent := engine.NewWithBroker(cfg, p,
-		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+		broker.New(cfg.Execution), portfolio.New(cfg.Risk.InitialCash, cfg.Risk.Leverage), risk.New(cfg.Risk))
 
 	if _, err := agent.LiveStep(series, series.Close()[series.Len()-1], time.Now()); err != nil {
 		t.Fatalf("LiveStep: %v", err)

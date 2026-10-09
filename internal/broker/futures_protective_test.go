@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -192,11 +193,11 @@ func TestHasProtectiveFalseWhenNoStop(t *testing.T) {
 // CancelProtective targets only agent-owned conditional legs by algoId.
 func TestCancelProtectiveDeletesOnlyOwnedAlgoOrders(t *testing.T) {
 	s := newProtectiveStub(`[
-{"algoId":1,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true},
-{"algoId":2,"clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","closePosition":"true"},
+{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true},
+{"algoId":2,"algoStatus":"NEW","clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"110","closePosition":"true"},
 {"algoId":3,"clientAlgoId":"manual","symbol":"BTCUSDT","orderType":"STOP_MARKET","closePosition":true},
 {"algoId":4,"clientAlgoId":"tap-other","symbol":"ETHUSDT","orderType":"STOP_MARKET","closePosition":true},
-{"algoId":5,"clientAlgoId":"tap-limit","symbol":"BTCUSDT","orderType":"LIMIT","closePosition":true}]`)
+{"algoId":5,"clientAlgoId":"manual-limit","symbol":"BTCUSDT","orderType":"LIMIT","closePosition":true}]`)
 	srv := s.server()
 	defer srv.Close()
 	b := newLiveFuturesForStub(srv.URL)
@@ -214,5 +215,69 @@ func TestCancelProtectiveDeletesOnlyOwnedAlgoOrders(t *testing.T) {
 	gets := s.queriesFor(http.MethodGet, "/fapi/v1/openAlgoOrders")
 	if len(gets) != 1 || gets[0].Get("symbol") != "BTCUSDT" {
 		t.Fatal("inspection must be symbol scoped")
+	}
+}
+
+func TestCancelProtectiveRejectsUnverifiedLegWithoutDelete(t *testing.T) {
+	for _, status := range []string{"", "TRIGGERED", "FINISHED"} {
+		t.Run(status, func(t *testing.T) {
+			body := fmt.Sprintf(`[{"algoId":1,"algoStatus":%q,"clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true}]`, status)
+			s := newProtectiveStub(body)
+			srv := s.server()
+			defer srv.Close()
+			b := newLiveFuturesForStub(srv.URL)
+
+			if err := b.CancelProtective(); err == nil {
+				t.Fatal("unverified protective leg was cancelled")
+			}
+			if s.called(http.MethodDelete, "/fapi/v1/algoOrder") {
+				t.Fatal("DELETE was sent before the leg was verified as NEW")
+			}
+		})
+	}
+}
+
+func TestCancelProtectivePreflightsEveryLegBeforeDelete(t *testing.T) {
+	s := newProtectiveStub(`[
+{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true},
+{"algoId":2,"algoStatus":"TRIGGERED","clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"110","closePosition":true}
+]`)
+	srv := s.server()
+	defer srv.Close()
+	b := newLiveFuturesForStub(srv.URL)
+
+	if err := b.CancelProtective(); err == nil {
+		t.Fatal("mixed valid/invalid protection set was accepted")
+	}
+	if got := s.queriesFor(http.MethodDelete, "/fapi/v1/algoOrder"); len(got) != 0 {
+		t.Fatalf("preflight failure sent %d DELETE request(s)", len(got))
+	}
+}
+
+func TestCancelProtectiveRejectsIdentityAndDirectionConflictsBeforeDelete(t *testing.T) {
+	tests := map[string]string{
+		"duplicate algo id": `[
+{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true},
+{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"110","closePosition":true}]`,
+		"mixed close side": `[
+{"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true},
+{"algoId":2,"algoStatus":"NEW","clientAlgoId":"tap-target","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":"BUY","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"110","closePosition":true}]`,
+		"invalid trigger": `[{
+"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-stop","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"NaN","closePosition":true}]`,
+		"unknown owned type": `[{
+"algoId":1,"algoStatus":"NEW","clientAlgoId":"tap-unknown","symbol":"BTCUSDT","orderType":"TRAILING_STOP_MARKET","side":"SELL","positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":"90","closePosition":true}]`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newProtectiveStub(body)
+			srv := s.server()
+			defer srv.Close()
+			if err := newLiveFuturesForStub(srv.URL).CancelProtective(); err == nil {
+				t.Fatal("conflicting protection set was accepted")
+			}
+			if got := s.queriesFor(http.MethodDelete, "/fapi/v1/algoOrder"); len(got) != 0 {
+				t.Fatalf("preflight failure sent %d DELETE request(s)", len(got))
+			}
+		})
 	}
 }

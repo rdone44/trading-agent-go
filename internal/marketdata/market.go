@@ -40,15 +40,15 @@ func ValidMarketInterval(interval string) bool {
 	return false
 }
 
-func Snapshot(symbol string, futures bool, interval string) (MarketSnapshot, error) {
+// Snapshot fetches the console's market view (24h ticker plus recent candles)
+// from the perpetual endpoint. There is no spot variant: the terminal trades
+// perpetuals, so the chart must show the market the orders execute in.
+func Snapshot(symbol, interval string) (MarketSnapshot, error) {
 	symbol = BinanceSymbol(symbol)
 	if !ValidMarketInterval(interval) {
 		return MarketSnapshot{}, fmt.Errorf("不支持的K线周期")
 	}
-	base, prefix, venue := binanceEndpoint, "/api/v3", "spot"
-	if futures {
-		base, prefix, venue = fapiEndpoint, "/fapi/v1", "futures"
-	}
+	base, prefix, venue := fapiEndpoint, "/fapi/v1", "futures"
 	client := &http.Client{Timeout: 12 * time.Second}
 	get := func(path string, out any) error {
 		resp, err := client.Get(base + path)

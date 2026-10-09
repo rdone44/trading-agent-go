@@ -3,50 +3,29 @@ package marketdata
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sort"
 	"testing"
 )
 
-// withSymbolsServer points the venue's base endpoint at a stub that serves a
-// 24-hour ticker array, for spot or futures. The endpoint is restored when the
-// test finishes.
-func withSymbolsServer(t *testing.T, venue string, handler http.HandlerFunc) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	if venue == "futures" {
-		previous := fapiEndpoint
-		fapiEndpoint = server.URL
-		t.Cleanup(func() { fapiEndpoint = previous })
-	} else {
-		previous := binanceEndpoint
-		binanceEndpoint = server.URL
-		t.Cleanup(func() { binanceEndpoint = previous })
-	}
-}
-
-// AllSymbols must hand back exactly the USDT/USDC pairs that are trading,
-// ordered by 24h quote volume, largest first. The stub offers a mix: two USDT
-// pairs, one USDC pair, one non-USD pair (to be dropped), and one halted USDT
-// pair (to be dropped on spot where status is reported).
+// AllSymbols must hand back exactly the USDT/USDC perpetual pairs, ordered by
+// 24h quote volume, largest first. The stub offers a mix: two USDT pairs, one
+// USDC pair, and one non-USD pair (to be dropped).
 func TestAllSymbolsFiltersAndRanks(t *testing.T) {
 	fastRetry(t)
-	withSymbolsServer(t, "spot", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v3/ticker/24hr" {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/ticker/24hr" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		rows := []map[string]string{
 			{"symbol": "BTCUSDT", "lastPrice": "60000", "priceChangePercent": "1", "quoteVolume": "500000000", "status": "TRADING"},
 			{"symbol": "ETHUSDT", "lastPrice": "3000", "priceChangePercent": "-2", "quoteVolume": "400000000", "status": "TRADING"},
 			{"symbol": "LINKUSDC", "lastPrice": "15", "priceChangePercent": "0", "quoteVolume": "200000000"},
-			{"symbol": "BTCBTC", "lastPrice": "1", "priceChangePercent": "0", "quoteVolume": "999999999", "status": "TRADING"},      // not a USDT/USDC pair
-			{"symbol": "DOGEUSDT", "lastPrice": "0.1", "priceChangePercent": "5", "quoteVolume": "900000000", "status": "BREAKING"}, // halted
+			{"symbol": "BTCBTC", "lastPrice": "1", "priceChangePercent": "0", "quoteVolume": "999999999", "status": "TRADING"}, // not a USDT/USDC pair
 		}
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	infos, err := AllSymbols("spot", 0)
+	infos, err := AllSymbols(0)
 	if err != nil {
 		t.Fatalf("AllSymbols: %v", err)
 	}
@@ -70,30 +49,11 @@ func TestAllSymbolsFiltersAndRanks(t *testing.T) {
 	}
 }
 
-// The futures venue must hit the fapi endpoint, not the spot one.
-func TestAllSymbolsFuturesHitsFAPI(t *testing.T) {
-	fastRetry(t)
-	var seenPath string
-	withSymbolsServer(t, "futures", func(w http.ResponseWriter, r *http.Request) {
-		seenPath = r.URL.Path
-		json.NewEncoder(w).Encode([]map[string]string{
-			{"symbol": "BTCUSDT", "lastPrice": "60000", "priceChangePercent": "0", "quoteVolume": "100"},
-		})
-	})
-
-	if _, err := AllSymbols("futures", 0); err != nil {
-		t.Fatalf("AllSymbols(futures): %v", err)
-	}
-	if seenPath != "/fapi/v1/ticker/24hr" {
-		t.Errorf("path = %q, want /fapi/v1/ticker/24hr", seenPath)
-	}
-}
-
 // limit must cap the result without dropping the ranking: top 1 returns only
 // the single most-liquid pair.
 func TestAllSymbolsLimitCaps(t *testing.T) {
 	fastRetry(t)
-	withSymbolsServer(t, "spot", func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		rows := []map[string]string{
 			{"symbol": "BTCUSDT", "lastPrice": "1", "quoteVolume": "3"},
 			{"symbol": "ETHUSDT", "lastPrice": "2", "quoteVolume": "2"},
@@ -102,7 +62,7 @@ func TestAllSymbolsLimitCaps(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	})
 
-	infos, err := AllSymbols("spot", 2)
+	infos, err := AllSymbols(2)
 	if err != nil {
 		t.Fatalf("AllSymbols: %v", err)
 	}
@@ -119,7 +79,7 @@ func TestAllSymbolsLimitCaps(t *testing.T) {
 func TestAllSymbolsRetriesTransient(t *testing.T) {
 	fastRetry(t)
 	attempts := 0
-	withSymbolsServer(t, "spot", func(w http.ResponseWriter, r *http.Request) {
+	withFuturesServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		if attempts < 3 {
 			w.WriteHeader(http.StatusBadGateway)
@@ -131,7 +91,7 @@ func TestAllSymbolsRetriesTransient(t *testing.T) {
 		})
 	})
 
-	if _, err := AllSymbols("spot", 0); err != nil {
+	if _, err := AllSymbols(0); err != nil {
 		t.Fatalf("AllSymbols should recover from 502s, got %v", err)
 	}
 	if attempts != 3 {

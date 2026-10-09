@@ -1,7 +1,8 @@
-// FuturesBroker places orders on Binance USDT-margined perpetual futures.
-// Unlike spot it can hold a signed position (long or short), so both entry
-// directions the strategy emits are tradable, and a position is sized in
-// base-coin quantity with leverage applied to the margin budget.
+// FuturesBroker places orders on Binance USDT-margined perpetual futures,
+// the only venue this program trades. It holds a signed position (long or
+// short), so both entry directions the strategy emits are tradable, and a
+// position is sized in base-coin quantity with leverage applied to the
+// margin budget.
 //
 // The client is deliberately small: HMAC-SHA256 signed REST calls against
 // fapi.binance.com, leverage and margin-type setup, position/balance
@@ -31,13 +32,17 @@ type FuturesConfig struct {
 	Symbol        string // e.g. BTCUSDT perpetual
 	DryRun        bool   // no network; fills simulated locally
 	Timeout       time.Duration
-	Leverage      int    // 1 = isolated spot-like, up to the exchange max
+	Leverage      int    // 1 = unleveraged, up to the exchange max
 	MarginMode    string // "ISOLATED" (default) or "CROSS"
 	StepSize      float64
 	MaxPriceDev   float64 // reject fills deviating more than this fraction
 	CommissionBps *float64
 	SlippageBps   *float64
 	JournalPath   string
+	// ProtectiveJournalPath is a durable intent file for conditional legs.
+	// It is separate from the market-order intent because a position can be
+	// filled even when the protective POST response is lost.
+	ProtectiveJournalPath string
 }
 
 // FuturesBroker implements Broker against Binance USDT-margined perpetuals.
@@ -51,6 +56,13 @@ type FuturesBroker struct {
 	clock exchangeClock
 	// Resolved by Init from the exchange contract info.
 	QuantityPrecision int
+}
+
+type protectiveLeg struct {
+	orderType string
+	level     float64
+	present   bool
+	clientID  string
 }
 
 // NewFutures builds a futures broker. In DryRun no network is touched and no
@@ -149,7 +161,8 @@ func (b *FuturesBroker) setMarginType() error {
 // book: it returns the side, quantity (absolute) and entry price of the open
 // position, or the zero value when flat.
 func (b *FuturesBroker) OpenPosition() (side Side, quantity, entry float64, err error) {
-	body, err := b.getSigned("/fapi/v2/positionRisk", url.Values{})
+	want := strings.ToUpper(b.cfg.Symbol)
+	body, err := b.getSigned("/fapi/v2/positionRisk", url.Values{"symbol": {want}})
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -162,28 +175,59 @@ func (b *FuturesBroker) OpenPosition() (side Side, quantity, entry float64, err 
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return "", 0, 0, fmt.Errorf("解析持仓失败: %w", err)
 	}
-	want := strings.ToUpper(b.cfg.Symbol)
+	var matched []struct {
+		Symbol       string
+		PositionAmt  json.Number
+		EntryPrice   json.Number
+		PositionSide string
+	}
 	for _, row := range rows {
-		if strings.ToUpper(row.Symbol) != want {
-			continue
-		}
-		amt, _ := row.PositionAmt.Float64()
-		if row.PositionSide != "" && row.PositionSide != "BOTH" {
-			return "", 0, 0, fmt.Errorf("当前仅支持单向持仓模式，不支持 Hedge Mode")
-		}
-		entr, _ := row.EntryPrice.Float64()
-		switch {
-		case amt > 0:
-			return Buy, amt, entr, nil
-		case amt < 0:
-			return Sell, -amt, entr, nil
+		if strings.ToUpper(row.Symbol) == want {
+			matched = append(matched, struct {
+				Symbol       string
+				PositionAmt  json.Number
+				EntryPrice   json.Number
+				PositionSide string
+			}{row.Symbol, row.PositionAmt, row.EntryPrice, row.PositionSide})
 		}
 	}
-	return "", 0, 0, nil
+	if len(matched) > 1 {
+		return "", 0, 0, fmt.Errorf("交易所返回重复的 %s 持仓记录", want)
+	}
+	if len(matched) == 0 {
+		return "", 0, 0, fmt.Errorf("交易所未返回 %s 的持仓记录", want)
+	}
+	row := matched[0]
+	amt, parseErr := row.PositionAmt.Float64()
+	if parseErr != nil || math.IsNaN(amt) || math.IsInf(amt, 0) {
+		return "", 0, 0, fmt.Errorf("交易所持仓数量无效")
+	}
+	if row.PositionSide != "" && row.PositionSide != "BOTH" {
+		return "", 0, 0, fmt.Errorf("当前仅支持单向持仓模式，不支持 Hedge Mode")
+	}
+	entr, parseErr := row.EntryPrice.Float64()
+	if parseErr != nil || math.IsNaN(entr) || math.IsInf(entr, 0) || entr < 0 {
+		return "", 0, 0, fmt.Errorf("交易所持仓开仓均价无效")
+	}
+	switch {
+	case amt > 0:
+		if entr <= 0 {
+			return "", 0, 0, fmt.Errorf("交易所多头持仓缺少开仓均价")
+		}
+		return Buy, amt, entr, nil
+	case amt < 0:
+		if entr <= 0 {
+			return "", 0, 0, fmt.Errorf("交易所空头持仓缺少开仓均价")
+		}
+		return Sell, -amt, entr, nil
+	case entr != 0:
+		return "", 0, 0, fmt.Errorf("交易所空仓却返回非零开仓均价")
+	default:
+		return "", 0, 0, nil
+	}
 }
 
-// USDTBalance returns the available USDT balance on the futures account, the
-// figure the risk manager should treat as its trading capital.
+// USDTBalance returns the wallet balance used by the existing live book.
 func (b *FuturesBroker) USDTBalance() (float64, error) {
 	body, err := b.getSigned("/fapi/v2/balance", url.Values{})
 	if err != nil {
@@ -196,13 +240,86 @@ func (b *FuturesBroker) USDTBalance() (float64, error) {
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return 0, fmt.Errorf("解析余额失败: %w", err)
 	}
+	found := false
+	var balance float64
 	for _, row := range rows {
 		if strings.ToUpper(row.Asset) == "USDT" {
-			v, _ := row.WalletBalance.Float64()
-			return v, nil
+			if found {
+				return 0, fmt.Errorf("合约账户返回重复的 USDT 余额")
+			}
+			value, err := positiveAccountNumber(row.WalletBalance)
+			if err != nil {
+				return 0, fmt.Errorf("USDT 钱包余额无效: %w", err)
+			}
+			found, balance = true, value
 		}
 	}
-	return 0, nil
+	if !found {
+		return 0, fmt.Errorf("合约账户未返回 USDT 余额")
+	}
+	return balance, nil
+}
+
+// AccountBalance is a read-only snapshot of the USDT-margined futures wallet.
+// It must not be confused with the local paper/session portfolio.
+type AccountBalance struct {
+	Wallet          float64 `json:"wallet"`
+	Available       float64 `json:"available"`
+	CrossUnrealized float64 `json:"cross_unrealized"`
+}
+
+// Account reads Binance's signed balance endpoint without initializing the
+// broker; in particular it never changes leverage, margin mode, or orders.
+func (b *FuturesBroker) Account() (AccountBalance, error) {
+	if b.cfg.APIKey == "" || b.cfg.SecretKey == "" {
+		return AccountBalance{}, fmt.Errorf("Binance API Key 与 Secret Key 未配置")
+	}
+	b.trySyncClock()
+	body, err := b.getSigned("/fapi/v2/balance", url.Values{})
+	if err != nil {
+		return AccountBalance{}, err
+	}
+	var rows []struct {
+		Asset         string      `json:"asset"`
+		WalletBalance json.Number `json:"balance"`
+		Available     json.Number `json:"availableBalance"`
+		Unrealized    json.Number `json:"crossUnPnl"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return AccountBalance{}, fmt.Errorf("解析余额失败: %w", err)
+	}
+	for _, row := range rows {
+		if strings.ToUpper(row.Asset) == "USDT" {
+			wallet, err := positiveAccountNumber(row.WalletBalance)
+			if err != nil {
+				return AccountBalance{}, fmt.Errorf("USDT 钱包余额无效: %w", err)
+			}
+			available, err := positiveAccountNumber(row.Available)
+			if err != nil {
+				return AccountBalance{}, fmt.Errorf("USDT 可用余额无效: %w", err)
+			}
+			if row.Unrealized == "" {
+				return AccountBalance{}, fmt.Errorf("USDT 全仓未实现盈亏缺失")
+			}
+			unrealized, err := row.Unrealized.Float64()
+			if err != nil || math.IsNaN(unrealized) || math.IsInf(unrealized, 0) {
+				return AccountBalance{}, fmt.Errorf("USDT 全仓未实现盈亏无效")
+			}
+			return AccountBalance{Wallet: wallet, Available: available, CrossUnrealized: unrealized}, nil
+		}
+	}
+	return AccountBalance{}, fmt.Errorf("合约账户未返回 USDT 余额")
+}
+
+func positiveAccountNumber(value json.Number) (float64, error) {
+	if value == "" {
+		return 0, fmt.Errorf("缺少字段")
+	}
+	n, err := value.Float64()
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 {
+		return 0, fmt.Errorf("数值无效")
+	}
+	return n, nil
 }
 
 // MarketOrder places (or simulates) one futures market order. Quantity is in
@@ -451,6 +568,9 @@ func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) err
 	if side != Buy && side != Sell {
 		return fmt.Errorf("保护单持仓方向无效: %q", side)
 	}
+	if !validProtectionLevel(stop) || (takeProfit != 0 && !validProtectionLevel(takeProfit)) {
+		return fmt.Errorf("保护单触发价无效，拒绝下单")
+	}
 	rows, err := b.protectiveOrders()
 	if err != nil {
 		return err // Never write when the exchange state cannot be inspected.
@@ -459,32 +579,90 @@ func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) err
 	if side == Sell {
 		closeSide = "BUY"
 	}
-	legs := []struct {
-		orderType string
-		level     float64
-		present   bool
-	}{{"STOP_MARKET", stop, false}, {"TAKE_PROFIT_MARKET", takeProfit, false}}
+	legs := []protectiveLeg{{orderType: "STOP_MARKET", level: stop}, {orderType: "TAKE_PROFIT_MARKET", level: takeProfit}}
+	// Reuse an intent left by a crash. The client IDs are the idempotency key;
+	// replacing them here would turn a lost response into a duplicate order.
+	intent, hasIntent, err := loadProtectiveIntent(b.cfg.ProtectiveJournalPath)
+	if err != nil {
+		return err
+	}
+	if hasIntent {
+		if strings.ToUpper(intent.Symbol) != strings.ToUpper(b.cfg.Symbol) || intent.Side != side {
+			return fmt.Errorf("保护单意图与当前持仓不一致，需人工对账")
+		}
+		for _, pending := range intent.Legs {
+			for i := range legs {
+				if legs[i].orderType == pending.OrderType {
+					if legs[i].level != pending.TriggerPrice {
+						return fmt.Errorf("保护单意图 %s 触发价与当前持仓不一致", pending.OrderType)
+					}
+					legs[i].clientID = pending.ClientAlgoID
+				}
+			}
+		}
+	}
 	// Validate all existing legs before any write. A stale, duplicate or
 	// malformed owned order requires reconciliation, not another close-all leg.
 	for _, row := range rows {
+		matched := false
 		for i := range legs {
 			leg := &legs[i]
 			if row.OrderType != leg.orderType {
 				continue
 			}
+			matched = true
 			level, parseErr := strconv.ParseFloat(row.TriggerPrice, 64)
-			if row.AlgoID <= 0 || row.Side != closeSide || row.PositionSide != "BOTH" ||
+			if row.AlgoID <= 0 || row.AlgoStatus != "NEW" || !protectiveFlag(row.ClosePos) ||
+				row.Side != closeSide || row.PositionSide != "BOTH" ||
 				row.WorkingType != "MARK_PRICE" || parseErr != nil ||
 				math.IsNaN(level) || math.IsInf(level, 0) || level != leg.level ||
 				leg.level <= 0 || leg.present {
 				return fmt.Errorf("交易所保护单 %s 与本地持仓不一致，拒绝重复补挂", row.OrderType)
 			}
 			leg.present = true
+			if hasIntent && leg.clientID != "" && row.ClientAlgoID != leg.clientID {
+				return fmt.Errorf("保护单 %s 身份与持久化意图不一致，需人工对账", row.OrderType)
+			}
+		}
+		if !matched {
+			return fmt.Errorf("发现未知类型的本程序保护单 %s，需人工对账", row.OrderType)
 		}
 	}
-	for _, leg := range legs {
+	if hasIntent {
+		for _, pending := range intent.Legs {
+			for _, leg := range legs {
+				if leg.orderType != pending.OrderType || leg.present {
+					continue
+				}
+				// A missing open leg may have been accepted just before a crash.
+				// Query its original identity for diagnosis, but never POST it
+				// again: even a not-found answer is not a fill/position proof.
+				_, queryErr := b.getSigned("/fapi/v1/algoOrder", url.Values{"clientAlgoId": {pending.ClientAlgoID}})
+				if queryErr != nil {
+					return fmt.Errorf("保护单 %s 未在开放列表中，按原 ID 查询失败，需人工对账: %w", pending.ClientAlgoID, queryErr)
+				}
+				return fmt.Errorf("保护单 %s 未在开放列表中，需核对终态与成交后人工恢复", pending.ClientAlgoID)
+			}
+		}
+		for _, leg := range legs {
+			if leg.level > 0 && !leg.present {
+				return fmt.Errorf("保护单意图未覆盖缺失的 %s 腿，需人工对账", leg.orderType)
+			}
+		}
+		return nil
+	}
+	for i := range legs {
+		if legs[i].level > 0 && !legs[i].present && legs[i].clientID == "" {
+			legs[i].clientID = newClientID("tap-")
+		}
+	}
+	if err := b.ensureProtectiveIntent(side, legs); err != nil {
+		return err
+	}
+	for i := range legs {
+		leg := &legs[i]
 		if leg.level > 0 && !leg.present {
-			if err := b.placeClosePosition(leg.orderType, side, leg.level); err != nil {
+			if err := b.placeClosePosition(leg.orderType, side, leg.level, leg.clientID); err != nil {
 				return err
 			}
 		}
@@ -492,9 +670,35 @@ func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) err
 	return nil
 }
 
+// ensureProtectiveIntent writes all missing legs before the first POST.
+func (b *FuturesBroker) ensureProtectiveIntent(side Side, legs []protectiveLeg) error {
+	if b.cfg.ProtectiveJournalPath == "" {
+		return nil
+	}
+	if _, ok, err := loadProtectiveIntent(b.cfg.ProtectiveJournalPath); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	var pending []protectiveIntentLeg
+	for i := range legs {
+		leg := &legs[i]
+		if leg.level > 0 && !leg.present {
+			pending = append(pending, protectiveIntentLeg{
+				OrderType: leg.orderType, ClientAlgoID: leg.clientID, TriggerPrice: leg.level,
+			})
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	_, err := createProtectiveIntent(b.cfg.ProtectiveJournalPath, b.cfg.Symbol, side, pending)
+	return err
+}
+
 // placeClosePosition places one closePosition conditional leg using triggerPrice.
 // The close side is opposite to the position side (closing a long = SELL).
-func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level float64) error {
+func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level float64, clientID string) error {
 	closeSide := "SELL" // closing a long
 	if side != Buy {
 		closeSide = "BUY" // closing a short
@@ -508,7 +712,6 @@ func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level fl
 	q.Set("workingType", "MARK_PRICE")
 	q.Set("algoType", "CONDITIONAL")
 	q.Set("triggerPrice", strconv.FormatFloat(level, 'f', -1, 64))
-	clientID := newClientID("tap-")
 	q.Set("clientAlgoId", clientID)
 	q.Set("newOrderRespType", "ACK")
 	_, err := b.postSigned("/fapi/v1/algoOrder", q)
@@ -546,10 +749,32 @@ func (b *FuturesBroker) CancelProtective() error {
 	if err != nil {
 		return err
 	}
+	// Validate the complete set before the first DELETE. Discovering a bad
+	// second leg after cancelling a valid first leg would reduce protection
+	// while the caller still believes cancellation failed atomically.
+	seenAlgo := map[int64]bool{}
+	seenClient := map[string]bool{}
+	seenType := map[string]bool{}
+	closeSide := ""
 	for _, row := range rows {
-		if row.AlgoID <= 0 {
-			return fmt.Errorf("保护单缺少有效 algoId，拒绝批量撤单")
+		trigger, parseErr := strconv.ParseFloat(row.TriggerPrice, 64)
+		if row.AlgoID <= 0 || seenAlgo[row.AlgoID] || row.ClientAlgoID == "" || seenClient[row.ClientAlgoID] ||
+			seenType[row.OrderType] || row.AlgoStatus != "NEW" || !protectiveFlag(row.ClosePos) ||
+			(row.OrderType != "STOP_MARKET" && row.OrderType != "TAKE_PROFIT_MARKET") ||
+			(row.Side != "BUY" && row.Side != "SELL") || row.PositionSide != "BOTH" ||
+			row.WorkingType != "MARK_PRICE" || parseErr != nil || !validProtectionLevel(trigger) {
+			return fmt.Errorf("保护单字段或状态不完整，拒绝撤单")
 		}
+		if closeSide == "" {
+			closeSide = row.Side
+		} else if row.Side != closeSide {
+			return fmt.Errorf("保护单平仓方向不一致，拒绝撤单")
+		}
+		seenAlgo[row.AlgoID] = true
+		seenClient[row.ClientAlgoID] = true
+		seenType[row.OrderType] = true
+	}
+	for _, row := range rows {
 		if err := b.cancelAlgoOrder(row.AlgoID); err != nil {
 			return err
 		}
@@ -564,6 +789,126 @@ func (b *FuturesBroker) HasProtective() (bool, error) {
 	}
 	rows, err := b.protectiveOrders()
 	return len(rows) > 0, err
+}
+
+// InspectProtective verifies the exact protection expected for the current
+// position. An empty side means the local book is flat; any owned exchange
+// leg is then reported as a residual conflict rather than as coverage.
+func (b *FuturesBroker) InspectProtective(side Side, stop, takeProfit float64) (ProtectionSnapshot, error) {
+	checked := ProtectionSnapshot{CheckedAt: time.Now().UTC()}
+	if b.cfg.DryRun {
+		checked.State = ProtectionNotRequired
+		return checked, nil
+	}
+	intent, pending, err := loadProtectiveIntent(b.cfg.ProtectiveJournalPath)
+	if err != nil {
+		checked.State = ProtectionUnknown
+		checked.Reason = "保护单意图无法读取"
+		return checked, err
+	}
+	rows, err := b.protectiveOrders()
+	if err != nil {
+		checked.State = ProtectionUnknown
+		checked.Reason = "无法读取交易所保护单"
+		return checked, err
+	}
+	closeSide := ""
+	if side == Buy {
+		closeSide = "SELL"
+	} else if side == Sell {
+		closeSide = "BUY"
+	} else if side != "" {
+		checked.State = ProtectionConflict
+		checked.Reason = "本地持仓方向无效"
+		return checked, nil
+	}
+	expected := map[string]float64{}
+	if side != "" {
+		if !validProtectionLevel(stop) {
+			checked.State = ProtectionConflict
+			checked.Reason = "本地止损价无效"
+			return checked, nil
+		}
+		expected["STOP_MARKET"] = stop
+		if takeProfit > 0 {
+			if !validProtectionLevel(takeProfit) {
+				checked.State = ProtectionConflict
+				checked.Reason = "本地止盈价无效"
+				return checked, nil
+			}
+			expected["TAKE_PROFIT_MARKET"] = takeProfit
+		}
+	}
+	if pending {
+		if intent.Symbol != strings.ToUpper(b.cfg.Symbol) || intent.Side != side {
+			checked.State = ProtectionConflict
+			checked.Reason = "保护单意图与当前持仓不一致"
+			return checked, nil
+		}
+		for _, leg := range intent.Legs {
+			if expected[leg.OrderType] != leg.TriggerPrice {
+				checked.State = ProtectionConflict
+				checked.Reason = "保护单意图触发价与本地持仓不一致"
+				return checked, nil
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		level, parseErr := strconv.ParseFloat(row.TriggerPrice, 64)
+		valid := row.AlgoID > 0 && row.ClientAlgoID != "" && protectiveFlag(row.ClosePos) && row.Side == closeSide &&
+			row.PositionSide == "BOTH" && row.WorkingType == "MARK_PRICE" &&
+			parseErr == nil && validProtectionLevel(level) && row.AlgoStatus == "NEW"
+		if !valid {
+			checked.State = ProtectionConflict
+			checked.Reason = "交易所保护单字段冲突或状态无效"
+			return checked, nil
+		}
+		want, isExpected := expected[row.OrderType]
+		if !isExpected || seen[row.OrderType] || want != level {
+			checked.State = ProtectionConflict
+			checked.Reason = "交易所保护单类型或触发价与本地不一致"
+			return checked, nil
+		}
+		if pending {
+			for _, leg := range intent.Legs {
+				if leg.OrderType == row.OrderType && leg.ClientAlgoID != row.ClientAlgoID {
+					checked.State = ProtectionConflict
+					checked.Reason = "保护单身份与持久化意图不一致"
+					return checked, nil
+				}
+			}
+		}
+		seen[row.OrderType] = true
+		leg := ProtectionLeg{Present: true, AlgoID: row.AlgoID, ClientAlgoID: row.ClientAlgoID,
+			OrderType: row.OrderType, TriggerPrice: level, Status: row.AlgoStatus}
+		if row.OrderType == "STOP_MARKET" {
+			checked.Stop = leg
+		} else if row.OrderType == "TAKE_PROFIT_MARKET" {
+			checked.Target = leg
+		}
+	}
+	if len(expected) == 0 {
+		if len(rows) == 0 {
+			checked.State = ProtectionNotRequired
+			return checked, nil
+		}
+		checked.State = ProtectionConflict
+		checked.Reason = "本地已空仓但交易所仍有保护单"
+		return checked, nil
+	}
+	if len(seen) == len(expected) {
+		checked.State = ProtectionVerified
+		return checked, nil
+	}
+	if len(seen) == 0 {
+		checked.State = ProtectionMissing
+		checked.Reason = "交易所保护单缺失"
+	} else {
+		checked.State = ProtectionPartial
+		checked.Reason = "交易所保护单只存在部分保护腿"
+	}
+	return checked, nil
 }
 
 type protectiveAlgoOrder struct {
@@ -593,12 +938,10 @@ func (b *FuturesBroker) protectiveOrders() ([]protectiveAlgoOrder, error) {
 	var owned []protectiveAlgoOrder
 	for _, row := range rows {
 		if strings.ToUpper(row.Symbol) != strings.ToUpper(b.cfg.Symbol) ||
-			!strings.HasPrefix(row.ClientAlgoID, "tap-") || !protectiveFlag(row.ClosePos) {
+			!strings.HasPrefix(row.ClientAlgoID, "tap-") {
 			continue
 		}
-		if row.OrderType == "STOP_MARKET" || row.OrderType == "TAKE_PROFIT_MARKET" {
-			owned = append(owned, row)
-		}
+		owned = append(owned, row)
 	}
 	return owned, nil
 }

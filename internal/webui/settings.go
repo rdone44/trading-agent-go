@@ -20,7 +20,7 @@ func settingsView(cfg config.Config, interval int, execute bool) *StartSessionRe
 			StopLossPct: cfg.Risk.StopLossPct, TakeProfitPct: cfg.Risk.TakeProfitPct, MaxDrawdownPct: cfg.Risk.MaxDrawdownPct,
 			MaxDailyLossPct: cfg.Risk.MaxDailyLossPct, AllowShort: &cfg.Risk.AllowShort,
 			CommissionBps: &cfg.Execution.CommissionBps, SlippageBps: &cfg.Execution.SlippageBps}},
-		IntervalSeconds: interval, Execute: execute, Futures: cfg.Live.Futures, Leverage: cfg.Risk.Leverage}
+		IntervalSeconds: interval, Execute: execute, Futures: true, Leverage: cfg.Risk.Leverage}
 }
 
 func validateSessionConfig(cfg config.Config, interval int) error {

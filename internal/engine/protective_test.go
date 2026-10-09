@@ -82,7 +82,7 @@ func (entryLong) LastDecision(s model.Series, cfg config.Config) (float64, float
 // strategy so the two protective call sites can be observed.
 func newAgentWithBroker(t *testing.T, cfg config.Config, bk broker.Broker, prot engine.Protective, strat strategy.Strategy) *engine.Agent {
 	t.Helper()
-	a := engine.NewWithBroker(cfg, strat, bk, portfolio.New(cfg.Risk.InitialCash), risk.New(cfg.Risk))
+	a := engine.NewWithBroker(cfg, strat, bk, portfolio.New(cfg.Risk.InitialCash, cfg.Risk.Leverage), risk.New(cfg.Risk))
 	a.Protective = prot
 	return a
 }

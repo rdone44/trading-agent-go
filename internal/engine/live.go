@@ -202,8 +202,9 @@ func (a *Agent) liveRebalance(now time.Time, target, strategyStop, strategyTarge
 	case target > 0:
 		desired = 1
 	case target < 0:
-		// Spot accounts cannot short. With AllowShort on (paper research
-		// mode only) the engine keeps the mirror logic; otherwise the
+		// Shorting is opt-in through AllowShort even though the venue
+		// supports it: long-only is the safer default, and a paper run
+		// researches the short side before it is armed. Without it the
 		// signal is a no-op.
 		if a.Config.Risk.AllowShort {
 			desired = -1

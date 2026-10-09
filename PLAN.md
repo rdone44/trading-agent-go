@@ -5,6 +5,9 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1 合约保护成交疑点阻断回归子项：**done** — 新增 `TestProtectiveFillGuardPreservesLedgerAcrossRestart`，多空分别覆盖完全/部分退出、额外库存、方向反转、均价变化、NaN 数量及查询失败。每例连续三轮及从保存账本恢复后均拒绝继续，断言零行情调用/零交易所写入/零本地成交，原仓位、开仓手续费及现金不变，halt + OrderUncertain 持久化；只新增测试，不改变 Leverage:1/CVFolds=0 生产行为。
+- 本轮验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；新增定向 verbose 测试及 live 定向 race 测试通过。P0-1/T5 总体仍 **partial**：本轮证明 fail-safe 阻断，不是按保护单成交身份/实际手续费自动对账；不恢复已退役现货代码，未调用真交易所。
+
 - 当前 `main` 已包含 `ffb142b` / `1c534cf`：现货已退役，保护单核验、持久化意图及人工恢复已接入永续路径。下文现货 partial/待生产接入均为历史记录，不得据此重建已删除的现货代码。
 - T9 保护与恢复操作说明子项：**done** — README 修正“交易所保护单未实现”的过时表述，明确独立 MARKET 保护腿不是 OCO、停止不平仓/不撤保护单、快照时效、pending 证据保留与仅只读人工恢复。按 broker/live/session/HTTP handler 逐项核对；本轮只改文档，不改变 Leverage:1 或 CVFolds=0 的当前行为。
 - 验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；保护状态核验、遗留意图阻断与人工恢复不写交易所的定向离线测试通过。T9 总体 partial，配置默认值全面核对尚未完成。

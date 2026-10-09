@@ -180,12 +180,52 @@ initial-cash input is for paper sessions. Use a dedicated account/strategy
 balance: the local ledger is not an exchange-wide account reconciliation
 service.
 
-**Stopping is not liquidation.** Stops and targets are evaluated locally at
-each poll, not submitted as exchange-native protective orders. Stopping,
-quitting or losing connectivity leaves positions exposed. The interface
-asks for confirmation when stopping with a position and displays a persistent
-warning afterwards. Exchange-native protection, automatic account-wide
-reconciliation and funding/liquidation simulation are not implemented.
+**Stopping is not liquidation.** Stopping saves the ledger but neither closes
+the position nor cancels its exchange-side protection. It also stops local
+monitoring. Inspect the real position and protective orders in Binance before
+leaving the session unattended; a previously verified snapshot is not a
+promise that an order is still present or that an exit will fill at its trigger.
+
+Executed perpetual sessions submit a close-all `STOP_MARKET` and, when a
+positive target is configured, a `TAKE_PROFIT_MARKET` through Binance's Algo
+Order API. They use `MARK_PRICE` triggers from the same local risk calculation.
+These are independent market-triggered legs, **not OCO or limit orders**;
+slippage and exchange failures remain possible. Paper sessions do not submit
+exchange protection. Before a local exit, the agent cancels its own protective
+legs; cancellation failure blocks that exit rather than risking a duplicate.
+
+Startup and live cycles inspect the owned legs, including identity, side,
+trigger price and status. Missing legs are repaired and rechecked; conflicting
+or unknown protection blocks trading. The session's `protection` snapshot
+reports `verified`, `partial`, `missing`, `conflict`, `unknown` or
+`not_required`, plus `checked_at` and the observed leg IDs. `protection_active`
+is a running-session indicator, not proof that protection disappears on stop.
+A changed exchange position or entry price requires reconciliation: the agent
+does not invent execution prices or fees from position/balance differences.
+Automatic account-wide reconciliation and funding/liquidation simulation are
+not implemented.
+
+### Recovering a protective-order crash lock
+
+Before protective POSTs, executed sessions persist the original client IDs in
+`<ledger>.protective-pending.json`. A leftover file on restart requires human
+recovery even if all expected legs are visible. Normal stop/save/restart must
+not erase that evidence. Do not delete pending files to bypass the lock.
+
+1. Review the position, fills and original protective IDs in Binance. Stop the
+   session before recovery; this flow is only for a protective-intent lock, not
+   an unexplained fill, position mismatch or ordinary-order pending file.
+2. Use `POST /api/session/recover` with `{"confirm":"确认恢复"}` through the
+   console's existing authentication. Recovery reads the exchange position,
+   original protective identities and USDT wallet. Incomplete/conflicting
+   evidence, ordinary pending orders or unrelated uncertainty cause refusal.
+3. Successful recovery saves the local ledger and clears the protective crash
+   lock. It sends **no exchange orders**, does not start the strategy, and is
+   not an account-wide reconciliation. Starting again is a separate action
+   with the normal live gates.
+
+These paths are covered by offline exchange stubs; that is not a claim of
+production exchange certification or guaranteed protection under outages.
 
 The trade path checks protective exits before loading history or asking a
 strategy. A failed strategy cannot skip an existing stop. A protective close

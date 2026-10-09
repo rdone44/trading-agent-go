@@ -198,12 +198,15 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T9. 文档与配置
 
+- 保护与恢复说明子项：**done** — 当前基线 `ffb142b` / `1c534cf` 已退役现货并接入合约保护核验/意图/人工恢复；README 旧称“交易所保护单未实现”已修正。说明独立 STOP_MARKET/TAKE_PROFIT_MARKET 不是 OCO，停止不平仓/不撤保护但停止本地监控，快照非持续保证，pending 文件不得删除绕锁，`POST /api/session/recover` + `确认恢复` 只读核验交易所且不启动策略。仅文档改动，未改变当前 Leverage:1/CVFolds=0 行为。
+- 子项验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；TestInspectProtectiveReportsExactCoverage、TestInspectProtectiveTransportFailureIsUnknown、TestCycleWithRecoveredProtectiveIntentStopsBeforeMarketOrOrders、TestRecoverProtectiveIntentRequiresPhraseAndNeverWritesExchange 全部通过。无真交易所调用。
+- 剩余：配置字段/默认值全面核对；T5/P0-1 的旧现货待办已不适用，不恢复已删除的现货代码，但完整保护成交身份/手续费对账仍未验收。
 - 范围：`README.md`、`config.yaml`、`internal/config/`
 - 现状：README 以 PowerShell 为例，Linux 用法散落各节
 - 可做：补 Linux 命令示例、配置字段与代码默认值核对
 - 约束：不把任何密钥示例写成可直接用的真值
 - 认领：coding（单人重构，含原 muse 地盘）
-- 状态：open（P 级到达时做）
+- 状态：partial（保护与人工恢复操作说明 done；配置默认值核对待做）
 
 ## 本轮协作记录
 
@@ -231,4 +234,4 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |
-| T9 | coding（单人） | 2026-10-08 | open |
+| T9 | coding（单人） | 2026-10-08 | partial (保护与人工恢复说明 done；配置默认值核对待做) |

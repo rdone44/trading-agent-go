@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 撤单终态触发价精确比较子项：**done** — 先复现浮点舍入冲突 `90.000000000000001` 与十六进制价格错误放行：`CancelProtective = <nil>, want success=false`。Leverage>1 终态改为限长十进制词法与 math/big.Rat 精确比较，等价尾零保留，舍入冲突/十六进制/分数拒绝。纯函数对称测试、多空 broker 矩阵、runner 首/第二腿四场景验证持久化 halt + OrderUncertain、账本/手续费不变、零平仓/补挂、重复三轮及恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过；Leverage:1/CVFolds=0 未改、无新依赖、全离线。T5/P0-1 仍 partial，完整保护成交身份/实际手续费自动对账及更广泛触发时序待完成。
+
 - 撤单终态显式零值抗下溢子项：**done** — 非零 `actualPrice` / `actualQty=1e-400` 不再被 float64 下溢误判为零；按十进制字符串验证，真实指数零仍放行。多空 broker 回归先复现 `CancelProtective = <nil>, want success=false`，runner 多空首/第二腿八场景验证持久化 halt + OrderUncertain、账本/手续费不变、不平仓/补挂，重复三轮及恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过。Leverage:1/CVFolds=0 未改，无新依赖，全离线；T5/P0-1 仍 partial，完整保护成交身份/实际手续费对账及更广泛触发时序未完成。
 
 - 第一腿终态查询期间另一腿触发回归子项：**done** — 多空新增四个离线场景：第一腿 DELETE 成功后，第二腿在第一腿干净终态 GET 期间触发/部分成交，早于第二次 DELETE；精确 ACK 不能覆盖第二腿终态成交证据。断言精确请求顺序、零补挂/市价单/本地成交、原账本与手续费不变、halt + OrderUncertain 持久化，重复三轮及保存账本恢复后零请求。仅测试改动，Leverage:1/CVFolds=0 生产行为不变，无新依赖。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，新增 verbose 与完整撤单 guard 定向 race 通过。T5/P0-1 仍 partial：保护成交身份/实际手续费自动对账及更广泛触发时序未完成，全离线。

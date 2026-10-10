@@ -26,7 +26,7 @@ import (
 func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 	for _, side := range []broker.Side{broker.Buy, broker.Sell} {
 		for _, failedLeg := range []int{1, 2} {
-			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure", "terminal_underflow_price", "terminal_underflow_quantity", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill", "sibling_during_terminal_read", "sibling_partial_during_terminal_read"} {
+			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure", "terminal_underflow_price", "terminal_underflow_quantity", "terminal_rounded_trigger", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill", "sibling_during_terminal_read", "sibling_partial_during_terminal_read"} {
 				// Race the first DELETE against either its own trigger or the
 				// sibling's trigger. Own-leg evidence must stop the second DELETE.
 				firstLegRace := failure == "first_leg_triggered" || failure == "first_leg_partial_fill"
@@ -99,6 +99,8 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 									row["actualPrice"] = "1e-400"
 								case "terminal_underflow_quantity":
 									row["actualQty"] = "1e-400"
+								case "terminal_rounded_trigger":
+									row["triggerPrice"] = fmt.Sprint(level) + ".000000000000001"
 								case "terminal_missing":
 									delete(row, "actualOrderId")
 								case "terminal_http_failure":
@@ -147,8 +149,8 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 
 					cfg := config.Default()
 					leverage := 1
-					underflowEvidence := failure == "terminal_underflow_price" || failure == "terminal_underflow_quantity"
-					if tracing || underflowEvidence || failure == "terminal_triggered" || failure == "terminal_missing" || failure == "terminal_http_failure" {
+					decimalEvidence := failure == "terminal_underflow_price" || failure == "terminal_underflow_quantity" || failure == "terminal_rounded_trigger"
+					if tracing || decimalEvidence || failure == "terminal_triggered" || failure == "terminal_missing" || failure == "terminal_http_failure" {
 						leverage = 2
 					}
 					b := broker.NewFutures(broker.FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL, Leverage: leverage})
@@ -156,7 +158,7 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 					a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, EntryFee: 0.04, Side: side}, stop, target, risk.RiskState{})
 					a.Protective = &futuresProtective{b: b}
 					r := &Runner{cfg: cfg, agent: a, broker: b, executed: true, leverage: 1, statePath: filepath.Join(t.TempDir(), "ledger.json")}
-					if tracing || underflowEvidence {
+					if tracing || decimalEvidence {
 						r.leverage = 2
 					}
 					r.PriceLoader = func(string) (float64, time.Time, error) {

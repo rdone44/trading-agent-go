@@ -10,7 +10,7 @@ import (
 
 func TestCancelProtectiveRequiresUntriggeredTerminalOrder(t *testing.T) {
 	for _, side := range []string{"BUY", "SELL"} {
-		for _, scenario := range []string{"canceled", "NEW", "TRIGGERED", "FINISHED", "wrong id", "wrong client", "wrong symbol", "wrong side", "wrong type", "wrong position", "wrong working type", "wrong trigger", "not close all", "child order", "missing child", "triggered time", "missing time", "actual price", "missing price", "actual quantity", "invalid quantity", "empty", "http failure"} {
+		for _, scenario := range []string{"canceled", "NEW", "TRIGGERED", "FINISHED", "wrong id", "wrong client", "wrong symbol", "wrong side", "wrong type", "wrong position", "wrong working type", "wrong trigger", "not close all", "child order", "missing child", "triggered time", "missing time", "actual price", "missing price", "actual quantity", "invalid quantity", "underflow price", "underflow quantity", "exponent zero", "empty", "http failure"} {
 			t.Run(side+"/"+scenario, func(t *testing.T) {
 				deletes, queries := 0, 0
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +73,12 @@ func TestCancelProtectiveRequiresUntriggeredTerminalOrder(t *testing.T) {
 								row["actualQty"] = "0.1"
 							case "invalid quantity":
 								row["actualQty"] = "NaN"
+							case "underflow price":
+								row["actualPrice"] = "1e-400"
+							case "underflow quantity":
+								row["actualQty"] = "1e-400"
+							case "exponent zero":
+								row["actualQty"] = "0e-400"
 							case "empty":
 								row = map[string]interface{}{}
 							case "http failure":
@@ -89,7 +95,7 @@ func TestCancelProtectiveRequiresUntriggeredTerminalOrder(t *testing.T) {
 				defer srv.Close()
 				b := NewFutures(FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL, Leverage: 2})
 				err := b.CancelProtective()
-				ok := scenario == "canceled"
+				ok := scenario == "canceled" || scenario == "exponent zero"
 				if (err == nil) != ok {
 					t.Fatalf("CancelProtective = %v, want success=%v", err, ok)
 				}

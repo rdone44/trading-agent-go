@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 撤单终态零成交证据抗浮点下溢子项：**done** — 先复现多空 `actualPrice` / `actualQty` 为非零 `1e-400` 时错误放行：`CancelProtective = <nil>, want success=false`。改为按十进制字符串核验显式零，不经 float64 转换；保留 `0.00000`、`0e-400` 等真实零值，拒绝非零下溢及非法格式。离线 broker 多空矩阵、零值词法测试及 runner 首/第二腿八场景验证 halt + OrderUncertain 落盘，零平仓/补挂、账本/手续费不变，重复三轮及恢复后零请求。Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；broker/live 定向 race 通过。仅 Leverage>1 终态核验使用新逻辑，Leverage:1/CVFolds=0 未改，无新依赖、无真 Binance 调用。总体仍 **partial**：完整保护成交身份/实际手续费自动对账及更广泛触发时序未完成。
+
 - P0-1/T5 第一腿终态查询期间另一腿触发回归子项：**done** — 多空离线新增四场景：第一腿已撤销且返回干净 CANCELED 证据，但第二腿在该 GET 期间触发或部分成交，早于第二次 DELETE。第二腿精确 ACK 后仍必须按终态拒绝本地平仓和补挂；断言精确请求顺序、原账本/手续费不变、halt + OrderUncertain 落盘，连续三轮及保存账本恢复后零行情/交易所请求。仅测试改动，Leverage:1/CVFolds=0 生产行为不变，无新依赖。验证：Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；新增四场景 verbose 与完整撤单 guard 定向 race 通过。总体仍 **partial**：保护成交身份/实际手续费自动对账及更广泛触发时序未完成，不调用真 Binance。
 
 - P0-1/T5 第一腿撤单与自身触发竞态回归子项：**done** — 多空离线覆盖第一腿在 DELETE 期间触发及部分成交；即使收到精确成功 ACK，终态带子单/成交证据也必须停止，保留仍为 NEW 的第二腿，不撤第二腿、不补挂、不按旧数量本地平仓。断言精确请求顺序、原账本/手续费不变、halt + OrderUncertain 落盘，连续三轮及保存账本恢复后零行情/交易所请求。仅扩展测试，无生产代码改动，Leverage:1/CVFolds=0 行为不变、无新依赖。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，新增四场景 verbose 与完整撤单 guard 定向 race 通过。总体仍 **partial**：保护成交身份/实际手续费自动对账及更广泛触发时序仍待验收；不调用真 Binance。

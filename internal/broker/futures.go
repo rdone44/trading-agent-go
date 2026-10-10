@@ -1051,8 +1051,7 @@ func (b *FuturesBroker) confirmUntriggeredCancellation(original protectiveAlgoOr
 	}
 	trigger, triggerErr := strconv.ParseFloat(terminal.TriggerPrice, 64)
 	originalTrigger, _ := strconv.ParseFloat(original.TriggerPrice, 64)
-	price, priceErr := strconv.ParseFloat(*terminal.ActualPrice, 64)
-	if triggerErr != nil || trigger != originalTrigger || priceErr != nil || price != 0 {
+	if triggerErr != nil || trigger != originalTrigger || !explicitDecimalZero(*terminal.ActualPrice) {
 		return fmt.Errorf("保护单撤销价格证据不一致，需对账")
 	}
 	// actualQty is optional when untriggered. If supplied, require explicit
@@ -1062,8 +1061,7 @@ func (b *FuturesBroker) confirmUntriggeredCancellation(original protectiveAlgoOr
 		if json.Unmarshal(terminal.ActualQty, &quantity) != nil {
 			return fmt.Errorf("保护单撤销成交量无法确认，需对账")
 		}
-		value, err := strconv.ParseFloat(quantity, 64)
-		if err != nil || value != 0 {
+		if !explicitDecimalZero(quantity) {
 			return fmt.Errorf("保护单已成交或成交量无效，需对账")
 		}
 	}

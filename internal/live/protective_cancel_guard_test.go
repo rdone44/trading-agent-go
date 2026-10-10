@@ -26,11 +26,12 @@ import (
 func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 	for _, side := range []broker.Side{broker.Buy, broker.Sell} {
 		for _, failedLeg := range []int{1, 2} {
-			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill"} {
+			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill", "sibling_during_terminal_read", "sibling_partial_during_terminal_read"} {
 				// Race the first DELETE against either its own trigger or the
 				// sibling's trigger. Own-leg evidence must stop the second DELETE.
 				firstLegRace := failure == "first_leg_triggered" || failure == "first_leg_partial_fill"
-				otherLegRace := failure == "other_leg_triggered" || failure == "other_leg_partial_fill"
+				terminalReadRace := failure == "sibling_during_terminal_read" || failure == "sibling_partial_during_terminal_read"
+				otherLegRace := failure == "other_leg_triggered" || failure == "other_leg_partial_fill" || terminalReadRace
 				if (firstLegRace && failedLeg != 1) || (otherLegRace && failedLeg != 2) {
 					continue
 				}
@@ -68,6 +69,12 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							_, _ = fmt.Fprintf(w, `[{"algoId":1,"clientAlgoId":"tap-stop","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true},{"algoId":2,"clientAlgoId":"tap-target","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true}]`, closeSide, fmt.Sprint(stop), closeSide, fmt.Sprint(target))
 						case "GET /fapi/v1/algoOrder":
 							leg := deletes
+							if terminalReadRace && leg == 1 {
+								// The first leg is already canceled. Its clean terminal
+								// response says nothing about a sibling that triggers
+								// during this read, before the second DELETE.
+								racedLegTriggered = true
+							}
 							if tracing && leg == failedLeg && !racedLegTriggered {
 								t.Error("protected leg did not trigger during first cancellation")
 							}
@@ -78,14 +85,14 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							row := map[string]interface{}{"algoId": leg, "clientAlgoId": client, "symbol": "BTCUSDT", "side": closeSide, "orderType": kind, "positionSide": "BOTH", "workingType": "MARK_PRICE", "triggerPrice": fmt.Sprint(level), "closePosition": true, "algoStatus": "CANCELED", "actualOrderId": "", "actualPrice": "0", "triggerTime": 0}
 							if leg == failedLeg {
 								switch failure {
-								case "terminal_triggered", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill":
+								case "terminal_triggered", "other_leg_triggered", "other_leg_partial_fill", "first_leg_triggered", "first_leg_partial_fill", "sibling_during_terminal_read", "sibling_partial_during_terminal_read":
 									row["algoStatus"] = "TRIGGERED"
 									row["actualOrderId"] = "999"
 									if tracing {
 										row["triggerTime"] = 123
 										row["actualPrice"] = fmt.Sprint(level)
 									}
-									if failure == "other_leg_partial_fill" || failure == "first_leg_partial_fill" {
+									if failure == "other_leg_partial_fill" || failure == "first_leg_partial_fill" || failure == "sibling_partial_during_terminal_read" {
 										row["actualQty"] = "0.4"
 									}
 								case "terminal_missing":
@@ -98,7 +105,10 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							_ = json.NewEncoder(w).Encode(row)
 						case "DELETE /fapi/v1/algoOrder":
 							deletes++
-							if tracing && deletes == 1 {
+							if terminalReadRace && deletes == 2 && !racedLegTriggered {
+								t.Error("second cancellation happened before the sibling trigger")
+							}
+							if tracing && !terminalReadRace && deletes == 1 {
 								racedLegTriggered = true
 							}
 							if req.URL.Query().Get("algoId") != fmt.Sprint(deletes) {

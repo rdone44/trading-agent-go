@@ -1083,7 +1083,10 @@ func (b *FuturesBroker) getPublic(path string) ([]byte, error) {
 		return nil, fmt.Errorf("请求 Binance futures 失败: %w", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	// exchangeInfo can exceed 1 MiB when the network egress returns the
+	// full symbol list despite the symbol= filter (observed: ~1.15 MB),
+	// so cap well above that instead of truncating the JSON mid-stream.
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
 		return nil, err
 	}

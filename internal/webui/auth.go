@@ -180,6 +180,9 @@ func (s *Server) handleLocalCredentials(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// The local file now holds the fresh credentials; push them into any
+	// running session so switching model/key/persona works without a restart.
+	s.refreshRunningSessions(r)
 	view := s.localAuthView()
 	view["ok"] = true
 	writeJSON(w, http.StatusOK, view)
@@ -304,6 +307,9 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// The vault now holds the fresh credentials; push them into any running
+	// session so switching model/key/persona works without a restart.
+	s.refreshRunningSessions(r)
 	// The same shape as /api/auth/me: presence flags, never the values.
 	view := s.authView(user.Username)
 	view["ok"] = true

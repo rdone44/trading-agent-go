@@ -287,6 +287,26 @@ func (s *Server) StopAllSessions() {
 	}
 }
 
+// refreshRunningSessions pushes the just-saved credentials into every
+// running session so a model, endpoint, key or persona change takes effect
+// from the next cycle instead of the next start. Before this, saving new
+// credentials only updated the vault — the running session kept its startup
+// config, so switching models mid-session silently did nothing until the
+// user stopped and restarted, which is exactly what "切换模型有问题" was.
+// Sessions with no live runner ignore it; they pick the values up at Start.
+func (s *Server) refreshRunningSessions(r *http.Request) {
+	cfg := s.applyUserConfig(r)
+	s.sessionsMu.Lock()
+	sess := make([]*livesession.Session, 0, len(s.sessions))
+	for _, v := range s.sessions {
+		sess = append(sess, v)
+	}
+	s.sessionsMu.Unlock()
+	for _, v := range sess {
+		v.Reload(cfg)
+	}
+}
+
 // StartSessionRequest is the JSON body of /api/session/start.
 type StartSessionRequest struct {
 	BacktestRequest `json:",inline"`

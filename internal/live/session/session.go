@@ -756,6 +756,34 @@ func (s *Session) Running() bool {
 	return s.running
 }
 
+// Reload pushes a refreshed config into a running session without stopping
+// it: the credential forms (model, endpoint, key, persona) used to only take
+// effect on the next start — a user who changed the model mid-session kept
+// trading with the old one, which read as "模型切换没生效". The refresh
+// happens under cycleMu, so no cycle is mid-flight while the agent's config
+// and the veto gate are swapped, and the session never misses a tick.
+//
+// Only the model fields the credential form writes are merged in; the
+// session keeps its start-time symbol, cash, leverage, lookback and the
+// per-session veto switch. A session that never started (or stopped) has
+// nothing to refresh; its next Start reads the freshly saved credentials.
+func (s *Session) Reload(cfg config.Config) {
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runner == nil {
+		return
+	}
+	merged := s.cfg
+	merged.LLM.APIKey = cfg.LLM.APIKey
+	merged.LLM.BaseURL = cfg.LLM.BaseURL
+	merged.LLM.Model = cfg.LLM.Model
+	merged.LLM.Prompt = cfg.LLM.Prompt
+	s.cfg = merged
+	s.runner.Reload(merged)
+}
+
 // ReviewFacts renders the trades this session actually made into the compact
 // fact blob llm.Review consumes. It answers the live question ("how is my real
 // position doing and why?") instead of the backtest one. The second return is

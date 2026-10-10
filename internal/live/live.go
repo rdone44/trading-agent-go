@@ -272,6 +272,31 @@ func protectiveRecoveryReason(reason string) bool {
 // Agent exposes the underlying agent (its state and book) for reporting.
 func (r *Runner) Agent() *engine.Agent { return r.agent }
 
+// Reload swaps in a refreshed config for a RUNNING session: the agent reads
+// its LLM settings from agent.Config every cycle (the strategy rebuilds its
+// model client from the passed config on each call, so a changed model, key
+// or prompt takes effect from the very next cycle), and the entry-veto gate
+// is rebuilt around the new LLM settings so a credential fix heals the gate
+// too. The runner's ledger, open position and protective state are untouched
+// — this is a settings refresh, not a restart, so no cycle is lost and no
+// position is liquidated. Callers must own the runner's serialization point
+// (the session holds cycleMu) so no cycle is mid-flight.
+func (r *Runner) Reload(cfg config.Config) {
+	r.cfg = cfg
+	r.agent.Config = cfg
+	if r.agent.Veto != nil {
+		gate := llm.NewVetoGate(cfg.LLM)
+		r.agent.Veto = func(now time.Time, ctx engine.VetoContext) (bool, string) {
+			req := llm.VetoRequest{
+				Side: string(ctx.Side), Symbol: ctx.Symbol, Quantity: ctx.Quantity,
+				EntryPrice: ctx.EntryPrice, StopPrice: ctx.StopPrice, TargetPrice: ctx.TargetPrice,
+				Equity: ctx.Equity, Cash: ctx.Cash, Leverage: ctx.Leverage, Reason: ctx.Reason,
+			}
+			return gate.Decide(req)
+		}
+	}
+}
+
 // Init prepares the session: fetch exchange filters when executing, restore
 // persisted state, and reconcile the local book against the exchange.
 func (r *Runner) Init() error {

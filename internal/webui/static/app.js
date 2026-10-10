@@ -1480,7 +1480,7 @@ async function adoptPromptTune() {
     renderCredStatus(view);
     $("#ai-prompt-adopt").hidden = true;
     const log = $("#ai-tune-log");
-    if (!log.hidden) log.textContent += "\n\n已保存为账号人设：下次启动会话与回测都会使用它。";
+    if (!log.hidden) log.textContent += "\n\n已保存为账号人设：运行中的会话下一轮决策生效，之后的会话与回测都会使用它。";
   } catch (error) {
     alert(`保存失败：${error.message}`);
   }

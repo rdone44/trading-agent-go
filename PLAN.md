@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 永续撤单 ACK 身份核验子项：**done** — 按官方 Cancel Algo Order 契约核验原 algoId/clientAlgoId、code=200（字符串或数字）及 msg=success；HTTP 200 空对象、缺字段、身份冲突或失败码不再放行，首腿失败立即停止，不重试/不继续撤第二腿。BUY/SELL 离线响应矩阵先复现 `CancelProtective = <nil>, want success=false` 再修复；既有 stub 改为完整 ACK。验证：Go 1.23.4，gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。总体仍 **partial**：ACK 不是完整终态/零成交证明，触发竞态与完整保护成交身份/实际手续费对账待做；paper、Leverage:1/CVFolds=0 路径未改，无真交易所调用。
+
 - P0-1 永续撤保护单全批次预检回归子项：**done** — 新增 `TestCancelProtectivePreflightPreservesFirstLeg`，对 BUY/SELL 两种平仓方向验证后续腿缺字段、身份/类型重复、状态变化、方向冲突及非法触发价；每例连续三轮只有 openAlgoOrders GET，零写入，避免坏后续腿导致先撤有效第一腿。只新增离线测试，生产代码及 Leverage:1/CVFolds=0 行为不变。
 - 本轮验证：Go 1.23.4；gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；新增定向 verbose 测试与全部 CancelProtective 定向 race 测试通过。P0-1/T5 总体仍 **partial**：完整保护成交身份/实际手续费自动对账未完成；本子项不证明撤单成功响应或成交竞态已核验，不调用真交易所。
 

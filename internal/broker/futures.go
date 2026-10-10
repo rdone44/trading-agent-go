@@ -775,7 +775,7 @@ func (b *FuturesBroker) CancelProtective() error {
 		seenType[row.OrderType] = true
 	}
 	for _, row := range rows {
-		if err := b.cancelAlgoOrder(row.AlgoID); err != nil {
+		if err := b.cancelAlgoOrder(row); err != nil {
 			return err
 		}
 	}
@@ -960,10 +960,26 @@ func protectiveFlag(v interface{}) bool {
 }
 
 // cancelAlgoOrder deletes one identified conditional leg, never all orders.
-func (b *FuturesBroker) cancelAlgoOrder(id int64) error {
-	query := url.Values{"algoId": {strconv.FormatInt(id, 10)}}
-	if _, err := b.signedRequest(http.MethodDelete, "/fapi/v1/algoOrder", query); err != nil {
+func (b *FuturesBroker) cancelAlgoOrder(order protectiveAlgoOrder) error {
+	query := url.Values{"algoId": {strconv.FormatInt(order.AlgoID, 10)}}
+	body, err := b.signedRequest(http.MethodDelete, "/fapi/v1/algoOrder", query)
+	if err != nil {
 		return fmt.Errorf("撤销保护单失败: %w", err)
+	}
+	// Binance's cancel endpoint returns an acknowledgement, not the full
+	// terminal order. HTTP 200 alone (or an unrelated order's ACK) cannot
+	// authorize a local exit. Accept the documented string code and the
+	// numeric encoding, but never infer success from missing fields.
+	var ack struct {
+		AlgoID       int64           `json:"algoId"`
+		ClientAlgoID string          `json:"clientAlgoId"`
+		Code         json.RawMessage `json:"code"`
+		Message      string          `json:"msg"`
+	}
+	if json.Unmarshal(body, &ack) != nil || ack.AlgoID != order.AlgoID ||
+		ack.ClientAlgoID != order.ClientAlgoID || ack.Message != "success" ||
+		(string(ack.Code) != "200" && string(ack.Code) != `"200"`) {
+		return fmt.Errorf("撤销保护单响应无法确认原订单成功撤销，需对账")
 	}
 	return nil
 }

@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 永续撤单 ACK 身份核验子项：**done** — `cancelAlgoOrder` 不再丢弃响应；严格核验原 algoId/clientAlgoId、code=200（数字/字符串）及 msg=success。新增多空离线响应矩阵，HTTP 200 空对象/缺字段/身份冲突/失败码拒绝确认，第一腿失败不重试、不撤第二腿；先复现旧代码错误放行再修复，既有 stub 改为官方完整 ACK。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。T5/P0-1 仍 partial：ACK 不证明完整终态或零成交，触发竞态和保护成交身份/实际手续费对账待做；paper、Leverage:1/CVFolds=0 路径未改，全离线。
+
 - 永续撤保护单全批次预检回归子项：**done** — 新增 `internal/broker/futures_protective_preflight_test.go`，BUY/SELL 两方向覆盖后续腿缺字段、重复 algo/client/type、TRIGGERED/FINISHED、方向冲突、closePosition 与 triggerPrice 无效；每例三轮拒绝且仅允许查询 openAlgoOrders，零交易所写入，锁住先检查全批次再撤第一腿的安全约束。仅离线测试，生产代码及 Leverage:1/CVFolds=0 行为不变。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose 及 CancelProtective race 通过。T5/P0-1 仍 partial：保护成交身份/手续费对账待做；撤单成功响应与成交竞态未由本子项验收。
 
 - 当前永续基线保护成交疑点阻断回归子项：**done** — 新增 `internal/live/protective_fill_guard_test.go`；多空分别验证完全/部分退出、额外库存、方向反转、均价变化、NaN 数量、查询失败。首轮查询持仓后阻断，后续重复周期及保存账本恢复后不再查询交易所；全程不读行情、不写订单、不造本地成交；原持仓/开仓手续费/现金不变，halt + OrderUncertain 持久化。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose 与 race 测试通过。仅新增测试，Leverage:1/CVFolds=0 生产代码未变。T5/P0-1 仍 partial：完整保护成交身份与实际手续费自动对账未完成，现货待办为历史且不重建。

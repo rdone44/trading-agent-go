@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,24 @@ func (s *protectiveStub) server() *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet && r.URL.Path == "/fapi/v1/openAlgoOrders" {
 			_, _ = w.Write([]byte(s.openOrders))
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == "/fapi/v1/algoOrder" {
+			var rows []struct {
+				AlgoID       int64  `json:"algoId"`
+				ClientAlgoID string `json:"clientAlgoId"`
+			}
+			if err := json.Unmarshal([]byte(s.openOrders), &rows); err != nil {
+				http.Error(w, "invalid fixture", 500)
+				return
+			}
+			for _, row := range rows {
+				if fmt.Sprint(row.AlgoID) == r.URL.Query().Get("algoId") {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"algoId": row.AlgoID, "clientAlgoId": row.ClientAlgoID, "code": "200", "msg": "success"})
+					return
+				}
+			}
+			http.Error(w, "unknown order", 400)
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))

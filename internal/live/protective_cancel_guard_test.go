@@ -26,7 +26,7 @@ import (
 func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 	for _, side := range []broker.Side{broker.Buy, broker.Sell} {
 		for _, failedLeg := range []int{1, 2} {
-			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure"} {
+			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure"} {
 				t.Run(fmt.Sprintf("%s/leg%d/%s", side, failedLeg, failure), func(t *testing.T) {
 					stop, target, quantity, closeSide := 90.0, 110.0, "1", "SELL"
 					if side == broker.Sell {
@@ -43,6 +43,26 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							// The snapshot deliberately stays NEW: a failed response
 							// must not be cleared by a later apparently healthy read.
 							_, _ = fmt.Fprintf(w, `[{"algoId":1,"clientAlgoId":"tap-stop","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true},{"algoId":2,"clientAlgoId":"tap-target","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true}]`, closeSide, fmt.Sprint(stop), closeSide, fmt.Sprint(target))
+						case "GET /fapi/v1/algoOrder":
+							leg := deletes
+							client, kind, level := "tap-stop", "STOP_MARKET", stop
+							if leg == 2 {
+								client, kind, level = "tap-target", "TAKE_PROFIT_MARKET", target
+							}
+							row := map[string]interface{}{"algoId": leg, "clientAlgoId": client, "symbol": "BTCUSDT", "side": closeSide, "orderType": kind, "positionSide": "BOTH", "workingType": "MARK_PRICE", "triggerPrice": fmt.Sprint(level), "closePosition": true, "algoStatus": "CANCELED", "actualOrderId": "", "actualPrice": "0", "triggerTime": 0}
+							if leg == failedLeg {
+								switch failure {
+								case "terminal_triggered":
+									row["algoStatus"] = "TRIGGERED"
+									row["actualOrderId"] = "999"
+								case "terminal_missing":
+									delete(row, "actualOrderId")
+								case "terminal_http_failure":
+									http.Error(w, "terminal unavailable", 503)
+									return
+								}
+							}
+							_ = json.NewEncoder(w).Encode(row)
 						case "DELETE /fapi/v1/algoOrder":
 							deletes++
 							if req.URL.Query().Get("algoId") != fmt.Sprint(deletes) {
@@ -76,7 +96,11 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 					defer srv.Close()
 
 					cfg := config.Default()
-					b := broker.NewFutures(broker.FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL})
+					leverage := 1
+					if failure == "terminal_triggered" || failure == "terminal_missing" || failure == "terminal_http_failure" {
+						leverage = 2
+					}
+					b := broker.NewFutures(broker.FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL, Leverage: leverage})
 					a := engine.NewWithBroker(cfg, strategy.MovingAverageCross{}, b, portfolio.New(1000, 1), risk.New(cfg.Risk))
 					a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, EntryFee: 0.04, Side: side}, stop, target, risk.RiskState{})
 					a.Protective = &futuresProtective{b: b}

@@ -68,6 +68,21 @@ func TestCancelProtectivePreflightsPendingIdentities(t *testing.T) {
 					switch r.Method + " " + r.URL.Path {
 					case "GET /fapi/v1/openAlgoOrders":
 						_ = json.NewEncoder(w).Encode(rows)
+					case "GET /fapi/v1/algoOrder":
+						for _, row := range rows {
+							if fmt.Sprint(row.AlgoID) == r.URL.Query().Get("algoId") {
+								body, _ := json.Marshal(row)
+								var terminal map[string]interface{}
+								_ = json.Unmarshal(body, &terminal)
+								terminal["algoStatus"] = "CANCELED"
+								terminal["actualOrderId"] = ""
+								terminal["actualPrice"] = "0"
+								terminal["triggerTime"] = 0
+								_ = json.NewEncoder(w).Encode(terminal)
+								return
+							}
+						}
+						http.Error(w, "unknown identity", 400)
 					case "DELETE /fapi/v1/algoOrder":
 						writes++
 						for _, row := range rows {

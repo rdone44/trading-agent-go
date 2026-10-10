@@ -812,6 +812,11 @@ func (b *FuturesBroker) CancelProtective() error {
 		if err := b.cancelAlgoOrder(row); err != nil {
 			return err
 		}
+		if b.cfg.Leverage > 1 {
+			if err := b.confirmUntriggeredCancellation(row); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -1014,6 +1019,53 @@ func (b *FuturesBroker) cancelAlgoOrder(order protectiveAlgoOrder) error {
 		ack.ClientAlgoID != order.ClientAlgoID || ack.Message != "success" ||
 		(string(ack.Code) != "200" && string(ack.Code) != `"200"`) {
 		return fmt.Errorf("撤销保护单响应无法确认原订单成功撤销，需对账")
+	}
+	return nil
+}
+
+// confirmUntriggeredCancellation reads terminal evidence after an exact ACK.
+// A triggered child can fill even when the conditional leg is no longer open;
+// never authorize a local flatten based on disappearance or the ACK alone.
+func (b *FuturesBroker) confirmUntriggeredCancellation(original protectiveAlgoOrder) error {
+	body, err := b.getSigned("/fapi/v1/algoOrder", url.Values{
+		"algoId": {strconv.FormatInt(original.AlgoID, 10)},
+	})
+	if err != nil {
+		return fmt.Errorf("读取保护单撤销终态失败，需对账: %w", err)
+	}
+	var terminal struct {
+		protectiveAlgoOrder
+		ActualOrderID *string         `json:"actualOrderId"`
+		ActualPrice   *string         `json:"actualPrice"`
+		ActualQty     json.RawMessage `json:"actualQty"`
+		TriggerTime   *int64          `json:"triggerTime"`
+	}
+	if json.Unmarshal(body, &terminal) != nil || terminal.AlgoID != original.AlgoID ||
+		terminal.ClientAlgoID != original.ClientAlgoID || terminal.Symbol != original.Symbol ||
+		terminal.OrderType != original.OrderType || terminal.Side != original.Side ||
+		terminal.PositionSide != original.PositionSide || terminal.WorkingType != original.WorkingType ||
+		!protectiveFlag(terminal.ClosePos) || terminal.AlgoStatus != "CANCELED" ||
+		terminal.ActualOrderID == nil || *terminal.ActualOrderID != "" ||
+		terminal.TriggerTime == nil || *terminal.TriggerTime != 0 || terminal.ActualPrice == nil {
+		return fmt.Errorf("保护单撤销终态或触发证据无法确认，需对账")
+	}
+	trigger, triggerErr := strconv.ParseFloat(terminal.TriggerPrice, 64)
+	originalTrigger, _ := strconv.ParseFloat(original.TriggerPrice, 64)
+	price, priceErr := strconv.ParseFloat(*terminal.ActualPrice, 64)
+	if triggerErr != nil || trigger != originalTrigger || priceErr != nil || price != 0 {
+		return fmt.Errorf("保护单撤销价格证据不一致，需对账")
+	}
+	// actualQty is optional when untriggered. If supplied, require explicit
+	// zero rather than accepting malformed/null/non-finite fill evidence.
+	if len(terminal.ActualQty) > 0 {
+		var quantity string
+		if json.Unmarshal(terminal.ActualQty, &quantity) != nil {
+			return fmt.Errorf("保护单撤销成交量无法确认，需对账")
+		}
+		value, err := strconv.ParseFloat(quantity, 64)
+		if err != nil || value != 0 {
+			return fmt.Errorf("保护单已成交或成交量无效，需对账")
+		}
 	}
 	return nil
 }

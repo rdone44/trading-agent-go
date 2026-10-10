@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 撤单前持久化意图核验子项：**done** — CancelProtective 在任何 DELETE 前核对 pending 意图的币种、方向、每腿 clientAlgoId 与同源触发价；空列表、缺腿、身份替换、价格冲突或损坏意图均拒绝撤单，保留有效保护与原意图证据。多空离线矩阵先复现 `CancelProtective = <nil>, want success=false` 再修复。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。无新依赖，仅 Leverage>1 启用新检查；Leverage:1 路径保持原逻辑并新增兼容回归，paper/CVFolds=0 未改。总体仍 **partial**：ACK 后终态/触发竞态及保护成交身份/实际手续费对账未完成，全离线。
+
 - P0-1/T5 永续撤单失败持久化阻断子项：**done** — 新增 `TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry`，以真实离线 broker→adapter→engine→runner 链路覆盖多空、首腿/第二腿、空 ACK/身份错误/HTTP 503；第二腿失败时首腿已成功也不得放行本地平仓。断言原仓位/开仓手续费/现金不变、零市价单/零本地成交、halt + OrderUncertain 落盘；随后三轮及保存账本恢复后的周期均不再调用行情或交易所。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，新增定向 verbose 与 race 通过。只新增测试，Leverage:1/CVFolds=0 生产行为不变；总体仍 **partial**，撤单 ACK 后终态/触发竞态及保护成交身份/实际手续费对账未完成，不调用真 Binance。
 
 - P0-1/T5 永续撤单 ACK 身份核验子项：**done** — 按官方 Cancel Algo Order 契约核验原 algoId/clientAlgoId、code=200（字符串或数字）及 msg=success；HTTP 200 空对象、缺字段、身份冲突或失败码不再放行，首腿失败立即停止，不重试/不继续撤第二腿。BUY/SELL 离线响应矩阵先复现 `CancelProtective = <nil>, want success=false` 再修复；既有 stub 改为完整 ACK。验证：Go 1.23.4，gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。总体仍 **partial**：ACK 不是完整终态/零成交证明，触发竞态与完整保护成交身份/实际手续费对账待做；paper、Leverage:1/CVFolds=0 路径未改，无真交易所调用。

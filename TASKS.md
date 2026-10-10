@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 撤单前持久化意图核验子项：**done** — CancelProtective 在任何 DELETE 前核对 pending 意图币种/方向/每腿 clientAlgoId/触发价；空列表、缺腿、身份替换、价格冲突或损坏文件均零撤单并保留原意图。新增多空离线回归矩阵，先复现旧代码错误放行再修复；Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。无新依赖，仅 Leverage>1 启用新检查；Leverage:1 保持原逻辑并新增兼容回归，paper/CVFolds=0 未改。T5/P0-1 仍 partial：撤单 ACK 后终态/触发竞态与保护成交身份/实际手续费对账待做，不调用真交易所。
+
 - 永续撤单失败持久化阻断子项：**done** — 新增 `internal/live/protective_cancel_guard_test.go`，真实离线 broker→adapter→engine→runner 链路覆盖多空、首腿/第二腿、空 ACK/身份错误/HTTP 503；有效首腿 ACK 加失败第二腿不允许本地平仓。断言原账本/手续费不变、零市价单/零本地成交、halt + OrderUncertain 持久化，后续三轮及从保存账本恢复后零行情/交易所请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose/race 通过。仅新增测试，Leverage:1/CVFolds=0 生产代码未变；T5/P0-1 仍 partial，ACK 后终态/触发竞态与保护成交身份/实际手续费对账待做，全离线。
 
 - 永续撤单 ACK 身份核验子项：**done** — `cancelAlgoOrder` 不再丢弃响应；严格核验原 algoId/clientAlgoId、code=200（数字/字符串）及 msg=success。新增多空离线响应矩阵，HTTP 200 空对象/缺字段/身份冲突/失败码拒绝确认，第一腿失败不重试、不撤第二腿；先复现旧代码错误放行再修复，既有 stub 改为官方完整 ACK。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。T5/P0-1 仍 partial：ACK 不证明完整终态或零成交，触发竞态和保护成交身份/实际手续费对账待做；paper、Leverage:1/CVFolds=0 路径未改，全离线。

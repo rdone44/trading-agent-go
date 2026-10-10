@@ -774,6 +774,40 @@ func (b *FuturesBroker) CancelProtective() error {
 		seenClient[row.ClientAlgoID] = true
 		seenType[row.OrderType] = true
 	}
+	// The open list cannot prove that an intended leg never triggered. Check
+	// persisted identities before removing any surviving protection; a missing
+	// or replaced leg requires terminal/fill reconciliation, not a local exit.
+	if b.cfg.Leverage > 1 {
+		intent, pending, err := loadProtectiveIntent(b.cfg.ProtectiveJournalPath)
+		if err != nil {
+			return err
+		}
+		if pending {
+			if intent.Symbol != strings.ToUpper(b.cfg.Symbol) {
+				return fmt.Errorf("保护单意图币种不一致，拒绝撤单，需对账")
+			}
+			expectedSide := "SELL"
+			if intent.Side == Sell {
+				expectedSide = "BUY"
+			}
+			for _, leg := range intent.Legs {
+				matched := false
+				for _, row := range rows {
+					if row.OrderType != leg.OrderType {
+						continue
+					}
+					trigger, _ := strconv.ParseFloat(row.TriggerPrice, 64)
+					if row.ClientAlgoID != leg.ClientAlgoID || row.Side != expectedSide || trigger != leg.TriggerPrice {
+						return fmt.Errorf("保护单与持久化意图不一致，拒绝撤单，需对账")
+					}
+					matched = true
+				}
+				if !matched {
+					return fmt.Errorf("保护单 %s 未在开放列表中，需核对终态与成交后再撤单", leg.ClientAlgoID)
+				}
+			}
+		}
+	}
 	for _, row := range rows {
 		if err := b.cancelAlgoOrder(row); err != nil {
 			return err

@@ -905,7 +905,13 @@ func (b *FuturesBroker) InspectProtective(side Side, stop, takeProfit float64) (
 			return checked, nil
 		}
 		want, isExpected := expected[row.OrderType]
-		if !isExpected || seen[row.OrderType] || want != level {
+		priceMatches := want == level
+		if b.cfg.Leverage > 1 {
+			// Use the POST encoding, not a float comparison, at recovery and
+			// cycle gates too. Rounded conflicts must never become verified.
+			priceMatches = equalPositiveDecimal(row.TriggerPrice, strconv.FormatFloat(want, 'f', -1, 64))
+		}
+		if !isExpected || seen[row.OrderType] || !priceMatches {
 			checked.State = ProtectionConflict
 			checked.Reason = "交易所保护单类型或触发价与本地不一致"
 			return checked, nil

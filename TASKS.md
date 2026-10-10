@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 永续撤单失败持久化阻断子项：**done** — 新增 `internal/live/protective_cancel_guard_test.go`，真实离线 broker→adapter→engine→runner 链路覆盖多空、首腿/第二腿、空 ACK/身份错误/HTTP 503；有效首腿 ACK 加失败第二腿不允许本地平仓。断言原账本/手续费不变、零市价单/零本地成交、halt + OrderUncertain 持久化，后续三轮及从保存账本恢复后零行情/交易所请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose/race 通过。仅新增测试，Leverage:1/CVFolds=0 生产代码未变；T5/P0-1 仍 partial，ACK 后终态/触发竞态与保护成交身份/实际手续费对账待做，全离线。
+
 - 永续撤单 ACK 身份核验子项：**done** — `cancelAlgoOrder` 不再丢弃响应；严格核验原 algoId/clientAlgoId、code=200（数字/字符串）及 msg=success。新增多空离线响应矩阵，HTTP 200 空对象/缺字段/身份冲突/失败码拒绝确认，第一腿失败不重试、不撤第二腿；先复现旧代码错误放行再修复，既有 stub 改为官方完整 ACK。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。T5/P0-1 仍 partial：ACK 不证明完整终态或零成交，触发竞态和保护成交身份/实际手续费对账待做；paper、Leverage:1/CVFolds=0 路径未改，全离线。
 
 - 永续撤保护单全批次预检回归子项：**done** — 新增 `internal/broker/futures_protective_preflight_test.go`，BUY/SELL 两方向覆盖后续腿缺字段、重复 algo/client/type、TRIGGERED/FINISHED、方向冲突、closePosition 与 triggerPrice 无效；每例三轮拒绝且仅允许查询 openAlgoOrders，零交易所写入，锁住先检查全批次再撤第一腿的安全约束。仅离线测试，生产代码及 Leverage:1/CVFolds=0 行为不变。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose 及 CancelProtective race 通过。T5/P0-1 仍 partial：保护成交身份/手续费对账待做；撤单成功响应与成交竞态未由本子项验收。
@@ -236,7 +238,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |
-| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (当前合约保护成交疑点阻断及撤单全批次预检回归 done；剩成交身份/手续费对账，现货已退役) |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (保护成交疑点/撤单预检/撤单失败持久化阻断回归 done；剩撤单终态/触发竞态及成交身份/手续费对账，现货已退役) |
 | T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |

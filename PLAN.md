@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 撤单前意图触发价精确核验子项：**done** — 开放列表与持久化意图不再经 float64 比较；仅 Leverage>1 pending 分支复用限长十进制精确比较，按原提交价的十进制编码核对。多空覆盖止损/止盈低位冲突、十六进制拒绝、等价尾零放行；先复现 `CancelProtective = <nil>, want success=false` 与 `writes=2, want 0`，修复后拒绝场景连续三轮零 DELETE、原意图字节不变，Leverage:1 兼容回归通过。验证：Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。无新依赖、全离线，CVFolds=0 未改。总体仍 **partial**：完整保护成交身份/实际手续费对账及更广泛触发时序待完成。
+
 - P0-1/T5 撤单终态触发价精确比较子项：**done** — 先复现 `90.000000000000001` 及十六进制价格被 float64 误判等于原价并放行：`CancelProtective = <nil>, want success=false`。仅 Leverage>1 终态路径改为有长度上限的十进制词法检查与 math/big.Rat 精确比较，保留 `90.0000` 等等价编码；拒绝舍入冲突、十六进制、分数及非法格式。新增对称纯函数测试、多空 broker 矩阵与 runner 首/第二腿四场景，验证 halt + OrderUncertain 落盘、账本/手续费不变、不平仓/补挂、重复三轮及恢复后零请求。Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿，broker/live 定向 race 通过。无新依赖、无真 Binance 调用，Leverage:1/CVFolds=0 未改。总体仍 **partial**：完整保护成交身份/实际手续费自动对账及更广泛触发时序待完成。
 
 - P0-1/T5 撤单终态零成交证据抗浮点下溢子项：**done** — 先复现多空 `actualPrice` / `actualQty` 为非零 `1e-400` 时错误放行：`CancelProtective = <nil>, want success=false`。改为按十进制字符串核验显式零，不经 float64 转换；保留 `0.00000`、`0e-400` 等真实零值，拒绝非零下溢及非法格式。离线 broker 多空矩阵、零值词法测试及 runner 首/第二腿八场景验证 halt + OrderUncertain 落盘，零平仓/补挂、账本/手续费不变，重复三轮及恢复后零请求。Go 1.23.4 gofmt clean、go build ./...、go vet ./...、go test ./... -count=1 全绿；broker/live 定向 race 通过。仅 Leverage>1 终态核验使用新逻辑，Leverage:1/CVFolds=0 未改，无新依赖、无真 Binance 调用。总体仍 **partial**：完整保护成交身份/实际手续费自动对账及更广泛触发时序未完成。

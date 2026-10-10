@@ -796,8 +796,9 @@ func (b *FuturesBroker) CancelProtective() error {
 					if row.OrderType != leg.OrderType {
 						continue
 					}
-					trigger, _ := strconv.ParseFloat(row.TriggerPrice, 64)
-					if row.ClientAlgoID != leg.ClientAlgoID || row.Side != expectedSide || trigger != leg.TriggerPrice {
+					expectedTrigger := strconv.FormatFloat(leg.TriggerPrice, 'f', -1, 64)
+					if row.ClientAlgoID != leg.ClientAlgoID || row.Side != expectedSide ||
+						!equalPositiveDecimal(row.TriggerPrice, expectedTrigger) {
 						return fmt.Errorf("保护单与持久化意图不一致，拒绝撤单，需对账")
 					}
 					matched = true

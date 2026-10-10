@@ -14,7 +14,7 @@ import (
 // authorize a local exit or remove another leg based on the open list alone.
 func TestCancelProtectivePreflightsPendingIdentities(t *testing.T) {
 	for _, side := range []Side{Buy, Sell} {
-		for _, scenario := range []string{"empty", "missing stop", "missing target", "replacement identity", "wrong trigger", "wrong symbol", "wrong side", "corrupt intent", "matching"} {
+		for _, scenario := range []string{"empty", "missing stop", "missing target", "replacement identity", "wrong trigger", "rounded stop", "rounded target", "hex trigger", "equivalent trigger", "wrong symbol", "wrong side", "corrupt intent", "matching"} {
 			t.Run(fmt.Sprint(side)+"/"+scenario, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "protective-pending.json")
 				stop, target, closeSide := 90.0, 110.0, "SELL"
@@ -62,6 +62,14 @@ func TestCancelProtectivePreflightsPendingIdentities(t *testing.T) {
 					rows[1].ClientAlgoID = "tap-replacement"
 				case "wrong trigger":
 					rows[1].TriggerPrice = "120"
+				case "rounded stop":
+					rows[0].TriggerPrice = fmt.Sprint(stop) + ".000000000000001"
+				case "rounded target":
+					rows[1].TriggerPrice = fmt.Sprint(target) + ".000000000000001"
+				case "hex trigger":
+					rows[1].TriggerPrice = fmt.Sprintf("%x", target)
+				case "equivalent trigger":
+					rows[1].TriggerPrice += ".0000"
 				}
 				writes := 0
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +108,7 @@ func TestCancelProtectivePreflightsPendingIdentities(t *testing.T) {
 				defer srv.Close()
 				b := NewFutures(FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL, Leverage: 2, ProtectiveJournalPath: path})
 				err = b.CancelProtective()
-				wantSuccess := scenario == "matching"
+				wantSuccess := scenario == "matching" || scenario == "equivalent trigger"
 				if (err == nil) != wantSuccess {
 					t.Fatalf("CancelProtective = %v, want success=%v", err, wantSuccess)
 				}
@@ -110,6 +118,13 @@ func TestCancelProtectivePreflightsPendingIdentities(t *testing.T) {
 				}
 				if writes != wantWrites {
 					t.Fatalf("writes=%d, want %d", writes, wantWrites)
+				}
+				if !wantSuccess {
+					for poll := 0; poll < 3; poll++ {
+						if err := b.CancelProtective(); err == nil || writes != 0 {
+							t.Fatalf("repeat %d: err=%v writes=%d, want refusal without DELETE", poll, err, writes)
+						}
+					}
 				}
 				after, err := os.ReadFile(path)
 				if err != nil || string(after) != string(before) {

@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 撤单前意图触发价精确核验子项：**done** — 仅 Leverage>1 pending 分支将开放列表触发价与原提交价编码精确比较，拒绝 float64 舍入冲突与十六进制价格，保留等价尾零。多空止损/止盈回归先复现 `CancelProtective = <nil>, want success=false` 与 `writes=2, want 0`；修复后拒绝场景连续三轮零 DELETE、原意图字节不变，Leverage:1 兼容回归通过。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过；无新依赖、全离线、CVFolds=0 未改。T5/P0-1 总体仍 partial，完整保护成交身份/手续费对账及更广泛触发时序待完成。
+
 - 撤单终态触发价精确比较子项：**done** — 先复现浮点舍入冲突 `90.000000000000001` 与十六进制价格错误放行：`CancelProtective = <nil>, want success=false`。Leverage>1 终态改为限长十进制词法与 math/big.Rat 精确比较，等价尾零保留，舍入冲突/十六进制/分数拒绝。纯函数对称测试、多空 broker 矩阵、runner 首/第二腿四场景验证持久化 halt + OrderUncertain、账本/手续费不变、零平仓/补挂、重复三轮及恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过；Leverage:1/CVFolds=0 未改、无新依赖、全离线。T5/P0-1 仍 partial，完整保护成交身份/实际手续费自动对账及更广泛触发时序待完成。
 
 - 撤单终态显式零值抗下溢子项：**done** — 非零 `actualPrice` / `actualQty=1e-400` 不再被 float64 下溢误判为零；按十进制字符串验证，真实指数零仍放行。多空 broker 回归先复现 `CancelProtective = <nil>, want success=false`，runner 多空首/第二腿八场景验证持久化 halt + OrderUncertain、账本/手续费不变、不平仓/补挂，重复三轮及恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过。Leverage:1/CVFolds=0 未改，无新依赖，全离线；T5/P0-1 仍 partial，完整保护成交身份/实际手续费对账及更广泛触发时序未完成。

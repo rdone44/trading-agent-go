@@ -553,7 +553,10 @@ func (r *Runner) Cycle(now time.Time) (engine.StepResult, error) {
 		return engine.StepResult{}, err
 	}
 	res, protectErr := r.agent.Protect(price, now)
-	if r.executed && protectErr == nil {
+	// A failed cancellation can set OrderUncertain without adding a fill or
+	// returning a Protect error. Do not repair missing protection against a
+	// stale ledger after a conditional child may already have triggered.
+	if r.executed && protectErr == nil && !(r.leverage > 1 && r.agent.Risk.OrderUncertain) {
 		if err := r.reconcileFuturesProtection(r.agent.Book.Position(r.agent.Symbol)); err != nil {
 			return r.requireReconciliation(err)
 		}

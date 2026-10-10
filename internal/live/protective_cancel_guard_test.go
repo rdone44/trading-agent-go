@@ -26,25 +26,43 @@ import (
 func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 	for _, side := range []broker.Side{broker.Buy, broker.Sell} {
 		for _, failedLeg := range []int{1, 2} {
-			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure"} {
+			for _, failure := range []string{"empty_ack", "wrong_identity", "http_failure", "terminal_triggered", "terminal_missing", "terminal_http_failure", "other_leg_triggered", "other_leg_partial_fill"} {
+				// The race starts during the first DELETE and is discovered when
+				// cancelling the second leg, after the first was fully confirmed.
+				if (failure == "other_leg_triggered" || failure == "other_leg_partial_fill") && failedLeg != 2 {
+					continue
+				}
 				t.Run(fmt.Sprintf("%s/leg%d/%s", side, failedLeg, failure), func(t *testing.T) {
 					stop, target, quantity, closeSide := 90.0, 110.0, "1", "SELL"
 					if side == broker.Sell {
 						stop, target, quantity, closeSide = 110, 90, "-1", "BUY"
 					}
 					requests, deletes, orderWrites, priceCalls := 0, 0, 0, 0
+					tracing := failure == "other_leg_triggered" || failure == "other_leg_partial_fill"
+					otherLegTriggered := false
+					var trace []string
 					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 						requests++
+						trace = append(trace, req.Method+" "+req.URL.Path+" "+req.URL.Query().Get("algoId"))
 						w.Header().Set("Content-Type", "application/json")
 						switch req.Method + " " + req.URL.Path {
 						case "GET /fapi/v2/positionRisk":
 							_, _ = fmt.Fprintf(w, `[{"symbol":"BTCUSDT","positionAmt":%q,"entryPrice":"100","positionSide":"BOTH"}]`, quantity)
 						case "GET /fapi/v1/openAlgoOrders":
+							if tracing && otherLegTriggered {
+								// Both legs have left the open list: disappearance
+								// cannot override the triggered child's evidence.
+								_, _ = fmt.Fprint(w, `[]`)
+								return
+							}
 							// The snapshot deliberately stays NEW: a failed response
 							// must not be cleared by a later apparently healthy read.
 							_, _ = fmt.Fprintf(w, `[{"algoId":1,"clientAlgoId":"tap-stop","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"STOP_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true},{"algoId":2,"clientAlgoId":"tap-target","algoStatus":"NEW","symbol":"BTCUSDT","orderType":"TAKE_PROFIT_MARKET","side":%q,"positionSide":"BOTH","workingType":"MARK_PRICE","triggerPrice":%q,"closePosition":true}]`, closeSide, fmt.Sprint(stop), closeSide, fmt.Sprint(target))
 						case "GET /fapi/v1/algoOrder":
 							leg := deletes
+							if tracing && leg == 2 && !otherLegTriggered {
+								t.Error("second leg did not trigger during first cancellation")
+							}
 							client, kind, level := "tap-stop", "STOP_MARKET", stop
 							if leg == 2 {
 								client, kind, level = "tap-target", "TAKE_PROFIT_MARKET", target
@@ -52,9 +70,16 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							row := map[string]interface{}{"algoId": leg, "clientAlgoId": client, "symbol": "BTCUSDT", "side": closeSide, "orderType": kind, "positionSide": "BOTH", "workingType": "MARK_PRICE", "triggerPrice": fmt.Sprint(level), "closePosition": true, "algoStatus": "CANCELED", "actualOrderId": "", "actualPrice": "0", "triggerTime": 0}
 							if leg == failedLeg {
 								switch failure {
-								case "terminal_triggered":
+								case "terminal_triggered", "other_leg_triggered", "other_leg_partial_fill":
 									row["algoStatus"] = "TRIGGERED"
 									row["actualOrderId"] = "999"
+									if tracing {
+										row["triggerTime"] = 123
+										row["actualPrice"] = fmt.Sprint(target)
+									}
+									if failure == "other_leg_partial_fill" {
+										row["actualQty"] = "0.4"
+									}
 								case "terminal_missing":
 									delete(row, "actualOrderId")
 								case "terminal_http_failure":
@@ -65,6 +90,9 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 							_ = json.NewEncoder(w).Encode(row)
 						case "DELETE /fapi/v1/algoOrder":
 							deletes++
+							if tracing && deletes == 1 {
+								otherLegTriggered = true
+							}
 							if req.URL.Query().Get("algoId") != fmt.Sprint(deletes) {
 								t.Errorf("unexpected cancellation identity: %s", req.URL.Query().Get("algoId"))
 							}
@@ -97,7 +125,7 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 
 					cfg := config.Default()
 					leverage := 1
-					if failure == "terminal_triggered" || failure == "terminal_missing" || failure == "terminal_http_failure" {
+					if tracing || failure == "terminal_triggered" || failure == "terminal_missing" || failure == "terminal_http_failure" {
 						leverage = 2
 					}
 					b := broker.NewFutures(broker.FuturesConfig{Symbol: "BTCUSDT", BaseURL: srv.URL, Leverage: leverage})
@@ -105,6 +133,9 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 					a.RestoreState(1000, 1000, &engine.OpenTrade{Quantity: 1, EntryPrice: 100, EntryFee: 0.04, Side: side}, stop, target, risk.RiskState{})
 					a.Protective = &futuresProtective{b: b}
 					r := &Runner{cfg: cfg, agent: a, broker: b, executed: true, leverage: 1, statePath: filepath.Join(t.TempDir(), "ledger.json")}
+					if tracing {
+						r.leverage = 2
+					}
 					r.PriceLoader = func(string) (float64, time.Time, error) {
 						priceCalls++
 						return stop, time.Now(), nil
@@ -115,6 +146,12 @@ func TestProtectiveCancelFailurePersistsWithoutFlattenOrRetry(t *testing.T) {
 					}
 					original, position := *a.OpenTrade(), *a.Book.Position("BTCUSDT")
 					res, _ := r.Cycle(time.Now())
+					if tracing {
+						want := []string{"GET /fapi/v2/positionRisk ", "GET /fapi/v1/openAlgoOrders ", "GET /fapi/v1/openAlgoOrders ", "DELETE /fapi/v1/algoOrder 1", "GET /fapi/v1/algoOrder 1", "DELETE /fapi/v1/algoOrder 2", "GET /fapi/v1/algoOrder 2"}
+						if !reflect.DeepEqual(trace, want) {
+							t.Fatalf("cancellation race trace = %v, want %v", trace, want)
+						}
+					}
 					if res.Exited || !a.Risk.Halted || !a.Risk.OrderUncertain || deletes != failedLeg || orderWrites != 0 || len(b.Fills()) != 0 || priceCalls != 1 {
 						t.Fatalf("unsafe cancellation: result=%+v halted=%v uncertain=%v deletes=%d orders=%d fills=%d prices=%d", res, a.Risk.Halted, a.Risk.OrderUncertain, deletes, orderWrites, len(b.Fills()), priceCalls)
 					}

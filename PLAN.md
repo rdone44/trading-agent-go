@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 撤单期间另一腿触发后的禁止补挂子项：**done** — 离线多空覆盖撤第一腿期间第二腿触发及部分成交，第二腿即使返回精确成功 ACK、随后开放列表为空，也不能按旧账本补挂保护或本地平仓。回归先复现 `unexpected request: POST /fapi/v1/algoOrder`；Runner 在 Leverage>1 且 Protect 设置 OrderUncertain 时跳过周期内保护修复，保存 halt + OrderUncertain。断言精确请求顺序、零补挂/市价单/本地成交、原账本/手续费不变，重复三轮及账本恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，撤单 guard 定向 race 通过。Leverage:1 保留原分支，CVFolds=0/paper 未改，无新依赖、无真 Binance。总体仍 **partial**：保护成交身份/实际手续费自动对账及更广泛触发时序仍待验收。
+
 - P0-1/T5 撤单 ACK 后终态核验子项：**done** — Leverage>1 每腿精确 ACK 后仅查询一次 GET `/fapi/v1/algoOrder?algoId=原ID`，核验完整身份/方向/类型/同源触发价、CANCELED、空 actualOrderId、零 triggerTime/actualPrice 及可选 actualQty=0；缺字段、已触发/成交、查询失败均停止，不撤下一腿、不授权本地平仓。多空离线矩阵先复现 `CancelProtective = <nil>, want success=false`；runner 覆盖首/第二腿终态异常，halt + OrderUncertain 落盘且重复/恢复后零请求、原账本不变。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过。Leverage:1 旧请求路径不变，CVFolds=0/paper 未改，无新依赖、无真 Binance 调用。总体仍 **partial**：保护成交身份/实际手续费自动对账及撤单期间另一腿触发的端到端验证待完成。
 
 - P0-1/T5 撤单前持久化意图核验子项：**done** — CancelProtective 在任何 DELETE 前核对 pending 意图的币种、方向、每腿 clientAlgoId 与同源触发价；空列表、缺腿、身份替换、价格冲突或损坏意图均拒绝撤单，保留有效保护与原意图证据。多空离线矩阵先复现 `CancelProtective = <nil>, want success=false` 再修复。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。无新依赖，仅 Leverage>1 启用新检查；Leverage:1 路径保持原逻辑并新增兼容回归，paper/CVFolds=0 未改。总体仍 **partial**：ACK 后终态/触发竞态及保护成交身份/实际手续费对账未完成，全离线。

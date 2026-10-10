@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 撤单期间另一腿触发后的禁止补挂子项：**done** — 多空离线模拟第一腿撤销时第二腿触发/部分成交；精确 ACK 后终态拒绝，开放列表随后为空。先复现 `unexpected request: POST /fapi/v1/algoOrder`，修复 Leverage>1 Runner 在 Protect 标记 OrderUncertain 后仍按旧账本修复保护的漏洞。严格请求顺序、零补挂/市价单/本地成交、原账本/手续费不变、halt + OrderUncertain 落盘，重复三轮及恢复后零请求。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，定向 verbose/race 通过。Leverage:1 原分支、CVFolds=0/paper 未改，无新依赖，全离线。T5/P0-1 仍 partial：保护成交身份/实际手续费自动对账及更广泛触发时序未完成。
+
 - 撤单 ACK 后终态核验子项：**done** — Leverage>1 每腿 ACK 后按原 algoId 只读查询一次，核验原身份/方向/类型/触发价、CANCELED、无触发子单及零成交证据；缺字段/已触发/查询失败停止，不撤下一腿、不平仓。新增多空终态响应矩阵；runner 首/第二腿异常均持久化 halt + OrderUncertain，重复及恢复后不再请求，账本不变。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，broker/live 定向 race 通过。Leverage:1 原请求路径、CVFolds=0/paper 不变，无新依赖，全离线。T5/P0-1 仍 partial：另一腿触发竞态及保护成交身份/实际手续费自动对账待完成。
 
 - 撤单前持久化意图核验子项：**done** — CancelProtective 在任何 DELETE 前核对 pending 意图币种/方向/每腿 clientAlgoId/触发价；空列表、缺腿、身份替换、价格冲突或损坏文件均零撤单并保留原意图。新增多空离线回归矩阵，先复现旧代码错误放行再修复；Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过。无新依赖，仅 Leverage>1 启用新检查；Leverage:1 保持原逻辑并新增兼容回归，paper/CVFolds=0 未改。T5/P0-1 仍 partial：撤单 ACK 后终态/触发竞态与保护成交身份/实际手续费对账待做，不调用真交易所。
@@ -242,7 +244,7 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 | T2 | coding（单人） | 2026-10-08 | open |
 | T3 | coding（LLM/tune 钱路径） | 2026-10-08 | claimed |
 | T4 | coding（单人） | 2026-10-08 | done |
-| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (撤单 ACK 后逐腿终态核验 done；剩另一腿触发竞态及成交身份/手续费对账，现货已退役) |
+| T5 | coding（broker/live 钱路径） | 2026-10-08 | partial (撤单终态核验与另一腿触发后禁止补挂 done；剩成交身份/手续费对账及更广泛触发时序，现货已退役) |
 | T6 | coding（risk/engine 离线回归） | 2026-10-08 | done |
 | T7 | coding（web 会话/路由，钱路径相邻） | 2026-10-08 | partial (P2-1 done) |
 | T8 | coding（单人） | 2026-10-08 | open |

@@ -23,6 +23,14 @@ type StepResult struct {
 	Cash      float64
 	Open      *OpenTrade
 	MarkPrice float64
+	// AIModel names the model that answered this cycle ("" when the strategy
+	// is not an LLM or the cycle did not reach one); AILatency how long the
+	// model call took; AIConfidence its self-assessed 0..1 certainty (0 when
+	// not expressed). These are the audit fields behind the console's AI
+	// strip: they answer "AI 为什么做出当前决策", not just "AI 说了什么".
+	AIModel      string
+	AILatency    time.Duration
+	AIConfidence float64
 }
 
 func (a *Agent) liveResult(res StepResult, price float64) StepResult {
@@ -115,13 +123,16 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 	// Strategies that are cheap over a whole series (the indicator ones)
 	// regenerate the full signal; expensive ones (the LLM) expose a
 	// single-decision path so a poll bills the model once instead of O(bars)
-	// times. Both yield the same (target, stop, target-price) triple.
+	// times. Both yield the same (target, stop, target-price) triple. The
+	// structured path (StructuredLiveDecision) additionally carries the
+	// audit fields — model, latency, confidence — onto the result so the
+	// console can show the AI's face, not just its words.
 	n := series.Len()
 	var target, stop, takeProfit float64
 	var reason string
-	if ld, ok := a.Strategy.(strategy.LiveDecision); ok {
-		var decided bool
-		target, stop, takeProfit, reason, decided = ld.LastDecision(series, a.Config)
+	if sl, ok := a.Strategy.(strategy.StructuredLiveDecision); ok {
+		d, decided := sl.LastDecisionDetailed(series, a.Config)
+		res.AIModel, res.AILatency, res.AIConfidence = d.Model, d.Latency, d.Confidence
 		if !decided {
 			// The strategy could not answer (model missing, unreachable or
 			// unparseable). Holding the current position is the only safe
@@ -131,6 +142,16 @@ func (a *Agent) Decide(series model.Series, price float64, now time.Time, res St
 			res.Action = "ai_unavailable"
 			// Carry the failure detail: "AI 不可用" alone leaves the operator
 			// unable to tell a wrong key from an unreachable endpoint.
+			res.Reason = d.Reason
+			return res, nil
+		}
+		target, stop, takeProfit, reason = d.Signal, d.Stop, d.Target, d.Reason
+	} else if ld, ok := a.Strategy.(strategy.LiveDecision); ok {
+		var decided bool
+		target, stop, takeProfit, reason, decided = ld.LastDecision(series, a.Config)
+		if !decided {
+			res = a.liveResult(res, price)
+			res.Action = "ai_unavailable"
 			res.Reason = reason
 			return res, nil
 		}

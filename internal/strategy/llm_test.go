@@ -206,7 +206,7 @@ func TestParseLLMAnswerSnapsPosition(t *testing.T) {
 		{`{"position":"NaN"}`, 0, 0, 0, false},                         // bad number
 	}
 	for _, c := range cases {
-		pos, sp, tp, reason, ok := parseLLMAnswer(c.in)
+		pos, sp, tp, reason, _, ok := parseLLMAnswer(c.in)
 		if ok != c.wantOK {
 			t.Fatalf("parse(%q) ok=%v, want %v", c.in, ok, c.wantOK)
 		}
@@ -228,7 +228,7 @@ func TestParseLLMAnswerSnapsPosition(t *testing.T) {
 func TestParseLLMAnswerTreatsNullLevelsAsZero(t *testing.T) {
 	// A null stop/target must come through as 0 so the engine falls back to
 	// its own protective levels rather than a NaN level that never fires.
-	pos, sp, tp, _, ok := parseLLMAnswer(`{"position":1,"stop":null,"target":null}`)
+	pos, sp, tp, _, _, ok := parseLLMAnswer(`{"position":1,"stop":null,"target":null}`)
 	if !ok {
 		t.Fatalf("parse null levels: ok=false")
 	}
@@ -238,7 +238,7 @@ func TestParseLLMAnswerTreatsNullLevelsAsZero(t *testing.T) {
 }
 
 func TestParseLLMAnswerKeepsOneLineReason(t *testing.T) {
-	pos, _, _, reason, ok := parseLLMAnswer(`{"position":1,"reason":"RSI 超卖后金叉\n第二行应被丢弃"}`)
+	pos, _, _, reason, _, ok := parseLLMAnswer(`{"position":1,"reason":"RSI 超卖后金叉\n第二行应被丢弃"}`)
 	if !ok || pos != 1 {
 		t.Fatalf("parse reason fixture = (pos=%v,ok=%v), want (1,true)", pos, ok)
 	}
@@ -250,9 +250,92 @@ func TestParseLLMAnswerKeepsOneLineReason(t *testing.T) {
 	for i := range long {
 		long[i] = 'x'
 	}
-	_, _, _, longReason, _ := parseLLMAnswer(`{"position":0,"reason":"` + string(long) + `"}`)
+	_, _, _, longReason, _, _ := parseLLMAnswer(`{"position":0,"reason":"` + string(long) + `"}`)
 	if len([]rune(longReason)) != 81 || !strings.HasSuffix(longReason, "…") {
 		t.Fatalf("long reason = %d runes (suffix %q), want 80 + ellipsis", len([]rune(longReason)), longReason[len([]rune(longReason))-1:])
+	}
+}
+
+func TestParseLLMAnswerReadsConfidence(t *testing.T) {
+	// The model's self-assessed confidence rides in the JSON contract: it is
+	// read when present, 0 when absent, and clamped to [0,1] rather than
+	// trusted blindly.
+	_, _, _, _, conf, ok := parseLLMAnswer(`{"position":1,"confidence":0.8}`)
+	if !ok || conf != 0.8 {
+		t.Fatalf("explicit confidence = (%v,%v), want (0.8,true)", conf, ok)
+	}
+	_, _, _, _, conf, ok = parseLLMAnswer(`{"position":1}`)
+	if !ok || conf != 0 {
+		t.Fatalf("absent confidence = (%v,%v), want (0,true)", conf, ok)
+	}
+	_, _, _, _, conf, ok = parseLLMAnswer(`{"position":1,"confidence":null}`)
+	if !ok || conf != 0 {
+		t.Fatalf("null confidence = (%v,%v), want (0,true)", conf, ok)
+	}
+	_, _, _, _, conf, ok = parseLLMAnswer(`{"position":1,"confidence":1.7}`)
+	if !ok || conf != 1 {
+		t.Fatalf("high confidence = (%v,%v), want clamped to (1,true)", conf, ok)
+	}
+	_, _, _, _, conf, ok = parseLLMAnswer(`{"position":1,"confidence":-0.4}`)
+	if !ok || conf != 0 {
+		t.Fatalf("negative confidence = (%v,%v), want clamped to (0,true)", conf, ok)
+	}
+}
+
+func TestLastDecisionDetailedCarriesAuditFields(t *testing.T) {
+	f := &fakeAsk{answer: `{"position":1,"stop":90,"target":110,"reason":"金叉确认","confidence":0.75}`}
+	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
+	cfg := cfgFor(map[string]float64{"llm_window": 10})
+
+	s := stratOf(t, f, true)
+	d, ok := s.LastDecisionDetailed(series, cfg)
+	if !ok {
+		t.Fatalf("LastDecisionDetailed ok=false: %s", d.Reason)
+	}
+	if d.Signal != 1 || d.Stop != 90 || d.Target != 110 {
+		t.Fatalf("detailed = (%v,%v,%v), want (1,90,110)", d.Signal, d.Stop, d.Target)
+	}
+	if d.Reason != "金叉确认" {
+		t.Fatalf("detailed reason = %q", d.Reason)
+	}
+	if d.Confidence != 0.75 {
+		t.Fatalf("detailed confidence = %v, want 0.75 (the model's own)", d.Confidence)
+	}
+	if d.Model == "" {
+		t.Fatal("detailed model = \"\", want the configured model name")
+	}
+	if d.Latency < 0 {
+		t.Fatalf("detailed latency = %v, want >= 0", d.Latency)
+	}
+}
+
+func TestLastDecisionDetailedClassifiesFailures(t *testing.T) {
+	series := testfx.Bars("BTCUSDT", 60, 1, timeNow())
+
+	cases := []struct {
+		name    string
+		ask     *fakeAsk
+		enabled bool
+		wantCat string
+	}{
+		{"disabled strategy is a no_key gap", &fakeAsk{}, false, "no_key"},
+		{"network down is a network fault", &fakeAsk{err: errors.New("connection refused")}, true, "network"},
+		{"a timeout is a timeout", &fakeAsk{err: errors.New("context deadline exceeded")}, true, "timeout"},
+		{"an http error is an http fault", &fakeAsk{err: errors.New("http 401 unauthorized")}, true, "http"},
+		{"prose is an unparseable answer", &fakeAsk{answer: "抱歉，我无法给出交易建议。"}, true, "unparseable"},
+	}
+	for _, c := range cases {
+		s := stratOf(t, c.ask, c.enabled)
+		d, ok := s.LastDecisionDetailed(series, cfgFor(nil))
+		if ok {
+			t.Fatalf("%s: ok=true, want false", c.name)
+		}
+		if !isClassifiedFailure(d.Reason) {
+			t.Fatalf("%s: reason %q is not classified", c.name, d.Reason)
+		}
+		if got := decisionFailureCategory(d.Reason); got != c.wantCat {
+			t.Fatalf("%s: category = %q, want %q (reason %q)", c.name, got, c.wantCat, d.Reason)
+		}
 	}
 }
 

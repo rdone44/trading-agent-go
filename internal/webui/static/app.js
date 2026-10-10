@@ -394,8 +394,9 @@ function renderTopbar(s) {
 
 // renderAI gives the model a visible face. While the LLM strategy is cycling
 // it shows the model name; once the model explains a call, its own words take
-// over the strip. Non-LLM strategies never touch this strip — the AI is only
-// on stage when it is actually deciding.
+// over the strip, followed by the audit trail — how sure the model was and
+// how long the call took. Non-LLM strategies never touch this strip — the AI
+// is only on stage when it is actually deciding.
 function renderAI(s) {
   const strip = $("#ai-strip");
   const text = $("#ai-text");
@@ -407,8 +408,22 @@ function renderAI(s) {
     strip.hidden = false;
     strip.classList.remove("thinking");
     const tag = model ? `${model} · ` : "";
-    text.textContent = `AI 决策 · ${tag}${reason}`;
-    text.title = reason;
+    // The audit fields: confidence only when the model expressed one (a 0
+    // from the wire means "not expressed", not "zero confidence"), latency
+    // only when the cycle actually reached the model.
+    const bits = [];
+    if (typeof s.ai_confidence === "number" && s.ai_confidence > 0) {
+      bits.push(`置信 ${(s.ai_confidence * 100).toFixed(0)}%`);
+    }
+    if (typeof s.ai_latency === "number" && s.ai_latency > 0) {
+      // The wire value is a Go time.Duration: integer nanoseconds.
+      const secs = s.ai_latency / 1e9;
+      const ms = secs < 1 ? `${Math.round(secs * 1000)}ms` : `${secs.toFixed(1)}s`;
+      bits.push(`耗时 ${ms}`);
+    }
+    const audit = bits.length ? ` · ${bits.join(" · ")}` : "";
+    text.textContent = `AI 决策 · ${tag}${reason}${audit}`;
+    text.title = reason + audit;
     return;
   }
   if (active && s.strategy === "llm" && model) {

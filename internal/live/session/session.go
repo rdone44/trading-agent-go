@@ -112,6 +112,13 @@ type SessionStatus struct {
 	// explanation of the latest call. Empty for non-LLM strategies.
 	AIModel  string `json:"ai_model,omitempty"`
 	AIReason string `json:"ai_reason,omitempty"`
+	// AIConfidence is the model's self-assessed 0..1 certainty on the latest
+	// call (0 when it did not express one); AILatency how long the model
+	// call took (0 when the cycle never reached the model, e.g. a
+	// non-LLM strategy or a failure before the call). Together with the
+	// reason they answer "AI 为什么做出当前决策".
+	AIConfidence float64       `json:"ai_confidence,omitempty"`
+	AILatency    time.Duration `json:"ai_latency,omitempty"`
 	// VetoEnabled mirrors cfg.LLM.VetoEnabled for the running session, so the
 	// console can show whether a new entry would actually face a second
 	// opinion instead of guessing from the form.
@@ -253,7 +260,12 @@ type Session struct {
 	lastAction string
 	lastError  string
 	lastReason string // the LLM's explanation of the latest decision
-	log        []CycleRecord
+	// The audit trail of the latest AI call, alongside its reason: how sure
+	// the model was and how long the call took. The model name itself comes
+	// from cfg.LLM.Model in Status (stable), not from the last cycle.
+	lastAIConfidence float64
+	lastAILatency    time.Duration
+	log              []CycleRecord
 	// journalPath is where the log is persisted, derived from the ledger path.
 	// journalAppends counts rows written since the last compaction and
 	// journalErr is the last write failure, reported on the status so a
@@ -537,6 +549,11 @@ func (s *Session) cycleOnce() {
 	// Carry the strategy's explanation of this decision so the console can
 	// show what the AI is thinking (empty for indicator strategies).
 	s.lastReason = result.Reason
+	// The audit fields ride the same path: an LLM cycle stamps the
+	// confidence and latency of the answer it acted on; a non-LLM cycle
+	// leaves them blank.
+	s.lastAIConfidence = result.AIConfidence
+	s.lastAILatency = result.AILatency
 	// A successful cycle always fetched a live price; the mark-to-market
 	// equity the engine returned is the authoritative number for this tick.
 
@@ -770,25 +787,27 @@ func (s *Session) Status() SessionStatus {
 	defer s.mu.Unlock()
 
 	status := SessionStatus{
-		Running:     s.running,
-		Mode:        "paper",
-		Venue:       "futures",
-		Symbol:      s.cfg.Agent.Symbol,
-		Strategy:    s.cfg.Strategy.Name,
-		Interval:    int(s.interval.Seconds()),
-		Cycles:      s.cycles,
-		LastPrice:   s.lastPrice,
-		LastAction:  s.lastAction,
-		LastError:   s.lastError,
-		AIModel:     s.cfg.LLM.Model,
-		AIReason:    s.lastReason,
-		VetoEnabled: s.cfg.LLM.VetoEnabled,
-		InitialCash: s.cfg.Risk.InitialCash,
-		Leverage:    s.cfg.Risk.Leverage,
-		Log:         append([]CycleRecord(nil), s.log...),
-		StatePath:   s.statePath,
-		LogPath:     s.journalPath,
-		LogError:    s.journalErr,
+		Running:      s.running,
+		Mode:         "paper",
+		Venue:        "futures",
+		Symbol:       s.cfg.Agent.Symbol,
+		Strategy:     s.cfg.Strategy.Name,
+		Interval:     int(s.interval.Seconds()),
+		Cycles:       s.cycles,
+		LastPrice:    s.lastPrice,
+		LastAction:   s.lastAction,
+		LastError:    s.lastError,
+		AIModel:      s.cfg.LLM.Model,
+		AIReason:     s.lastReason,
+		AIConfidence: s.lastAIConfidence,
+		AILatency:    s.lastAILatency,
+		VetoEnabled:  s.cfg.LLM.VetoEnabled,
+		InitialCash:  s.cfg.Risk.InitialCash,
+		Leverage:     s.cfg.Risk.Leverage,
+		Log:          append([]CycleRecord(nil), s.log...),
+		StatePath:    s.statePath,
+		LogPath:      s.journalPath,
+		LogError:     s.journalErr,
 
 		// The last cycle's runner-derived figures, published under this same
 		// lock, so reading them cannot race a running cycle.

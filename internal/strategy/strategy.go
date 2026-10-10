@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/indicators"
@@ -53,27 +54,56 @@ type Strategy interface {
 	Describe() string
 }
 
+// Decision is one structured target-position answer from an expensive
+// strategy (the LLM). The legacy LiveDecision interface returns only the
+// numeric triple plus a reason string; Decision adds the audit fields the
+// console needs to show the AI's face — which model answered, how long it
+// took, whether it is confident — so a logged cycle answers "AI 为什么做出
+// 当前决策" instead of just "AI 说了什么".
+type Decision struct {
+	Signal float64
+	Stop   float64
+	Target float64
+	// Reason is the model's own one-line explanation of the call.
+	Reason string
+	// Model names the model that answered ("" for non-LLM strategies).
+	Model string
+	// Confidence is the model's self-assessed 0..1 certainty; 0 means "not
+	// expressed" rather than "zero confidence".
+	Confidence float64
+	// Latency is how long the model call took, zero when the decision did
+	// not go through a model call.
+	Latency time.Duration
+}
+
 // LiveDecision is implemented by strategies that are expensive to regenerate
 // across a whole series — an LLM that would otherwise be called once per
 // historical bar on every live poll. The live loop asks such a strategy for a
 // single decision on the most recent bar instead of regenerating the full
 // signal, so a poll bills the model once rather than O(bars) times. Backtests
-// keep using Generate, which genuinely needs every bar. reason carries the
-// model's own one-line explanation of the call (empty for non-LLM
-// implementations) so the console can show what the AI is thinking instead of
-// a bare position number.
+// keep using Generate, which genuinely needs every bar.
+//
+// ok=false when the strategy could not produce a usable decision (model
+// missing, unreachable, timed out or answering unparseable text). The live
+// loop must treat that as "no new instruction" and keep the current position
+// — never as a flat target, which would liquidate a healthy position on a
+// model outage — and the session escalates a persistent failure to its
+// ai_fault state (LIVE_TRADING_REFACTOR.md §3).
+//
+// reason is set even when ok is false, and then says WHY the strategy could
+// not answer, classified for the operator (a missing key is not a timeout is
+// not an unparseable answer).
 type LiveDecision interface {
-	// LastDecision returns ok=false when the strategy could not produce a
-	// usable decision (model missing, unreachable, timed out or answering
-	// unparseable text). The live loop must treat that as "no new
-	// instruction" and keep the current position — never as a flat target,
-	// which would liquidate a healthy position on a model outage.
-	//
-	// reason is set even when ok is false, and then says WHY the strategy
-	// could not answer. A log that only shows "AI 不可用" cannot tell a
-	// missing key from a refused connection from an unparseable answer, so
-	// the operator has nothing to act on.
 	LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool)
+}
+
+// StructuredLiveDecision is an optional refinement of LiveDecision: the same
+// question, but answered with a Decision carrying the audit fields. The live
+// loop uses it when present and falls back to the legacy triple otherwise, so
+// a test stub implementing only LiveDecision keeps working.
+type StructuredLiveDecision interface {
+	LiveDecision
+	LastDecisionDetailed(series model.Series, cfg config.Config) (Decision, bool)
 }
 
 // New builds a strategy by name.

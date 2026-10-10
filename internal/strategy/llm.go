@@ -27,6 +27,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rdone44/trading-agent-go/internal/config"
 	"github.com/rdone44/trading-agent-go/internal/indicators"
@@ -73,21 +74,23 @@ func buildIndicators(series model.Series, cfg config.Config) llmIndicators {
 	}
 }
 
-// resolver returns the model call and whether the strategy is usable at all
-// (a usable strategy can also be a stub injected for tests).
-func (s LLM) resolver(cfg config.Config) (func(string, string) (string, error), bool) {
+// resolver returns the model call, whether the strategy is usable at all (a
+// usable strategy can also be a stub injected for tests), and the model name
+// to report on the wire. The built-in client carries its own name; an
+// injected stub does not, so the console then shows the configured name.
+func (s LLM) resolver(cfg config.Config) (func(string, string) (string, error), bool, string) {
 	if s.ask != nil {
-		return s.ask, s.enabled
+		return s.ask, s.enabled, ""
 	}
 	client := llm.New(cfg.LLM)
-	return client.Complete, client.Enabled()
+	return client.Complete, client.Enabled(), client.Model()
 }
 
 // Generate walks the series with a causal window and, on the bars it chooses
 // to call the model on, asks for a target position. Answers are
 // forward-filled so the engine sees a complete per-bar signal.
 func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
-	ask, enabled := s.resolver(cfg)
+	ask, enabled, _ := s.resolver(cfg)
 
 	n := series.Len()
 	if n == 0 {
@@ -125,7 +128,7 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 		if i%step != 0 {
 			continue
 		}
-		pos, sp, tp, _, err := s.decideAt(ask, series, cfg, ind, i, window)
+		pos, sp, tp, _, _, err := s.decideAt(ask, series, cfg, ind, i, window)
 		if err != nil {
 			continue // unusable answer: hold the previous state
 		}
@@ -155,25 +158,138 @@ func (s LLM) Generate(series model.Series, cfg config.Config) (Signals, error) {
 // liquidate a healthy position. This matches Generate, which forward-fills
 // the previous target on a failed call.
 func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop, target float64, reason string, ok bool) {
-	ask, enabled := s.resolver(cfg)
+	ask, enabled, modelName := s.resolver(cfg)
+	if modelName == "" {
+		modelName = cfg.LLM.Model
+	}
 	if !enabled {
-		// Say which credential is missing rather than reporting a bare
-		// failure: this string is what the console log shows.
-		return 0, math.NaN(), math.NaN(), "未配置模型密钥（设置 → Binance 与 AI 服务 填写 AI Token）", false
+		// Classify the failure for the operator: a missing credential is a
+		// config gap to fix in settings, a timeout is a budget to raise, an
+		// HTTP 401 is a wrong key — the ai_fault state machine and the
+		// console key off the category prefix, not the raw text.
+		return 0, math.NaN(), math.NaN(), classifyDecisionError(fmt.Errorf("未配置模型密钥（设置 → Binance 与 AI 服务 填写 AI Token）")), false
 	}
 	if series.Len() == 0 {
-		return 0, math.NaN(), math.NaN(), "行情数据为空，无法请求模型", false
+		return 0, math.NaN(), math.NaN(), classifyDecisionError(fmt.Errorf("行情数据为空，无法请求模型")), false
 	}
 	ind := buildIndicators(series, cfg)
 	window := cfg.IntParam("llm_window", 30)
 	if window < 5 {
 		window = 5
 	}
-	pos, sp, tp, why, err := s.decideAt(ask, series, cfg, ind, series.Len()-1, window)
-	if err != nil {
-		return 0, math.NaN(), math.NaN(), err.Error(), false
+	d, ok := s.decideAtDetailed(ask, modelName, series, cfg, ind, series.Len()-1, window)
+	if !ok {
+		return 0, math.NaN(), math.NaN(), d.Reason, false
 	}
-	return pos, sp, tp, why, true
+	return d.Signal, d.Stop, d.Target, d.Reason, true
+}
+
+// LastDecisionDetailed answers the live loop with the structured Decision
+// (strategy.StructuredLiveDecision). On failure, ok=false and Decision.Reason
+// carries the classified cause so the console log can say what to fix.
+func (s LLM) LastDecisionDetailed(series model.Series, cfg config.Config) (Decision, bool) {
+	ask, enabled, modelName := s.resolver(cfg)
+	if modelName == "" {
+		modelName = cfg.LLM.Model
+	}
+	d := Decision{Model: modelName}
+	if !enabled {
+		d.Reason = classifyDecisionError(fmt.Errorf("未配置模型密钥（设置 → Binance 与 AI 服务 填写 AI Token）"))
+		return d, false
+	}
+	if series.Len() == 0 {
+		d.Reason = classifyDecisionError(fmt.Errorf("行情数据为空，无法请求模型"))
+		return d, false
+	}
+	ind := buildIndicators(series, cfg)
+	window := cfg.IntParam("llm_window", 30)
+	if window < 5 {
+		window = 5
+	}
+	return s.decideAtDetailed(ask, modelName, series, cfg, ind, series.Len()-1, window)
+}
+
+// decideAtDetailed wraps decideAt with the audit fields: it times the model
+// call and stamps the model name and the model's own confidence on the
+// answer, so a successful cycle records not just WHAT the AI decided but
+// WHICH model decided it, how long it took and how sure it was — the fields
+// the console's AI strip and the ai_fault state machine rely on.
+func (s LLM) decideAtDetailed(ask func(string, string) (string, error), modelName string, series model.Series, cfg config.Config, ind llmIndicators, i, window int) (Decision, bool) {
+	start := time.Now()
+	d := Decision{Model: modelName}
+	pos, stop, target, reason, confidence, err := s.decideAt(ask, series, cfg, ind, i, window)
+	d.Signal, d.Stop, d.Target, d.Reason, d.Confidence = pos, stop, target, reason, confidence
+	d.Latency = time.Since(start)
+	if err != nil {
+		d.Signal, d.Stop, d.Target = 0, math.NaN(), math.NaN()
+		d.Reason = classifyDecisionError(err)
+		return d, false
+	}
+	return d, true
+}
+
+// decisionErrorCategories are the prefixes classifyDecisionError puts on a
+// failure reason. They are a stable contract: the session's ai_fault state
+// machine detects a classified failure by these prefixes (a plain "AI 不可用"
+// text is no longer the whole story — the operator must see the kind), and
+// the console renders one Chinese label per category.
+var decisionErrorCategories = []string{
+	"no_key",      // the credential is missing: a settings gap
+	"timeout",     // the model did not answer within the budget
+	"network",     // connection reset, refused, DNS or proxy trouble
+	"http",        // the endpoint answered with an HTTP error code
+	"unparseable", // the model answered, but not with a usable decision
+}
+
+// isClassifiedFailure reports whether a strategy failure reason carries a
+// decisionErrorCategories prefix, i.e. the strategy reported a machine-readable
+// cause instead of a bare "AI 不可用".
+func isClassifiedFailure(reason string) bool {
+	for _, c := range decisionErrorCategories {
+		if strings.HasPrefix(reason, c+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// decisionFailureCategory extracts the prefix from a classified failure
+// reason; it returns "unknown" when the reason is not classified.
+func decisionFailureCategory(reason string) string {
+	for _, c := range decisionErrorCategories {
+		if strings.HasPrefix(reason, c+":") {
+			return c
+		}
+	}
+	return "unknown"
+}
+
+// classifyDecisionError turns a raw failure into a "<category>: <detail>"
+// string the operator can act on. The raw error text is kept after the
+// colon so nothing is lost; the category is what the state machine and the
+// UI key on.
+func classifyDecisionError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(err.Error())
+	category := "unknown"
+	switch {
+	case strings.Contains(text, "未配置模型密钥") || strings.Contains(text, "api key"):
+		category = "no_key"
+	case strings.Contains(text, "deadline exceeded"), strings.Contains(text, "timeout exceeded"),
+		strings.Contains(text, "tls handshake timeout"), strings.Contains(text, "i/o timeout"):
+		category = "timeout"
+	case strings.Contains(text, "unparseable"), strings.Contains(text, "无法解析"):
+		category = "unparseable"
+	case strings.Contains(text, "http 4"), strings.Contains(text, "http 5"):
+		category = "http"
+	case strings.Contains(text, "refused"), strings.Contains(text, "reset"), strings.Contains(text, "closed"),
+		strings.Contains(text, "no such host"), strings.Contains(text, "dial"), strings.Contains(text, "broken pipe"),
+		strings.Contains(text, "tls"), strings.Contains(text, "eof"):
+		category = "network"
+	}
+	return category + ": " + err.Error()
 }
 
 // decideAt asks the model for one target-position decision on bar i and
@@ -181,39 +297,42 @@ func (s LLM) LastDecision(series model.Series, cfg config.Config) (signal, stop,
 // error means the model could not be called or its answer did not parse, and
 // its text says which — the caller holds the previous state and surfaces the
 // message in the console log. reason is the model's own short explanation,
-// trimmed to one line for the console.
-func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, reason string, err error) {
+// trimmed to one line for the console. confidence is the model's
+// self-assessed 0..1 certainty (0 when it did not say one).
+func (s LLM) decideAt(ask func(string, string) (string, error), series model.Series, cfg config.Config, ind llmIndicators, i, window int) (pos, stop, target float64, reason string, confidence float64, err error) {
 	user := llmUserPrompt(series.Symbol, i, window, series.Close(), ind)
 	answer, callErr := ask(llmSystemPrompt(cfg), user)
 	if callErr != nil {
-		return 0, 0, 0, "", callErr
+		return 0, 0, 0, "", 0, callErr
 	}
-	pos, stop, target, reason, ok := parseLLMAnswer(answer)
+	pos, stop, target, reason, confidence, ok := parseLLMAnswer(answer)
 	if !ok {
 		// Include a short excerpt of what the model actually said: "答案无法
 		// 解析" alone gives the operator nothing to correct.
-		return 0, 0, 0, "", fmt.Errorf("模型回答无法解析为 JSON 目标仓位: %s", llm.Truncate(answer, 160))
+		return 0, 0, 0, "", 0, fmt.Errorf("模型回答无法解析为 JSON 目标仓位: %s", llm.Truncate(answer, 160))
 	}
-	return pos, stop, target, reason, nil
+	return pos, stop, target, reason, confidence, nil
 }
 
-// parseLLMAnswer extracts {position, stop, target} from a model reply. The
-// reply is expected to contain a JSON object, possibly inside markdown fences
-// or around prose; anything that does not parse returns ok=false and the
-// caller holds the last state.
-func parseLLMAnswer(answer string) (position, stop, target float64, reason string, ok bool) {
+// parseLLMAnswer extracts {position, stop, target, reason, confidence} from a
+// model reply. The reply is expected to contain a JSON object, possibly
+// inside markdown fences or around prose; anything that does not parse
+// returns ok=false and the caller holds the last state. confidence is
+// optional in the contract: models that omit it report 0.
+func parseLLMAnswer(answer string) (position, stop, target float64, reason string, confidence float64, ok bool) {
 	var payload struct {
-		Position json.Number `json:"position"`
-		Stop     json.Number `json:"stop"`
-		Target   json.Number `json:"target"`
-		Reason   string      `json:"reason"`
+		Position   json.Number `json:"position"`
+		Stop       json.Number `json:"stop"`
+		Target     json.Number `json:"target"`
+		Reason     string      `json:"reason"`
+		Confidence json.Number `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(answer)), &payload); err != nil {
-		return 0, 0, 0, "", false
+		return 0, 0, 0, "", 0, false
 	}
 	pos, err := payload.Position.Float64()
 	if err != nil {
-		return 0, 0, 0, "", false
+		return 0, 0, 0, "", 0, false
 	}
 	// Snap to the three legal targets; out-of-range values become flat.
 	switch {
@@ -234,6 +353,19 @@ func parseLLMAnswer(answer string) (position, stop, target float64, reason strin
 	if math.IsNaN(tp) || math.IsInf(tp, 0) {
 		tp = 0
 	}
+	// Confidence is a self-assessed 0..1; a missing or non-finite value
+	// means "the model did not say", and an out-of-range one is clamped
+	// rather than trusted.
+	conf, confErr := payload.Confidence.Float64()
+	if confErr != nil || math.IsNaN(conf) || math.IsInf(conf, 0) {
+		conf = 0
+	}
+	if conf < 0 {
+		conf = 0
+	}
+	if conf > 1 {
+		conf = 1
+	}
 	// The model writes the reason in its own words; trim it to one short line
 	// so it fits the status strip without crowding the controls.
 	reason = strings.TrimSpace(payload.Reason)
@@ -243,7 +375,7 @@ func parseLLMAnswer(answer string) (position, stop, target float64, reason strin
 	if len([]rune(reason)) > 80 {
 		reason = string([]rune(reason)[:80]) + "…"
 	}
-	return pos, sp, tp, reason, true
+	return pos, sp, tp, reason, conf, true
 }
 
 // extractJSONObject trims a reply down to the first balanced object, so the
@@ -290,9 +422,10 @@ func builtinLLMPrompt(cfg config.Config) string {
 	return fmt.Sprintf(
 		"You are a crypto technical analyst. You are given a compact snapshot of a "+
 			"price series (%s, %s) and must decide the desired position on the next bar.\n"+
-			"Answer ONLY with a JSON object: {\"position\": -1|0|1, \"stop\": <price|null>, \"target\": <price|null>, \"reason\": \"<short>\"}.\n"+
+			"Answer ONLY with a JSON object: {\"position\": -1|0|1, \"stop\": <price|null>, \"target\": <price|null>, \"reason\": \"<short>\", \"confidence\": <0..1|null>}.\n"+
 			"position: 1 = long, 0 = flat, -1 = short. stop/target are in the same units as price; use null when none.\n"+
 			"Be conservative; when unsure, position=0.\n"+
+			"confidence: your self-assessed certainty in [0,1]; report 0 when genuinely unsure.\n"+
 			"Risk profile: max risk per trade %.2f%%, default stop loss %.2f%%, default take profit %.2f%%.",
 		cfg.Agent.Symbol, cfg.Agent.Timeframe,
 		cfg.Risk.MaxRiskPerTradePct*100, stopLossPct(cfg), takeProfitPct(cfg),
@@ -302,8 +435,9 @@ func builtinLLMPrompt(cfg config.Config) string {
 // answerContract is the code-enforced tail every llm strategy prompt ends
 // with, tuned persona or not.
 func answerContract(cfg config.Config) string {
-	return "Answer ONLY with a JSON object: {\"position\": -1|0|1, \"stop\": <price|null>, \"target\": <price|null>, \"reason\": \"<short>\"}.\n" +
+	return "Answer ONLY with a JSON object: {\"position\": -1|0|1, \"stop\": <price|null>, \"target\": <price|null>, \"reason\": \"<short>\", \"confidence\": <0..1|null>}.\n" +
 		"position: 1 = long, 0 = flat, -1 = short. stop/target are in the same units as price; use null when none.\n" +
+		"confidence: your self-assessed certainty in [0,1]; report null when unsure.\n" +
 		fmt.Sprintf("Risk profile: max risk per trade %.2f%%, default stop loss %.2f%%, default take profit %.2f%%.",
 			cfg.Risk.MaxRiskPerTradePct*100, stopLossPct(cfg), takeProfitPct(cfg))
 }

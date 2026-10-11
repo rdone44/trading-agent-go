@@ -739,7 +739,13 @@ func (b *FuturesBroker) placeClosePosition(orderType string, side Side, level fl
 		return fmt.Errorf("保护单 %s 按 ID 查单无法确认有效保护，需对账", clientID)
 	}
 	trigger, parseErr := strconv.ParseFloat(order.TriggerPrice, 64)
-	if parseErr != nil || math.IsNaN(trigger) || math.IsInf(trigger, 0) || trigger != level {
+	priceMatches := trigger == level
+	if b.cfg.Leverage > 1 {
+		// Recovery must confirm the exact submitted decimal, not a rounded
+		// price that could falsely authorize placement of the sibling leg.
+		priceMatches = equalPositiveDecimal(order.TriggerPrice, q.Get("triggerPrice"))
+	}
+	if parseErr != nil || math.IsNaN(trigger) || math.IsInf(trigger, 0) || !priceMatches {
 		return fmt.Errorf("保护单 %s 查单触发价与本地不一致，需对账", clientID)
 	}
 	return nil

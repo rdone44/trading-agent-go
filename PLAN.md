@@ -5,6 +5,8 @@
 
 ## 当前基线变更与本轮验证
 
+- P0-1/T5 写入失败回查触发价精确核验子项：**done** — 仅 Leverage>1 按原 POST 十进制编码精确比较 clientAlgoId 回查触发价，拒绝低位冲突/十六进制被舍入后误认有效保护。先复现 `PlaceProtective = <nil>, want success=false`；离线 TCP 断连矩阵覆盖多空、止损/止盈、等价尾零及 Leverage:1 兼容；失败停止后续腿 POST，pending 字节不变，后续三轮零新增写入/按 ID 查询。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，响应丢失/回查定向 race 通过。无新依赖、无真 Binance 调用，CVFolds=0 未改。总体仍 partial：完整保护成交身份/手续费对账与更广泛触发时序待验收；本轮不声称覆盖 runner 持久化阻断。
+
 - P0-1/T5 补挂前已有腿触发价精确核验子项：**done** — PlaceProtective 仅在 Leverage>1 使用 POST 同源十进制编码精确比较已有腿，避免低位冲突/十六进制价格被舍入后误认一致并补挂另一腿。先复现 `PlaceProtective = <nil>, want success=false`；多空、止损/止盈、带/不带 pending 离线矩阵连续三轮验证冲突在预检处拒绝、零 POST、原意图字节不变；等价尾零无 pending 时只补一次，有 pending 缺腿仍保持人工对账阻断。Leverage:1 兼容断言通过，CVFolds=0 未改。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，新增定向 race 通过；无新依赖、无真 Binance 调用。总体仍 partial：写入失败按 ID 回查触发价仍需精确核验，完整保护成交身份/手续费对账与更广泛触发时序待验收。本轮不声称覆盖 runner 持久化阻断。
 
 - P0-1/T5 保护覆盖核验触发价精确比较子项：**done** — InspectProtective 仅在 Leverage>1 使用 POST 同源十进制编码精确比较，避免启动恢复/周期核验将低位冲突或十六进制价格误判为 verified。先复现 `state=verified err=<nil>, want conflict`；离线多空、止损/止盈、带/不带 pending 矩阵连续三轮只读核验，等价尾零放行，Leverage:1 历史行为兼容断言通过。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，InspectProtective 定向 race 通过。无新依赖、CVFolds=0 未改、未调用真 Binance。总体仍 partial：完整保护成交身份/手续费对账及更广泛触发时序仍待验收；本轮新增测试仅覆盖 broker 核验，不声称覆盖 runner 持久化阻断。

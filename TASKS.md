@@ -135,6 +135,8 @@ data -> strategy -> risk -> broker -> portfolio -> metrics -> report
 
 ### T5. 经纪商与实盘安全
 
+- 补挂前已有腿触发价精确核验子项：**done** — PlaceProtective 仅 Leverage>1 按 POST 同源十进制编码精确比较已有腿；先复现 `PlaceProtective = <nil>, want success=false`，修复低位冲突/十六进制被 float64 舍入后误认一致并补挂另一腿。多空、止损/止盈、带/不带 pending 离线矩阵连续三轮验证预检拒绝、零 POST、原意图字节不变；等价尾零无 pending 只补一次，有 pending 缺腿仍拒写。Leverage:1 兼容断言通过，CVFolds=0 未改，无新依赖/真网调用。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，新增定向 race 通过。T5/P0-1 仍 partial：写入失败按 ID 回查触发价精确核验、完整保护成交身份/手续费对账与更广泛触发时序待做；本轮未覆盖 runner 持久化阻断。
+
 - 保护覆盖核验触发价精确比较子项：**done** — InspectProtective 仅在 Leverage>1 使用 POST 同源十进制编码精确比较，避免恢复/周期核验误报 verified。先复现 `state=verified err=<nil>, want conflict`；多空、止损/止盈、带/不带 pending 离线矩阵三轮只读核验，舍入冲突/十六进制拒绝，等价尾零放行；Leverage:1 兼容断言通过。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，InspectProtective 定向 race 通过。无新依赖、CVFolds=0 未改、未调用真 Binance。T5/P0-1 总体仍 partial：完整保护成交身份/手续费对账及更广泛触发时序待验收；本轮新增测试仅覆盖 broker 核验，不声称覆盖 runner 持久化阻断。
 
 - 撤单前意图触发价精确核验子项：**done** — 仅 Leverage>1 pending 分支将开放列表触发价与原提交价编码精确比较，拒绝 float64 舍入冲突与十六进制价格，保留等价尾零。多空止损/止盈回归先复现 `CancelProtective = <nil>, want success=false` 与 `writes=2, want 0`；修复后拒绝场景连续三轮零 DELETE、原意图字节不变，Leverage:1 兼容回归通过。Go 1.23.4 gofmt/build/vet/go test ./... -count=1 全绿，CancelProtective 定向 race 通过；无新依赖、全离线、CVFolds=0 未改。T5/P0-1 总体仍 partial，完整保护成交身份/手续费对账及更广泛触发时序待完成。

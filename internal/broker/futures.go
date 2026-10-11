@@ -612,10 +612,16 @@ func (b *FuturesBroker) PlaceProtective(side Side, stop, takeProfit float64) err
 			}
 			matched = true
 			level, parseErr := strconv.ParseFloat(row.TriggerPrice, 64)
+			priceMatches := level == leg.level
+			if b.cfg.Leverage > 1 {
+				// Preflight must use the submitted decimal encoding before
+				// any sibling repair, not a rounded float64 comparison.
+				priceMatches = equalPositiveDecimal(row.TriggerPrice, strconv.FormatFloat(leg.level, 'f', -1, 64))
+			}
 			if row.AlgoID <= 0 || row.AlgoStatus != "NEW" || !protectiveFlag(row.ClosePos) ||
 				row.Side != closeSide || row.PositionSide != "BOTH" ||
 				row.WorkingType != "MARK_PRICE" || parseErr != nil ||
-				math.IsNaN(level) || math.IsInf(level, 0) || level != leg.level ||
+				math.IsNaN(level) || math.IsInf(level, 0) || !priceMatches ||
 				leg.level <= 0 || leg.present {
 				return fmt.Errorf("交易所保护单 %s 与本地持仓不一致，拒绝重复补挂", row.OrderType)
 			}
